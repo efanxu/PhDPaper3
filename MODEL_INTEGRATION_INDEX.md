@@ -23,6 +23,8 @@ shared experiment behavior remain in `scripts/run.py` and the modules below.
 16. `src/models/base.py`
 17. `src/models/loader.py`
 18. `src/cli/orchestrator.py`
+19. `src/runtime/environments.py`
+20. `src/integrations/time_series_library.py`
 
 Use `src/resources/graph.py` or `src/resources/static_features.py` only when
 the model genuinely needs the corresponding shared resource.
@@ -35,6 +37,38 @@ Create:
 src/models/<model_name>/model.py
 configs/models/<model_name>.yaml
 ```
+
+The model YAML has only these root sections:
+
+```yaml
+runtime:
+  environment: tslib  # or tsl; omitted means the default in configs/environments.yaml
+
+model:
+  # model-owned structure parameters only
+```
+
+Model parameters are passed to `build_model(model_config, data_info)` from the
+`model:` mapping only.  They are intentionally not copied into a shared field
+allowlist or public command documentation.  Public experiment parameters are
+rejected recursively if they appear inside model mappings or list items.
+
+Model runtime selection comes from `configs/models/<model>.yaml`:
+
+```text
+runtime.environment: tslib
+runtime.environment: tsl
+```
+
+When `runtime` is omitted, the default is `tslib`.  Environment definitions
+come from `configs/environments.yaml`; the parent scheduler resolves the
+target Python and starts one independent worker process per model.  Model code
+must not activate Conda or start another Trainer.
+
+The local `Time-Series-Library` tree is a read-only model source.  Use
+`src/integrations/time_series_library.py` for explicit file-path loading so
+the project's `models.base` remains the active package.  `tsl` is imported by
+its formal package name in the `tsl` environment.
 
 The model module must expose:
 
@@ -60,6 +94,19 @@ subprocess scheduler.
 The model YAML is structure-only. Public data, split, loss, optimizer, batch
 and evaluation semantics come from `configs/experiment.yaml` and explicit
 command-line overrides.
+
+## Documentation impact rules
+
+Reading this index never modifies Markdown.  Adding an ordinary model
+parameter changes only the model YAML and model code; it does not require
+updating `README.md`, this index, `HANDOFF.md` or
+`docs/COMMAND_REFERENCE.md`.  A change to `src/cli/command_schema.py` must
+regenerate and check `docs/COMMAND_REFERENCE.md`.  Changes to required paths,
+the model YAML shape, `build_model`, `ModelInput`, output shape, environment
+selection or universal model checks update this index.  Core scheduler,
+environment or limitation changes update `HANDOFF.md`.  `README.md` changes
+only for stable user-entry changes such as installation, data location,
+commands, help or result locations.
 
 ## Commands
 

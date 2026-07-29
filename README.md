@@ -13,7 +13,11 @@ python -m pip install -e .
 Place the two protocol-named local parquet files in `dataset/`. Raw data,
 checkpoints, predictions and logs are ignored by Git. Public experiment
 defaults are in `configs/experiment.yaml`; model structure values are in
-`configs/models/<model>.yaml`.
+`configs/models/<model>.yaml`. Each model YAML may declare
+`runtime.environment: tslib` or `runtime.environment: tsl`; omitted runtime
+uses `tslib`. The parent command resolves the corresponding Conda Python
+automatically. Use `--environment-preflight-only` on `train` to check the
+environments without starting workers.
 
 ## One command entry point
 

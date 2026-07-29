@@ -10,13 +10,13 @@
 内置结构默认 < configs/experiment.yaml < 命令行显式覆盖
 ```
 
-未提供公共实验参数时，使用 `configs/experiment.yaml` 的值；显式提供的值只影响本次运行。模型配置单独遵循：
+未提供公共实验参数时，使用 `configs/experiment.yaml` 的值；显式提供的值只影响本次运行。模型配置遵循 `runtime`/`model` 结构：
 
 ```text
-configs/models/<model>.yaml < 允许的模型专属命令行覆盖
+configs/models/<model>.yaml: runtime.environment + model 参数
 ```
 
-训练或评估结果目录至少包含 `resolved_config.yaml`、`cli_overrides.yaml` 和 `command.json`；训练多模型时每个模型由独立 Python 子进程运行。
+训练或评估结果目录至少包含 `resolved_config.yaml`、`cli_overrides.yaml` 和 `command.json`；调度器按模型 YAML 选择环境，每个模型由独立 Python 子进程运行。
 
 ## 实时帮助
 
@@ -61,6 +61,7 @@ python scripts\run.py <command> --help
 | `--smoke-epochs` | 训练任务专属参数 | 否 | int | 无 | `—` | 否 | --smoke 的 epoch 上限 |
 | `--smoke-max-train-updates` | 训练任务专属参数 | 否 | int | 无 | `—` | 否 | --smoke 的训练更新上限 |
 | `--smoke-max-eval-batches` | 训练任务专属参数 | 否 | int | 无 | `—` | 否 | --smoke 的评估 batch 上限 |
+| `--environment-preflight-only` | 训练任务专属参数 | 否 | flag | 未提供时关闭 | `—` | 否 | 只预检本批次所需运行环境，不启动模型 worker |
 
 ### 示例
 

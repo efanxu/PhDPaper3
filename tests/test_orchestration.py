@@ -5,11 +5,42 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
 from cli import orchestrator
+from runtime.environments import ResolvedEnvironment
 
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "configs" / "experiment.yaml"
+
+
+@pytest.fixture(autouse=True)
+def _stub_environment_preflight(monkeypatch):
+    """Keep scheduler state-machine tests independent of Conda startup."""
+
+    def prepare(*, models, model_configs, project_root, device):
+        del model_configs, project_root, device
+        resolved = ResolvedEnvironment(
+            environment_id="tslib",
+            conda_env="env_tslib",
+            python_executable=Path(sys.executable),
+            source_roots=(),
+            required_imports=(),
+            resolution_source="current_interpreter",
+        )
+        metadata = {
+            "environment_id": "tslib",
+            "conda_env": "env_tslib",
+            "python_executable": sys.executable,
+            "python_version": ".".join(str(value) for value in sys.version_info[:3]),
+            "source_roots": [],
+            "required_imports": [],
+            "resolution_source": "current_interpreter",
+        }
+        return ({model: resolved for model in models}, {"tslib": metadata})
+
+    monkeypatch.setattr(orchestrator, "_prepare_batch_environments", prepare)
 
 
 class _FakeProcess:
@@ -159,3 +190,75 @@ def test_failed_model_continues_by_default_and_fail_fast_stops(monkeypatch, tmp_
     assert stopped["models"][0]["status"] == "FAILED"
     assert stopped["models"][1]["status"] == "FAILED"
     assert "fail-fast" in stopped["models"][1]["error_summary"]
+
+
+def test_mixed_batch_selects_environment_specific_interpreters_in_order(monkeypatch, tmp_path: Path) -> None:
+    tslib = ResolvedEnvironment(
+        environment_id="tslib",
+        conda_env="env_tslib",
+        python_executable=Path(sys.executable),
+        source_roots=(),
+        required_imports=(),
+        resolution_source="current_interpreter",
+    )
+    tsl = ResolvedEnvironment(
+        environment_id="tsl",
+        conda_env="env_tsl",
+        python_executable=Path("target-tsl-python"),
+        source_roots=(),
+        required_imports=("tsl",),
+        resolution_source="conda_env_list",
+    )
+
+    def prepare(*, models, model_configs, project_root, device):
+        del model_configs, project_root, device
+        environments = {"model_a": tslib, "model_b": tsl, "model_c": tslib}
+        metadata = {
+            "environment_id": "tslib",
+            "conda_env": "env_tslib",
+            "python_executable": sys.executable,
+            "python_version": "3.11.15",
+            "resolution_source": "current_interpreter",
+        }
+        tsl_metadata = {
+            "environment_id": "tsl",
+            "conda_env": "env_tsl",
+            "python_executable": "target-tsl-python",
+            "python_version": "3.11.15",
+            "resolution_source": "conda_env_list",
+        }
+        return ({model: environments[model] for model in models}, {"tslib": metadata, "tsl": tsl_metadata})
+
+    started: list[tuple[str, str]] = []
+
+    class FakeMixedProcess(_FakeProcess):
+        def __init__(self, command, **kwargs):
+            super().__init__(command, **kwargs)
+            started.append((command[0], command[-1]))
+
+    monkeypatch.setattr(orchestrator, "_prepare_batch_environments", prepare)
+    monkeypatch.setattr(orchestrator.subprocess, "Popen", FakeMixedProcess)
+    result = orchestrator.run_training_models(
+        models=["model_a", "model_b", "model_c"],
+        config_path=CONFIG,
+        model_config_path=None,
+        run_id="mixed",
+        device="cpu",
+        output_root=tmp_path / "results",
+        resume=False,
+        overwrite=False,
+        id_suffix=None,
+        fail_fast=False,
+        smoke=True,
+        smoke_epochs=1,
+        smoke_max_train_updates=1,
+        smoke_max_eval_batches=1,
+        cli_overrides={},
+        command_argv=[],
+    )
+    assert result["passed"] is True
+    assert [model for _, model in started] == ["model_a", "model_b", "model_c"]
+    assert [python for python, _ in started] == [sys.executable, "target-tsl-python", sys.executable]
+    assert len({record["pid"] for record in result["models"]}) == 3
+    summary = Path(result["summary_csv"]).read_text(encoding="utf-8")
+    assert "model_b,tsl,target-tsl-python" in summary

@@ -44,6 +44,13 @@ def test_public_override_defaults_are_none() -> None:
     assert args.amp is None
 
 
+def test_environment_preflight_only_is_train_diagnostic_flag() -> None:
+    args = build_parser().parse_args(
+        ["train", "--model", "node_shared_lstm", "--environment-preflight-only"]
+    )
+    assert args.environment_preflight_only is True
+
+
 def test_model_accepts_one_or_many_and_legacy_batch_is_gone() -> None:
     args = build_parser().parse_args(["train", "--model", "node_shared_lstm", "dlinear"])
     assert args.model == ["node_shared_lstm", "dlinear"]

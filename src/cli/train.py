@@ -34,6 +34,7 @@ from runtime.config import (
     resolved_config_values,
 )
 from runtime.environment import collect_environment
+from runtime.environments import resolve_model_environment
 from runtime.paths import project_root_from_config, resolve_output_root, run_directory
 from runtime.run_info import utc_now, write_json, write_yaml
 
@@ -270,6 +271,10 @@ def _performance(
     update_seconds = train_result.update_seconds if train_result else []
     training_wall_seconds = float(sum(epoch_seconds)) if epoch_seconds else None
     return {
+        "runtime_environment": environment.get("runtime_environment"),
+        "conda_env": environment.get("conda_env"),
+        "python_executable": environment.get("python_executable"),
+        "environment_resolution_source": environment.get("environment_resolution_source"),
         "parameter_count": int(parameter_count),
         "trainable_parameter_count": int(trainable_parameter_count),
         "checkpoint_size_mb": checkpoint_size_mb,
@@ -327,6 +332,7 @@ def run_model(
     command_argv: list[str] | None = None,
     command_name: str = "train",
     evaluation_split: str = "both",
+    runtime_environment: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     config_file = Path(config_path).resolve()
     project_root = project_root_from_config(config_file)
@@ -342,6 +348,23 @@ def run_model(
             effective_overrides["training.seed"] = int(seed_override)
     model_file = Path(model_config_path).resolve() if model_config_path else _default_model_config_path(config_file, model_name)
     model_config = load_model_config(model_file)
+    if runtime_environment is None:
+        resolved_environment = resolve_model_environment(
+            model_file,
+            project_root=project_root,
+        )
+        runtime_metadata: dict[str, Any] = {
+            "runtime_environment": resolved_environment.environment_id,
+            "conda_env": resolved_environment.conda_env,
+            "python_executable": str(resolved_environment.python_executable),
+            "environment_resolution_source": resolved_environment.resolution_source,
+            "source_roots": [str(path) for path in resolved_environment.source_roots],
+            "required_imports": list(resolved_environment.required_imports),
+        }
+    else:
+        runtime_metadata = dict(runtime_environment)
+        if not runtime_metadata.get("runtime_environment"):
+            raise ValueError("runtime_environment metadata must include runtime_environment")
     checkpoint_file = _checkpoint_path(resume) if resume is not None else None
     if checkpoint_file is not None:
         _check_checkpoint_compatibility(read_checkpoint_manifest(checkpoint_file), config, model_config, checkpoint_file, model_name=model_name, for_resume=not evaluate_only)
@@ -357,8 +380,20 @@ def run_model(
         torch.cuda.reset_peak_memory_stats(selected_device)
     seed_details = set_seed(int(config.training["seed"]), deterministic=bool(config.runtime["deterministic"]))
     environment = collect_environment(project_root)
+    environment.update(runtime_metadata)
+    environment["runtime_environment"] = runtime_metadata["runtime_environment"]
+    environment["conda_env"] = runtime_metadata.get("conda_env")
+    environment["python_executable"] = runtime_metadata.get("python_executable", environment["python"]["executable"])
+    environment["environment_resolution_source"] = runtime_metadata.get("environment_resolution_source")
     resolved = resolved_config_values(config, project_root=project_root)
-    resolved["resolved"].update({"model_name": model_name, "run_id": run_name, "device": str(selected_device), "command": command_name})
+    resolved["resolved"].update({
+        "model_name": model_name,
+        "run_id": run_name,
+        "device": str(selected_device),
+        "command": command_name,
+        "runtime_environment": runtime_metadata["runtime_environment"],
+        "python_executable": runtime_metadata.get("python_executable"),
+    })
     if smoke:
         resolved["resolved"]["smoke"] = {
             "epochs": int(smoke_epochs or 1),
@@ -371,7 +406,24 @@ def run_model(
     _print_config_summary(config_file=config_file, model_file=model_file, base_config=base_config, cli_overrides=effective_overrides, output_dir=output_dir)
     write_yaml(output_dir / "model_config.yaml", model_config)
     write_json(output_dir / "environment.json", environment)
-    write_json(output_dir / "run_info.json", {"model": model_name, "run_id": run_name, "status": "RUNNING", "start_time": start_time})
+    write_json(
+        output_dir / "run_info.json",
+        {
+            "model": model_name,
+            "run_id": run_name,
+            "status": "RUNNING",
+            "start_time": start_time,
+            **{
+                key: runtime_metadata.get(key)
+                for key in (
+                    "runtime_environment",
+                    "conda_env",
+                    "python_executable",
+                    "environment_resolution_source",
+                )
+            },
+        },
+    )
 
     data_started = time.perf_counter()
     arrays, data_info, splits, windows, normalization, loaders = _prepare(config, project_root)
@@ -441,6 +493,10 @@ def run_model(
         "model": model_name,
         "run_id": run_name,
         "status": "COMPLETED",
+        "runtime_environment": runtime_metadata.get("runtime_environment"),
+        "conda_env": runtime_metadata.get("conda_env"),
+        "python_executable": runtime_metadata.get("python_executable"),
+        "environment_resolution_source": runtime_metadata.get("environment_resolution_source"),
         "seed": int(config.training["seed"]),
         "git_commit": environment.get("git_commit"),
         "python_version": environment["python"]["version"],

@@ -18,6 +18,9 @@ def test_evaluation_performance_excludes_first_batch_from_steady_state() -> None
     assert result["batch_count"] == 3
     assert result["sample_count"] == 5
     assert result["forecast_values"] == 60
+    assert result["steady_sample_count"] == 3
+    assert result["steady_forecast_values"] == 36
+    assert result["forecast_values_per_second"] == pytest.approx(3600.0)
     assert result["first_batch_latency_ms"] == 10.0
     assert result["median_batch_latency_ms"] == 5.0
     assert result["p95_batch_latency_ms"] == pytest.approx(5.9)

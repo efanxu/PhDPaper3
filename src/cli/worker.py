@@ -14,16 +14,30 @@ def _print(value: Any) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     values = list(sys.argv[1:] if argv is None else argv)
-    if len(values) != 2:
-        print("internal worker expects <request.json> <model>", file=sys.stderr)
-        return 2
-    request_path = Path(values[0]).resolve()
-    model_name = values[1]
+    if values and values[0] == "--request":
+        if len(values) not in {2, 3, 4}:
+            print("internal worker expects --request <request.json> [<model>]", file=sys.stderr)
+            return 2
+        request_path = Path(values[1]).resolve()
+        model_name = values[2] if len(values) >= 3 and values[2] != "--model" else None
+        if len(values) == 4 and values[2] == "--model":
+            model_name = values[3]
+    else:
+        if len(values) != 2:
+            print("internal worker expects <request.json> <model>", file=sys.stderr)
+            return 2
+        request_path = Path(values[0]).resolve()
+        model_name = values[1]
     try:
         request = json.loads(request_path.read_text(encoding="utf-8"))
         if not isinstance(request, dict):
             raise ValueError("worker request must be a JSON object")
         operation = request.get("operation")
+        if model_name is None:
+            model_names = request.get("models", {})
+            if not isinstance(model_names, dict) or len(model_names) != 1:
+                raise ValueError("worker request needs an explicit model when it contains multiple models")
+            model_name = next(iter(model_names))
         model_request = request.get("models", {}).get(model_name)
         if not isinstance(model_request, dict):
             raise ValueError(f"worker request has no model entry for {model_name}")
@@ -42,6 +56,7 @@ def main(argv: list[str] | None = None) -> int:
                 smoke_epochs=request.get("smoke_epochs"),
                 smoke_max_train_updates=request.get("smoke_max_train_updates"),
                 smoke_max_eval_batches=request.get("smoke_max_eval_batches"),
+                runtime_environment=model_request.get("environment"),
                 cli_overrides=request.get("cli_overrides", {}),
                 command_argv=request.get("command_argv", []),
                 command_name="train",

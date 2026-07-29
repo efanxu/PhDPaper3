@@ -168,6 +168,11 @@ def _build_train(subparsers: argparse._SubParsersAction) -> None:
     group.add_argument("--smoke-epochs", type=int, help="--smoke 的 epoch 上限")
     group.add_argument("--smoke-max-train-updates", type=int, help="--smoke 的训练更新上限")
     group.add_argument("--smoke-max-eval-batches", type=int, help="--smoke 的评估 batch 上限")
+    group.add_argument(
+        "--environment-preflight-only",
+        action="store_true",
+        help="只预检本批次所需运行环境，不启动模型 worker",
+    )
 
 
 def _build_evaluate(subparsers: argparse._SubParsersAction) -> None:

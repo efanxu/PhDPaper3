@@ -31,6 +31,13 @@ def _history(path: Path) -> list[dict[str, str]]:
         ]
 
 
+def _test_metric_files(path: Path) -> dict[str, Path]:
+    return {
+        item.name: item
+        for item in sorted(path.glob("metrics_test_h*.json"), key=lambda value: value.name)
+    }
+
+
 def _values_close(left: Any, right: Any, *, atol: float) -> bool:
     if isinstance(left, Mapping) and isinstance(right, Mapping):
         return set(left) == set(right) and all(_values_close(left[key], right[key], atol=atol) for key in left)
@@ -48,6 +55,8 @@ def _compare_one(
     second_dir: Path,
     prediction_atol: float,
     metric_atol: float,
+    first_pid: int | None = None,
+    second_pid: int | None = None,
 ) -> dict[str, Any]:
     first_config = yaml.safe_load((first_dir / "resolved_config.yaml").read_text(encoding="utf-8"))
     second_config = yaml.safe_load((second_dir / "resolved_config.yaml").read_text(encoding="utf-8"))
@@ -61,10 +70,21 @@ def _compare_one(
     checks.append(("first_step_loss", first_info.get("first_step_loss") == second_info.get("first_step_loss")))
     checks.append(("short_training_loss_curve", _history(first_dir / "train_history.csv") == _history(second_dir / "train_history.csv")))
     checks.append(("best_epoch", first_info.get("best_epoch") == second_info.get("best_epoch")))
+    for field in (
+        "runtime_environment",
+        "conda_env",
+        "python_executable",
+        "environment_resolution_source",
+        "python_version",
+        "pytorch_version",
+        "cuda_version",
+    ):
+        checks.append((f"environment:{field}", first_info.get(field) == second_info.get(field)))
     first_validation = json.loads((first_dir / "metrics_validation.json").read_text(encoding="utf-8"))
     second_validation = json.loads((second_dir / "metrics_validation.json").read_text(encoding="utf-8"))
     checks.append(("validation_metrics", _values_close(first_validation, second_validation, atol=metric_atol)))
     max_prediction_diff = 0.0
+    checks.append(("prediction_keys", set(first_npz.files) == set(second_npz.files)))
     for key in first_npz.files:
         if key not in second_npz.files:
             checks.append((f"predictions:{key}", False))
@@ -74,9 +94,17 @@ def _compare_one(
         diff = float(np.max(np.abs(left.astype(np.float64) - right.astype(np.float64)))) if left.size else 0.0
         max_prediction_diff = max(max_prediction_diff, diff)
     checks.append(("predictions", max_prediction_diff <= prediction_atol))
-    first_test = json.loads((first_dir / "metrics_test_h10.json").read_text(encoding="utf-8")) if (first_dir / "metrics_test_h10.json").is_file() else json.loads((first_dir / "metrics_test_h3.json").read_text(encoding="utf-8"))
-    second_test = json.loads((second_dir / "metrics_test_h10.json").read_text(encoding="utf-8")) if (second_dir / "metrics_test_h10.json").is_file() else json.loads((second_dir / "metrics_test_h3.json").read_text(encoding="utf-8"))
-    checks.append(("final_metrics", _values_close(first_test, second_test, atol=metric_atol)))
+    first_test_files = _test_metric_files(first_dir)
+    second_test_files = _test_metric_files(second_dir)
+    checks.append(("test_horizon_set", set(first_test_files) == set(second_test_files)))
+    for name in sorted(set(first_test_files) | set(second_test_files)):
+        if name not in first_test_files or name not in second_test_files:
+            checks.append((f"test_metrics:{name}", False))
+            continue
+        first_test = json.loads(first_test_files[name].read_text(encoding="utf-8"))
+        second_test = json.loads(second_test_files[name].read_text(encoding="utf-8"))
+        checks.append((f"test_metrics:{name}", _values_close(first_test, second_test, atol=metric_atol)))
+    checks.append(("different_worker_pid", first_pid is not None and second_pid is not None and first_pid != second_pid))
     first_failure = next((name for name, passed in checks if not passed), None)
     return {
         "passed": first_failure is None,
@@ -108,33 +136,118 @@ def compare_repeated_runs(
         raise ValueError("repeatability tolerances must be non-negative")
     if not models:
         raise ValueError("at least one model is required")
+    if len(set(models)) != len(models):
+        raise ValueError("repeatability requires unique model names")
+    if model_config_path is not None and len(models) > 1:
+        raise ValueError("--model-config is only valid with exactly one --model; multi-model repeatability loads configs/models/<model>.yaml separately")
     config_file = Path(config_path).resolve()
     root = project_root_from_config(config_file)
     results_root = resolve_output_root(root, output_root)
     base_id = effective_run_id(run_id, id_suffix)
     repeat_root = results_root / "_repeatability" / base_id
+    if repeat_root.exists() and any(repeat_root.iterdir()):
+        if not overwrite:
+            raise ValueError(
+                f"repeatability report already exists: {repeat_root}; choose --overwrite or --id-suffix"
+            )
+        archive_directory(
+            repeat_root,
+            results_root / "_archive" / "_repeatability",
+            label=base_id,
+        )
     repeat_root.mkdir(parents=True, exist_ok=True)
+
+    run_a_id = f"{base_id}__repeat_a"
+    run_b_id = f"{base_id}__repeat_b"
+    first = run_training_models(
+        models=list(models),
+        config_path=config_file,
+        model_config_path=model_config_path,
+        run_id=run_a_id,
+        device=device,
+        output_root=results_root,
+        resume=False,
+        overwrite=overwrite,
+        id_suffix=None,
+        fail_fast=True,
+        smoke=True,
+        smoke_epochs=1,
+        smoke_max_train_updates=2,
+        smoke_max_eval_batches=2,
+        cli_overrides=cli_overrides,
+        command_argv=command_argv,
+    )
+    second = run_training_models(
+        models=list(models),
+        config_path=config_file,
+        model_config_path=model_config_path,
+        run_id=run_b_id,
+        device=device,
+        output_root=results_root,
+        resume=False,
+        overwrite=overwrite,
+        id_suffix=None,
+        fail_fast=True,
+        smoke=True,
+        smoke_epochs=1,
+        smoke_max_train_updates=2,
+        smoke_max_eval_batches=2,
+        cli_overrides=cli_overrides,
+        command_argv=command_argv,
+    )
+    write_json(repeat_root / "run_a.json", first)
+    write_json(repeat_root / "run_b.json", second)
+
+    first_by_model = {item["model"]: item for item in first["models"]}
+    second_by_model = {item["model"]: item for item in second["models"]}
     reports: list[dict[str, Any]] = []
     for model in models:
+        first_record = first_by_model[model]
+        second_record = second_by_model[model]
+        first_dir = Path(first_record["result_dir"])
+        second_dir = Path(second_record["result_dir"])
         report_dir = repeat_root / model
-        if report_dir.exists() and any(report_dir.iterdir()):
-            if not overwrite:
-                raise ValueError(f"repeatability report already exists: {report_dir}; choose --overwrite or --id-suffix")
-            archive_directory(report_dir, results_root / "_archive" / "_repeatability" / model, label=base_id)
         report_dir.mkdir(parents=True, exist_ok=True)
-        run_a_id = f"{base_id}__repeat_a"
-        run_b_id = f"{base_id}__repeat_b"
-        first = run_training_models(models=[model], config_path=config_file, model_config_path=model_config_path, run_id=run_a_id, device=device, output_root=results_root, resume=False, overwrite=overwrite, id_suffix=None, fail_fast=True, smoke=True, smoke_epochs=1, smoke_max_train_updates=2, smoke_max_eval_batches=2, cli_overrides=cli_overrides, command_argv=command_argv)
-        first_dir = Path(first["models"][0]["result_dir"])
-        write_json(report_dir / "run_a.json", first)
-        second = run_training_models(models=[model], config_path=config_file, model_config_path=model_config_path, run_id=run_b_id, device=device, output_root=results_root, resume=False, overwrite=overwrite, id_suffix=None, fail_fast=True, smoke=True, smoke_epochs=1, smoke_max_train_updates=2, smoke_max_eval_batches=2, cli_overrides=cli_overrides, command_argv=command_argv)
-        second_dir = Path(second["models"][0]["result_dir"])
-        write_json(report_dir / "run_b.json", second)
         if first["passed"] and second["passed"]:
-            comparison = _compare_one(model=model, first_dir=first_dir, second_dir=second_dir, prediction_atol=prediction_atol, metric_atol=metric_atol)
+            comparison = _compare_one(
+                model=model,
+                first_dir=first_dir,
+                second_dir=second_dir,
+                prediction_atol=prediction_atol,
+                metric_atol=metric_atol,
+                first_pid=first_record.get("pid"),
+                second_pid=second_record.get("pid"),
+            )
         else:
-            comparison = {"passed": False, "model": model, "checks": {}, "first_failure": "worker_failure", "max_prediction_difference": None, "prediction_atol": prediction_atol, "metric_atol": metric_atol}
-        comparison.update({"run_a": str(first_dir), "run_b": str(second_dir), "subprocess_pids": [first["models"][0].get("pid"), second["models"][0].get("pid")]})
+            comparison = {
+                "passed": False,
+                "model": model,
+                "checks": {
+                    "different_worker_pid": first_record.get("pid") is not None
+                    and second_record.get("pid") is not None
+                    and first_record.get("pid") != second_record.get("pid"),
+                },
+                "first_failure": "worker_failure",
+                "max_prediction_difference": None,
+                "prediction_atol": prediction_atol,
+                "metric_atol": metric_atol,
+            }
+        comparison.update(
+            {
+                "run_a": str(first_dir),
+                "run_b": str(second_dir),
+                "subprocess_pids": [first_record.get("pid"), second_record.get("pid")],
+                "batch_run_a": str(first.get("run_root")),
+                "batch_run_b": str(second.get("run_root")),
+            }
+        )
         write_json(report_dir / "repeatability_report.json", comparison)
         reports.append(comparison)
-    return {"passed": all(item["passed"] for item in reports), "run_id": base_id, "models": reports, "repeatability_root": str(repeat_root)}
+    return {
+        "passed": all(item["passed"] for item in reports),
+        "run_id": base_id,
+        "models": reports,
+        "repeatability_root": str(repeat_root),
+        "run_a": first,
+        "run_b": second,
+    }

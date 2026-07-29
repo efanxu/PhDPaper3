@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
 from pathlib import Path
+
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -58,10 +61,25 @@ def test_model_index_core_paths_exist() -> None:
         assert (ROOT / relative).exists(), relative
 
 
+def test_environment_contract_and_model_parameter_documentation_rules() -> None:
+    environment_path = ROOT / "configs" / "environments.yaml"
+    loaded = yaml.safe_load(environment_path.read_text(encoding="utf-8"))
+    assert loaded["default_environment"] == "tslib"
+    assert set(loaded["environments"]) >= {"tslib", "tsl"}
+    index = (ROOT / "MODEL_INTEGRATION_INDEX.md").read_text(encoding="utf-8")
+    assert "runtime.environment" in index
+    assert "ordinary model" in index
+    public_documents = "\n".join(
+        (ROOT / path).read_text(encoding="utf-8") for path in ALLOWED_MARKDOWN
+    )
+    for model_parameter in ("hidden_dim", "e_layers", "diffusion_steps", "node_embedding_dim"):
+        assert model_parameter not in public_documents
+
+
 def test_command_reference_is_generated_from_current_parser() -> None:
     result = subprocess.run(
         [
-            "D:\\Apps\\Miniconda3\\envs\\env_tslib\\python.exe",
+            sys.executable,
             "scripts\\generate_command_reference.py",
             "--check",
         ],

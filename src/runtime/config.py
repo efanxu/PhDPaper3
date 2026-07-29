@@ -125,20 +125,6 @@ _EVALUATION_KEYS = {
 _CHECKPOINT_KEYS = {"split", "horizon", "metric", "mode"}
 _RUNTIME_KEYS = {"num_workers", "deterministic", "save_predictions", "pin_memory"}
 
-_MODEL_ALLOWED_KEYS = {
-    "hidden_dim",
-    "num_layers",
-    "dropout",
-    "patch_len",
-    "stride",
-    "kernel_size",
-    "graph_order",
-    "d_model",
-    "d_ff",
-    "n_heads",
-    "window",
-    "num_kernels",
-}
 _MODEL_FORBIDDEN_KEYS = {
     "dataset",
     "data_root",
@@ -163,7 +149,16 @@ _MODEL_FORBIDDEN_KEYS = {
     "physical_clip",
     "physical_min_kw",
     "physical_max_kw",
+    "train_ratio",
+    "val_ratio",
+    "test_ratio",
+    "early_stopping",
+    "seed",
+    "optimizer",
+    "learning_rate",
 }
+_MODEL_RUNTIME_KEYS = {"environment"}
+_MODEL_ENVIRONMENTS = {"tslib", "tsl"}
 
 
 def _load_mapping(path: Path) -> dict[str, Any]:
@@ -545,27 +540,128 @@ def load_resolved_experiment_config(
     return resolved, cli_overrides_from_namespace(cli_overrides)
 
 
-def load_model_config(path: str | Path) -> dict[str, Any]:
-    """Load structure-only parameters and reject public-parameter leakage."""
+def _validate_model_value(value: Any, path: str) -> None:
+    """Validate the portable scalar/container subset accepted in model YAML."""
 
+    if value is None or isinstance(value, (str, bool)):
+        return
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ConfigError(f"{path} must be finite")
+        return
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            if not isinstance(key, str):
+                raise ConfigError(f"{path} contains a non-string mapping key")
+            _validate_model_value(child, f"{path}.{key}")
+        return
+    if isinstance(value, list):
+        for index, child in enumerate(value):
+            _validate_model_value(child, f"{path}[{index}]")
+        return
+    raise ConfigError(f"{path} contains a value that is not YAML-serializable")
+
+
+def _find_model_public_parameter(value: Any, path: str = "model") -> tuple[str, str] | None:
+    """Find public experiment fields at any depth, including list mappings."""
+
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            if isinstance(key, str) and key in _MODEL_FORBIDDEN_KEYS:
+                return key, f"{path}.{key}"
+            result = _find_model_public_parameter(child, f"{path}.{key}")
+            if result is not None:
+                return result
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            result = _find_model_public_parameter(child, f"{path}[{index}]")
+            if result is not None:
+                return result
+    return None
+
+
+def _load_model_document(path: str | Path) -> dict[str, Any]:
     source = Path(path).resolve()
-    values = _load_mapping(source)
-    forbidden = sorted(set(values) & _MODEL_FORBIDDEN_KEYS)
-    if forbidden:
-        raise ConfigError(f"model config cannot define public parameter: {forbidden[0]}")
-    unknown = sorted(set(values) - _MODEL_ALLOWED_KEYS)
-    if unknown:
-        raise ConfigError(f"unknown model structure field: {unknown[0]}")
-    if not values:
-        raise ConfigError("model config must contain at least one structure field")
-    for name, value in values.items():
-        if name in {"hidden_dim", "num_layers", "patch_len", "stride", "kernel_size", "graph_order", "d_model", "d_ff", "n_heads", "window", "num_kernels"}:
-            _integer(value, f"model.{name}", minimum=1)
-        elif name == "dropout":
-            dropout = _number(value, "model.dropout", minimum=0.0)
-            if dropout >= 1.0:
-                raise ConfigError("model.dropout must be less than 1")
-    return values
+    if not source.is_file():
+        raise FileNotFoundError(f"configuration file does not exist: {source}")
+    try:
+        loaded = yaml.safe_load(source.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"invalid model YAML: {source}: {exc}") from exc
+    if not isinstance(loaded, dict):
+        raise ConfigError(f"model configuration root must be a mapping: {source}")
+    if not all(isinstance(key, str) for key in loaded):
+        raise ConfigError("model configuration root keys must be strings")
+
+    # Keep the error useful for users migrating a legacy flat file that leaked
+    # a public experiment option, while all other root fields get the strict
+    # new-shape error below.
+    root_public = sorted(set(loaded) & _MODEL_FORBIDDEN_KEYS)
+    if root_public:
+        raise ConfigError(f"model config cannot define public parameter: {root_public[0]}")
+    unknown_root = sorted(set(loaded) - {"runtime", "model"})
+    if unknown_root:
+        raise ConfigError(
+            f"model config root may only contain runtime and model: {unknown_root[0]}"
+        )
+
+    runtime = loaded.get("runtime", {})
+    if not isinstance(runtime, Mapping):
+        raise ConfigError("model.runtime must be a mapping")
+    if not all(isinstance(key, str) for key in runtime):
+        raise ConfigError("model.runtime keys must be strings")
+    unknown_runtime = sorted(set(runtime) - _MODEL_RUNTIME_KEYS)
+    if unknown_runtime:
+        raise ConfigError(f"unknown field at runtime: {unknown_runtime[0]}")
+    environment = runtime.get("environment", "tslib")
+    if not isinstance(environment, str) or environment not in _MODEL_ENVIRONMENTS:
+        raise ConfigError(
+            "runtime.environment must be one of: "
+            + ", ".join(sorted(_MODEL_ENVIRONMENTS))
+        )
+
+    model = loaded.get("model")
+    if not isinstance(model, Mapping):
+        raise ConfigError("model must be a mapping")
+    if not model:
+        raise ConfigError("model config must contain at least one model field")
+    _validate_model_value(model, "model")
+    forbidden = _find_model_public_parameter(model)
+    if forbidden is not None:
+        name, location = forbidden
+        raise ConfigError(
+            f"model config cannot define public parameter {name!r} at {location}"
+        )
+    return {
+        "runtime": deepcopy(dict(runtime)),
+        "model": deepcopy(dict(model)),
+    }
+
+
+def load_model_config_document(path: str | Path) -> dict[str, Any]:
+    """Load and validate the complete ``runtime``/``model`` document."""
+
+    return _load_model_document(path)
+
+
+def load_model_config(path: str | Path) -> dict[str, Any]:
+    """Load only model-owned parameters for ``build_model``.
+
+    The runtime selection is deliberately removed at this boundary so model
+    constructors can never receive ``runtime.environment`` accidentally.
+    """
+
+    return deepcopy(_load_model_document(path)["model"])
+
+
+def model_runtime_environment(path: str | Path, *, default: str = "tslib") -> str:
+    """Return the declared model environment, applying the configured default."""
+
+    document = _load_model_document(path)
+    environment = document["runtime"].get("environment", default)
+    if environment not in _MODEL_ENVIRONMENTS:
+        raise ConfigError(f"unsupported model runtime environment: {environment}")
+    return str(environment)
 
 
 def resolved_config_values(config: ExperimentConfig, *, project_root: Path) -> dict[str, Any]:

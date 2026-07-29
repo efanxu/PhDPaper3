@@ -41,6 +41,7 @@ def summarize_evaluation(
     forecast_values = sample_count * int(nodes) * int(horizon)
     steady_seconds = sum(steady_end_to_end)
     steady_sample_count = sum(steady_sizes)
+    steady_forecast_values = steady_sample_count * int(nodes) * int(horizon)
     mean_batch_seconds = sum(steady_end_to_end) / len(steady_end_to_end)
     mean_batch_size = steady_sample_count / len(steady_sizes)
     return {
@@ -54,8 +55,11 @@ def summarize_evaluation(
         "p95_batch_latency_ms": _percentile(steady_end_to_end, 95.0) * 1000.0,
         "mean_sample_latency_ms": mean_batch_seconds * 1000.0 / mean_batch_size,
         "samples_per_second": steady_sample_count / steady_seconds if steady_seconds > 0 else 0.0,
-        "forecast_values_per_second": forecast_values / steady_seconds if steady_seconds > 0 else 0.0,
+        "forecast_values_per_second": steady_forecast_values / steady_seconds if steady_seconds > 0 else 0.0,
         "forecast_values": forecast_values,
+        "steady_sample_count": steady_sample_count,
+        "steady_forecast_values": steady_forecast_values,
+        "steady_seconds": steady_seconds,
         "warmup_excluded": len(end_to_end) > 1,
         "has_independent_warmup": len(end_to_end) > 1,
     }

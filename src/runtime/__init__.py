@@ -6,7 +6,21 @@ from .config import (
     cli_overrides_from_namespace,
     load_experiment_config,
     load_model_config,
+    load_model_config_document,
+    model_runtime_environment,
     load_resolved_experiment_config,
+)
+from .environments import (
+    EnvironmentConfig,
+    EnvironmentPreflightError,
+    EnvironmentResolutionError,
+    EnvironmentSpec,
+    ResolvedEnvironment,
+    build_worker_environment,
+    load_environment_config,
+    preflight_environment,
+    resolve_model_environment,
+    resolve_python_executable,
 )
 
 __all__ = [
@@ -15,5 +29,17 @@ __all__ = [
     "cli_overrides_from_namespace",
     "load_experiment_config",
     "load_model_config",
+    "load_model_config_document",
+    "model_runtime_environment",
     "load_resolved_experiment_config",
+    "EnvironmentConfig",
+    "EnvironmentPreflightError",
+    "EnvironmentResolutionError",
+    "EnvironmentSpec",
+    "ResolvedEnvironment",
+    "build_worker_environment",
+    "load_environment_config",
+    "preflight_environment",
+    "resolve_model_environment",
+    "resolve_python_executable",
 ]

@@ -44,6 +44,7 @@ def _dispatch(args, raw_argv: list[str]) -> int:
             smoke_epochs=args.smoke_epochs,
             smoke_max_train_updates=args.smoke_max_train_updates,
             smoke_max_eval_batches=args.smoke_max_eval_batches,
+            environment_preflight_only=args.environment_preflight_only,
             cli_overrides=cli_overrides,
             command_argv=raw_argv,
         )

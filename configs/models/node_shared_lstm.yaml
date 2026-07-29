@@ -1,3 +1,7 @@
-hidden_dim: 48
-num_layers: 2
-dropout: 0.05
+runtime:
+  environment: tslib
+
+model:
+  hidden_dim: 48
+  num_layers: 2
+  dropout: 0.05

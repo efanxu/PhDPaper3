@@ -1,0 +1,24 @@
+default_environment: tslib
+
+environments:
+  tslib:
+    conda_env: env_tslib
+    python_override_env_var: PHDPAPER3_TSLIB_PYTHON
+    source_roots:
+      - Time-Series-Library
+    required_imports:
+      - torch
+      - numpy
+      - yaml
+      - pyarrow
+
+  tsl:
+    conda_env: env_tsl
+    python_override_env_var: PHDPAPER3_TSL_PYTHON
+    source_roots: []
+    required_imports:
+      - torch
+      - numpy
+      - yaml
+      - pyarrow
+      - tsl

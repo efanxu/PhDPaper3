@@ -3,10 +3,10 @@
 ## Architecture
 
 `scripts/run.py` is the only public entry point. `src/cli/command_schema.py`
-defines all public arguments. The parent scheduler writes one request and
-starts one hidden worker subprocess per model with `sys.executable`; the
-worker calls the shared single-model pipeline. Data lives in `dataset/` and
-results live under `results/<model>/<run_id>/`.
+defines all public arguments. The parent scheduler reads each model's
+`runtime.environment`, resolves its target Python, writes one request, and
+starts one worker subprocess per model. Data lives in `dataset/` and results
+live under `results/<model>/<run_id>/`.
 
 ## Core capabilities
 
@@ -16,6 +16,12 @@ results live under `results/<model>/<run_id>/`.
 - complete epoch checkpoint state, deterministic resume and independent A/B repeatability;
 - shared training/evaluation timing, throughput, parameter and GPU-memory metrics;
 - generated command reference and documentation consistency tests.
+- supports `tslib` and `tsl` runtime environments;
+- defaults to `tslib` when a model YAML omits `runtime`;
+- automatically resolves interpreters and can mix both environments in one batch;
+- keeps each model in an independent process;
+- treats the local `Time-Series-Library` source as read-only;
+- provides `tsl` through `env_tsl`.
 
 ## Known limitations
 
@@ -26,9 +32,10 @@ made without running the corresponding command on a CUDA machine.
 
 ## Next step
 
-Add a model directory and structure YAML, implement only
+Add a model directory and a `runtime`/`model` YAML, implement only
 `build_model(model_config, data_info)`, then run the generated command checks
-and the relevant tests.
+and the relevant tests. Ordinary model parameters do not require public
+documentation changes.
 
 ## Keep out of the project
 
