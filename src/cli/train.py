@@ -2,29 +2,36 @@
 
 from __future__ import annotations
 
-import argparse
 import csv
 from datetime import datetime, timezone
 import json
 from pathlib import Path
 import time
+from collections.abc import Mapping
 from typing import Any
 
 import numpy as np
 import torch
-import yaml
 
 from data.dataloader import build_dataloaders
 from data.loader import load_data
 from data.normalization import fit_normalization
 from data.split import chronological_split
 from data.window import build_window_index
-from engine.checkpoint import load_checkpoint
+from engine.checkpoint import load_checkpoint, read_checkpoint_manifest
 from engine.evaluator import EvaluationResult, evaluate
 from engine.reproducibility import set_seed
 from engine.trainer import Trainer, TrainResult
 from models.loader import build_model
-from runtime.config import ExperimentConfig, load_experiment_config, load_model_config, resolved_config_values
+from runtime.config import (
+    ExperimentConfig,
+    apply_cli_overrides,
+    cli_overrides_as_nested,
+    cli_overrides_from_namespace,
+    load_experiment_config,
+    load_model_config,
+    resolved_config_values,
+)
 from runtime.environment import collect_environment
 from runtime.paths import project_root_from_config, resolve_output_root, run_directory
 from runtime.run_info import utc_now, write_json, write_yaml
@@ -67,22 +74,34 @@ def _write_evaluation_outputs(
     test: EvaluationResult,
     *,
     save_predictions: bool,
+    split: str = "both",
 ) -> None:
-    write_json(output_dir / "metrics_validation.json", validation.metrics)
-    for horizon, metrics in test.metrics["by_horizon"].items():
-        write_json(output_dir / f"metrics_test_h{horizon}.json", metrics)
+    if split in {"validation", "both"}:
+        write_json(output_dir / "metrics_validation.json", validation.metrics)
+    if split in {"test", "both"}:
+        for horizon, metrics in test.metrics["by_horizon"].items():
+            write_json(output_dir / f"metrics_test_h{horizon}.json", metrics)
     if save_predictions:
-        np.savez(
-            output_dir / "predictions.npz",
-            validation_prediction_kw=validation.prediction_kw,
-            validation_target_kw=validation.target_kw,
-            validation_target_mask=validation.target_mask,
-            validation_starts=validation.starts,
-            test_prediction_kw=test.prediction_kw,
-            test_target_kw=test.target_kw,
-            test_target_mask=test.target_mask,
-            test_starts=test.starts,
-        )
+        values: dict[str, Any] = {}
+        if split in {"validation", "both"}:
+            values.update(
+                {
+                    "validation_prediction_kw": validation.prediction_kw,
+                    "validation_target_kw": validation.target_kw,
+                    "validation_target_mask": validation.target_mask,
+                    "validation_starts": validation.starts,
+                }
+            )
+        if split in {"test", "both"}:
+            values.update(
+                {
+                    "test_prediction_kw": test.prediction_kw,
+                    "test_target_kw": test.target_kw,
+                    "test_target_mask": test.target_mask,
+                    "test_starts": test.starts,
+                }
+            )
+        np.savez(output_dir / "predictions.npz", **values)
 
 
 def _prepare(config: ExperimentConfig, project_root: Path):
@@ -114,6 +133,87 @@ def _checkpoint_path(value: str | Path) -> Path:
     return path
 
 
+_CHECKPOINT_CONFIG_PATHS: tuple[tuple[str, ...], ...] = (
+    ("data", "feature_columns"),
+    ("data", "lookback"),
+    ("data", "max_pred_len"),
+    ("data", "num_nodes"),
+    ("data", "eval_horizons"),
+    ("data", "target_column"),
+    ("data", "mask_column"),
+    ("split", "method"),
+    ("split", "train_ratio"),
+    ("split", "val_ratio"),
+    ("split", "test_ratio"),
+    ("training", "loss"),
+)
+
+
+def _at_path(value: Mapping[str, Any], path: tuple[str, ...]) -> Any:
+    current: Any = value
+    for part in path:
+        if not isinstance(current, Mapping) or part not in current:
+            return None
+        current = current[part]
+    return current
+
+
+def _check_checkpoint_compatibility(
+    manifest: Mapping[str, Any],
+    config: ExperimentConfig,
+    model_config: Mapping[str, Any],
+    checkpoint_path: Path,
+) -> None:
+    """Reject semantic config changes before evaluating a checkpoint."""
+
+    saved_config = manifest.get("resolved_config") or manifest.get("experiment_config")
+    if not isinstance(saved_config, Mapping):
+        raise ValueError(
+            f"checkpoint {checkpoint_path} has no saved resolved experiment config; "
+            "refusing compatibility-unsafe evaluation"
+        )
+    for path in _CHECKPOINT_CONFIG_PATHS:
+        saved = _at_path(saved_config, path)
+        current = _at_path(config.values, path)
+        if saved != current:
+            dotted = ".".join(path)
+            raise ValueError(
+                f"checkpoint {checkpoint_path} is incompatible at {dotted}: "
+                f"saved={saved!r}, current={current!r}"
+            )
+    saved_model_config = manifest.get("model_config")
+    if not isinstance(saved_model_config, Mapping):
+        raise ValueError(
+            f"checkpoint {checkpoint_path} has no saved model config; "
+            "refusing compatibility-unsafe evaluation"
+        )
+    if dict(saved_model_config) != dict(model_config):
+        raise ValueError(
+            f"checkpoint {checkpoint_path} is incompatible with the current model config"
+        )
+
+
+def _print_config_summary(
+    *,
+    config_file: Path,
+    model_file: Path,
+    base_config: ExperimentConfig,
+    cli_overrides: Mapping[str, Any],
+    output_dir: Path,
+) -> None:
+    print(f"Public config: {config_file}")
+    print(f"Model config: {model_file}")
+    print("CLI overrides:")
+    if not cli_overrides:
+        print("  (none; using YAML values)")
+    else:
+        for dotted_path, new_value in cli_overrides.items():
+            path = tuple(dotted_path.split("."))
+            old_value = _at_path(base_config.values, path)
+            print(f"  {dotted_path}: {old_value!r} -> {new_value!r}")
+    print(f"Resolved config saved to: {output_dir / 'resolved_config.yaml'}")
+
+
 def run_model(
     *,
     model_name: str,
@@ -129,17 +229,39 @@ def run_model(
     smoke_max_train_updates: int | None = None,
     smoke_max_eval_batches: int | None = None,
     seed_override: int | None = None,
+    cli_overrides: Mapping[str, Any] | None = None,
+    command_argv: list[str] | None = None,
+    command_name: str = "train",
+    evaluation_split: str = "both",
 ) -> dict[str, Any]:
     config_file = Path(config_path).resolve()
     project_root = project_root_from_config(config_file)
-    config = load_experiment_config(config_file)
-    if seed_override is not None and int(seed_override) != int(config.training["seed"]):
-        raise ValueError(
-            "public training seed is frozen in configs/experiment.yaml; "
-            "the requested seed does not match it"
-        )
+    base_config = load_experiment_config(config_file)
+    effective_overrides = cli_overrides_from_namespace(cli_overrides or {})
+    config = apply_cli_overrides(base_config, effective_overrides, project_root=project_root)
+    if seed_override is not None:
+        requested_seed = effective_overrides.get("training.seed")
+        if requested_seed is not None and int(requested_seed) != int(seed_override):
+            raise ValueError("seed_override conflicts with the explicit training.seed override")
+        if requested_seed is None:
+            config = apply_cli_overrides(
+                config,
+                {"training.seed": int(seed_override)},
+                project_root=project_root,
+            )
+            effective_overrides["training.seed"] = int(seed_override)
     model_file = Path(model_config_path).resolve() if model_config_path else _default_model_config_path(config_file, model_name)
     model_config = load_model_config(model_file)
+    if evaluate_only and resume is None:
+        raise ValueError("--evaluate-only requires --resume")
+    checkpoint_file = _checkpoint_path(resume) if resume is not None else None
+    if checkpoint_file is not None:
+        _check_checkpoint_compatibility(
+            read_checkpoint_manifest(checkpoint_file),
+            config,
+            model_config,
+            checkpoint_file,
+        )
     run_name = run_id or datetime.now().strftime("run-%Y%m%d-%H%M%S")
     output_dir = run_directory(project_root, output_root, model_name, run_name)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -153,6 +275,7 @@ def run_model(
     resolved["resolved"]["model_name"] = model_name
     resolved["resolved"]["run_id"] = run_name
     resolved["resolved"]["device"] = str(selected_device)
+    resolved["resolved"]["command"] = command_name
     if smoke:
         resolved["resolved"]["smoke"] = {
             "epochs": int(smoke_epochs or 1),
@@ -160,6 +283,26 @@ def run_model(
             "max_eval_batches": int(smoke_max_eval_batches or 2),
         }
     write_yaml(output_dir / "resolved_config.yaml", resolved)
+    write_yaml(output_dir / "cli_overrides.yaml", cli_overrides_as_nested(effective_overrides))
+    write_json(
+        output_dir / "command.json",
+        {
+            "argv": list(command_argv or []),
+            "command": command_name,
+            "model": model_name,
+            "run_id": run_name,
+            "config_path": str(config_file),
+            "model_config_path": str(model_file),
+            "cli_overrides": cli_overrides_as_nested(effective_overrides),
+        },
+    )
+    _print_config_summary(
+        config_file=config_file,
+        model_file=model_file,
+        base_config=base_config,
+        cli_overrides=effective_overrides,
+        output_dir=output_dir,
+    )
     write_yaml(output_dir / "model_config.yaml", model_config)
     write_json(output_dir / "environment.json", environment)
 
@@ -180,6 +323,9 @@ def run_model(
     checkpoint_extra = {
         "config_file": str(config_file),
         "model_config_file": str(model_file),
+        "experiment_config": config.copy_values(),
+        "resolved_config": resolved,
+        "model_config": model_config,
         "parameter_count": int(parameter_count),
         "seed": int(config.training["seed"]),
     }
@@ -188,10 +334,9 @@ def run_model(
     resume_manifest: dict[str, Any] | None = None
     final_eval_limit: int | None = None
     if evaluate_only:
-        if resume is None:
-            raise ValueError("--evaluate-only requires --resume")
+        assert checkpoint_file is not None
         checkpoint_manifest = load_checkpoint(
-            _checkpoint_path(resume),
+            checkpoint_file,
             model,
             device=selected_device,
         )
@@ -206,8 +351,9 @@ def run_model(
         )
         start_epoch = 1
         if resume is not None:
+            assert checkpoint_file is not None
             resume_manifest = load_checkpoint(
-                _checkpoint_path(resume),
+                checkpoint_file,
                 trainer.model,
                 device=selected_device,
                 optimizer=trainer.optimizer,
@@ -270,6 +416,7 @@ def run_model(
         validation,
         test,
         save_predictions=bool(config.runtime["save_predictions"]),
+        split=evaluation_split,
     )
     _write_history(output_dir / "train_history.csv", train_result.history if train_result else [])
     elapsed = time.perf_counter() - started
@@ -292,6 +439,8 @@ def run_model(
         "best_epoch": checkpoint_manifest.get("epoch") if checkpoint_manifest else None,
         "best_metric": checkpoint_manifest.get("monitor") if checkpoint_manifest else None,
         "evaluate_only": bool(evaluate_only),
+        "evaluation_split": evaluation_split,
+        "cli_overrides": cli_overrides_as_nested(effective_overrides),
         "runtime_overrides": {
             "smoke": bool(smoke),
             "smoke_epochs": int(smoke_epochs or 1) if smoke else None,
@@ -312,56 +461,6 @@ def run_model(
         "run_info": run_info,
         "validation": validation.metrics,
         "test": test.metrics,
+        "selected_split": evaluation_split,
         "window_counts": windows.as_dict()["counts"],
     }
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run one PhDPaper3 forecasting model")
-    parser.add_argument("--model", required=True)
-    parser.add_argument("--config", default="configs/experiment.yaml")
-    parser.add_argument("--model-config")
-    parser.add_argument("--run-id")
-    parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
-    parser.add_argument("--output-root")
-    parser.add_argument("--resume")
-    parser.add_argument("--evaluate-only", action="store_true")
-    parser.add_argument("--smoke", action="store_true")
-    parser.add_argument("--smoke-epochs", type=int)
-    parser.add_argument("--smoke-max-train-updates", type=int)
-    parser.add_argument("--smoke-max-eval-batches", type=int)
-    return parser
-
-
-def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    if not args.smoke and any(
-        value is not None
-        for value in (args.smoke_epochs, args.smoke_max_train_updates, args.smoke_max_eval_batches)
-    ):
-        raise SystemExit("smoke-specific limits require --smoke")
-    result = run_model(
-        model_name=args.model,
-        config_path=args.config,
-        model_config_path=args.model_config,
-        run_id=args.run_id,
-        device=args.device,
-        output_root=args.output_root,
-        resume=args.resume,
-        evaluate_only=args.evaluate_only,
-        smoke=args.smoke,
-        smoke_epochs=args.smoke_epochs,
-        smoke_max_train_updates=args.smoke_max_train_updates,
-        smoke_max_eval_batches=args.smoke_max_eval_batches,
-    )
-    print(json.dumps({
-        "output_dir": result["output_dir"],
-        "validation_monitor": result["validation"]["monitor"],
-        "test_monitor": result["test"]["monitor"],
-        "window_counts": result["window_counts"],
-    }, ensure_ascii=False, indent=2))
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

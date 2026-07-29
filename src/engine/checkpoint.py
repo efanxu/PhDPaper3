@@ -40,6 +40,19 @@ def save_checkpoint(
     return payload["manifest"]
 
 
+def read_checkpoint_manifest(path: Path) -> dict[str, Any]:
+    """Read checkpoint metadata without loading weights into a model."""
+
+    if not path.is_file():
+        raise FileNotFoundError(f"checkpoint does not exist: {path}")
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    if not isinstance(payload, dict) or "state_dict" not in payload:
+        raise ValueError(f"invalid checkpoint payload: {path}")
+    manifest = dict(payload.get("manifest", {}))
+    manifest.setdefault("state_dict_hash", payload.get("state_dict_hash"))
+    return manifest
+
+
 def load_checkpoint(
     path: Path,
     model: torch.nn.Module,

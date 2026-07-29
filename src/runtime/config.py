@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 import math
@@ -287,10 +288,10 @@ def _validate_experiment(values: dict[str, Any]) -> None:
     _integer(training["seed"], "training.seed", minimum=0)
     for name in (
         "epochs",
-        "effective_batch_size",
         "train_batch_size",
         "val_batch_size",
         "test_batch_size",
+        "effective_batch_size",
         "gradient_accumulation_steps",
         "scheduler_patience",
         "early_stopping_patience",
@@ -304,7 +305,9 @@ def _validate_experiment(values: dict[str, Any]) -> None:
         raise ConfigError("training.scheduler must be reduce_on_plateau")
     if training["loss"] != "masked_score_aligned_hybrid":
         raise ConfigError("training.loss must be masked_score_aligned_hybrid")
-    _number(training["learning_rate"], "training.learning_rate", minimum=0.0)
+    learning_rate = _number(training["learning_rate"], "training.learning_rate", minimum=0.0)
+    if learning_rate <= 0.0:
+        raise ConfigError("training.learning_rate must be greater than 0")
     _number(training["weight_decay"], "training.weight_decay", minimum=0.0)
     betas = training["betas"]
     if not isinstance(betas, list) or len(betas) != 2:
@@ -374,6 +377,157 @@ def load_experiment_config(path: str | Path = "configs/experiment.yaml") -> Expe
     values = _load_mapping(source)
     _validate_experiment(values)
     return ExperimentConfig(source=source, values=values)
+
+
+def _normalise_cli_overrides(cli_overrides: Any) -> dict[tuple[str, ...], Any]:
+    """Convert a namespace or sparse mapping into YAML paths and values.
+
+    The option-to-YAML mapping is owned by ``cli.command_schema``.  Keeping
+    this conversion here means every command uses exactly the same application
+    and validation path.
+    """
+
+    from cli.command_schema import PUBLIC_OVERRIDE_BY_DEST, PUBLIC_OVERRIDE_BY_PATH
+
+    if cli_overrides is None:
+        return {}
+    if not isinstance(cli_overrides, Mapping):
+        cli_overrides = vars(cli_overrides)
+
+    result: dict[tuple[str, ...], Any] = {}
+
+    def visit(mapping: Mapping[str, Any], prefix: tuple[str, ...] = ()) -> None:
+        for raw_key, value in mapping.items():
+            key = str(raw_key)
+            path_key = ".".join((*prefix, key))
+            if not prefix and key in PUBLIC_OVERRIDE_BY_DEST:
+                spec = PUBLIC_OVERRIDE_BY_DEST[key]
+                if value is not None:
+                    result[spec.yaml_path] = deepcopy(value)
+                continue
+            if path_key in PUBLIC_OVERRIDE_BY_PATH:
+                spec = PUBLIC_OVERRIDE_BY_PATH[path_key]
+                if value is not None:
+                    result[spec.yaml_path] = deepcopy(value)
+                continue
+            if isinstance(value, Mapping):
+                visit(value, (*prefix, key))
+
+    visit(cli_overrides)
+    for path, value in list(result.items()):
+        if isinstance(value, tuple):
+            result[path] = list(value)
+    return result
+
+
+def cli_overrides_from_namespace(namespace: Any) -> dict[str, Any]:
+    """Return explicit CLI overrides as dotted YAML paths."""
+
+    return {
+        ".".join(path): value
+        for path, value in _normalise_cli_overrides(namespace).items()
+    }
+
+
+def cli_overrides_as_nested(cli_overrides: Any) -> dict[str, Any]:
+    """Return only explicit overrides in the sparse nested YAML shape."""
+
+    nested: dict[str, Any] = {}
+    for path, value in _normalise_cli_overrides(cli_overrides).items():
+        current = nested
+        for part in path[:-1]:
+            child = current.setdefault(part, {})
+            if not isinstance(child, dict):
+                raise ConfigError(f"conflicting CLI override path: {'.'.join(path)}")
+            current = child
+        current[path[-1]] = deepcopy(value)
+    return nested
+
+
+def _validate_feature_columns_against_dataset(
+    values: dict[str, Any],
+    *,
+    project_root: Path,
+) -> None:
+    """Validate overridden feature names when the local parquet exists.
+
+    Config-only commands must remain usable without the private dataset.  The
+    full schema check is therefore performed opportunistically here and is
+    repeated by ``data.loader`` before data is consumed.
+    """
+
+    data = values["data"]
+    data_root = Path(data["data_root"])
+    if not data_root.is_absolute():
+        data_root = project_root / data_root
+    model_path = data_root / data["model_input_file"]
+    if not model_path.is_file():
+        return
+    try:
+        import pyarrow.parquet as parquet
+    except ImportError:
+        return
+    names = set(parquet.read_schema(model_path).names)
+    missing = sorted(set(data["feature_columns"]) - names)
+    if missing:
+        raise ConfigError(
+            "data.feature_columns contains a column missing from the model input parquet: "
+            f"{missing[0]}"
+        )
+
+
+def apply_cli_overrides(
+    experiment_config: ExperimentConfig,
+    cli_overrides: Any,
+    *,
+    project_root: Path | None = None,
+) -> ExperimentConfig:
+    """Apply explicit command-line values and validate the final config.
+
+    ``None`` means no override.  The returned object always contains a deep
+    copy, so the original YAML-derived configuration is never mutated.
+    """
+
+    if not isinstance(experiment_config, ExperimentConfig):
+        raise TypeError("experiment_config must be an ExperimentConfig")
+    values = experiment_config.copy_values()
+    normalised = _normalise_cli_overrides(cli_overrides)
+    for path, value in normalised.items():
+        current: dict[str, Any] = values
+        for part in path[:-1]:
+            child = current.get(part)
+            if not isinstance(child, dict):
+                raise ConfigError(f"invalid CLI override path: {'.'.join(path)}")
+            current = child
+        current[path[-1]] = deepcopy(value)
+
+    # effective_batch_size is a derived field in the existing YAML contract;
+    # changing the train batch must keep that invariant valid without making a
+    # second command-line synonym for it.
+    batch_path = ("training", "train_batch_size")
+    if batch_path in normalised:
+        values["training"]["effective_batch_size"] = (
+            int(values["training"]["train_batch_size"])
+            * int(values["training"]["gradient_accumulation_steps"])
+        )
+
+    _validate_experiment(values)
+    root = (project_root or experiment_config.source.parent.parent).resolve()
+    _validate_feature_columns_against_dataset(values, project_root=root)
+    return ExperimentConfig(source=experiment_config.source, values=values)
+
+
+def load_resolved_experiment_config(
+    path: str | Path = "configs/experiment.yaml",
+    cli_overrides: Any = None,
+    *,
+    project_root: Path | None = None,
+) -> tuple[ExperimentConfig, dict[str, Any]]:
+    """Load the public YAML and apply one shared set of CLI overrides."""
+
+    base = load_experiment_config(path)
+    resolved = apply_cli_overrides(base, cli_overrides, project_root=project_root)
+    return resolved, cli_overrides_from_namespace(cli_overrides)
 
 
 def load_model_config(path: str | Path) -> dict[str, Any]:

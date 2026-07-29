@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
+
+import torch
 
 from data.loader import load_data
 from data.split import chronological_split
 from data.window import build_window_index
 from models.loader import build_model
-from runtime.config import load_experiment_config, load_model_config
+from runtime.config import (
+    apply_cli_overrides,
+    cli_overrides_as_nested,
+    load_experiment_config,
+    load_model_config,
+    resolved_config_values,
+)
 from runtime.paths import project_root_from_config
 
 
@@ -16,18 +26,32 @@ def run_preflight(
     *,
     model_name: str,
     config_path: str,
-    model_config_path: str | None = None,
+    model_config_path: str | Path | None = None,
     check_data: bool = True,
+    device: str = "auto",
+    cli_overrides: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    config = load_experiment_config(config_path)
-    root = project_root_from_config(config_path)
-    model_path = model_config_path or str(root / "configs" / "models" / f"{model_name}.yaml")
+    config_file = Path(config_path).resolve()
+    root = project_root_from_config(config_file)
+    base_config = load_experiment_config(config_file)
+    config = apply_cli_overrides(
+        base_config,
+        cli_overrides,
+        project_root=root,
+    )
+    model_path = Path(model_config_path).resolve() if model_config_path else root / "configs" / "models" / f"{model_name}.yaml"
     model_config = load_model_config(model_path)
+    if device == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA was requested but is unavailable")
+    selected_device = "cuda" if device == "auto" and torch.cuda.is_available() else ("cpu" if device == "auto" else device)
     result: dict[str, Any] = {
         "passed": True,
         "model": model_name,
         "config": str(config.source),
         "model_config": str(model_path),
+        "device": selected_device,
+        "cli_overrides": cli_overrides_as_nested(cli_overrides),
+        "resolved_config": resolved_config_values(config, project_root=root),
     }
     if check_data:
         arrays, info = load_data(config, project_root=root)

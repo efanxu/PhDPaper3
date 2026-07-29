@@ -20,10 +20,12 @@ modified or imported at runtime.
 
 ## Layout and commands
 
-Read `MODEL_INTEGRATION_INDEX.md` for the fixed reading order. The main command
-is `python scripts/run_model.py`; `--smoke` is a short, explicitly recorded
-runtime limit. `scripts/check_model.py --full-shape` validates the formal tensor
-shape. `scripts/compare_repeated_runs.py --seed 2026` compares two short runs.
+Read `MODEL_INTEGRATION_INDEX.md` for the fixed reading order. All project
+tasks use `python scripts/run.py <command>`. The parser and option-to-YAML
+mapping are in `src/cli/command_schema.py`; `--smoke` is a short, explicitly
+recorded runtime limit. Full-shape validation is
+`python scripts/run.py check --full-shape`, and repeatability is
+`python scripts/run.py repeatability`.
 
 ## Verification state
 

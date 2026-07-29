@@ -5,6 +5,37 @@ model task with:
 
 > 先读取仓库根目录 MODEL_INTEGRATION_INDEX.md，并按照其中的读取顺序完成本次模型接入。
 
+## 命令行入口
+
+所有任务统一使用：
+
+```text
+scripts/run.py
+```
+
+所有命令行参数的代码定义：
+
+```text
+src/cli/command_schema.py
+```
+
+完整参数说明：
+
+```text
+docs/COMMAND_REFERENCE.md
+```
+
+查看实时帮助：
+
+```powershell
+python scripts/run.py --help
+python scripts/run.py <command> --help
+```
+
+公共参数默认读取 `configs/experiment.yaml`。用户可以通过命令行显式
+覆盖；所有覆盖必须进入 `resolved_config.yaml` 和 `cli_overrides.yaml`。
+不得从旧脚本、旧 README 或历史命令推断当前参数。
+
 ## 1. Mandatory reading order
 
 1. `configs/experiment.yaml`
@@ -91,14 +122,14 @@ Run from the repository root with the configured interpreter:
 
 ```powershell
 python -m compileall src scripts tests
-python scripts/preflight.py --model <model_name> --config configs/experiment.yaml
-python scripts/check_model.py --model <model_name> --config configs/experiment.yaml --model-config configs/models/<model_name>.yaml
-python scripts/check_model.py --model <model_name> --config configs/experiment.yaml --model-config configs/models/<model_name>.yaml --full-shape
+python scripts/run.py preflight --model <model_name> --config configs/experiment.yaml
+python scripts/run.py check --model <model_name> --config configs/experiment.yaml --model-config configs/models/<model_name>.yaml
+python scripts/run.py check --model <model_name> --config configs/experiment.yaml --model-config configs/models/<model_name>.yaml --full-shape
 python -m pytest tests/test_model_interface.py -q
 python -m pytest tests/test_full_shape.py -q
-python scripts/run_model.py --model <model_name> --config configs/experiment.yaml --model-config configs/models/<model_name>.yaml --run-id <run_id> --smoke
-python scripts/evaluate.py --model <model_name> --config configs/experiment.yaml --resume results/<model_name>/<run_id>/best.pt --run-id <eval_run_id>
-python scripts/compare_repeated_runs.py --model <model_name> --config configs/experiment.yaml --model-config configs/models/<model_name>.yaml --seed <configured_seed>
+python scripts/run.py train --model <model_name> --config configs/experiment.yaml --model-config configs/models/<model_name>.yaml --run-id <run_id> --smoke
+python scripts/run.py evaluate --model <model_name> --config configs/experiment.yaml --checkpoint results/<model_name>/<run_id>/best.pt --run-id <eval_run_id>
+python scripts/run.py repeatability --model <model_name> --config configs/experiment.yaml --model-config configs/models/<model_name>.yaml
 python -m pytest -q
 ```
 
