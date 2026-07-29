@@ -1,0 +1,413 @@
+"""Strict loading for the two formal YAML configuration layers."""
+
+from __future__ import annotations
+
+from copy import deepcopy
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+import math
+
+import yaml
+
+
+class ConfigError(ValueError):
+    """Raised when a formal configuration is missing or ambiguous."""
+
+
+@dataclass(frozen=True)
+class ExperimentConfig:
+    """Validated public experiment configuration.
+
+    The object retains the exact YAML values. Runtime-only choices such as a
+    device or a run id are deliberately kept outside this object.
+    """
+
+    source: Path
+    values: dict[str, Any]
+
+    @property
+    def data(self) -> dict[str, Any]:
+        return self.values["data"]
+
+    @property
+    def split(self) -> dict[str, Any]:
+        return self.values["split"]
+
+    @property
+    def sampling(self) -> dict[str, Any]:
+        return self.values["sampling"]
+
+    @property
+    def training(self) -> dict[str, Any]:
+        return self.values["training"]
+
+    @property
+    def evaluation(self) -> dict[str, Any]:
+        return self.values["evaluation"]
+
+    @property
+    def runtime(self) -> dict[str, Any]:
+        return self.values["runtime"]
+
+    def copy_values(self) -> dict[str, Any]:
+        return deepcopy(self.values)
+
+
+_EXPERIMENT_KEYS = {"data", "split", "sampling", "training", "evaluation", "runtime"}
+_DATA_KEYS = {
+    "dataset",
+    "data_root",
+    "model_input_file",
+    "eval_target_file",
+    "turbine_id_column",
+    "timestamp_column",
+    "target_column",
+    "input_power_column",
+    "mask_column",
+    "feature_columns",
+    "num_nodes",
+    "lookback",
+    "max_pred_len",
+    "eval_horizons",
+}
+_SPLIT_KEYS = {"method", "train_ratio", "val_ratio", "test_ratio"}
+_SAMPLING_KEYS = {
+    "train_stride",
+    "val_stride",
+    "test_stride",
+    "train_shuffle",
+    "val_shuffle",
+    "test_shuffle",
+    "loader_seed_offsets",
+    "drop_last",
+}
+_TRAINING_KEYS = {
+    "seed",
+    "epochs",
+    "effective_batch_size",
+    "train_batch_size",
+    "val_batch_size",
+    "test_batch_size",
+    "gradient_accumulation_steps",
+    "optimizer",
+    "learning_rate",
+    "weight_decay",
+    "betas",
+    "epsilon",
+    "scheduler",
+    "scheduler_factor",
+    "scheduler_patience",
+    "scheduler_threshold",
+    "scheduler_threshold_mode",
+    "scheduler_min_lr",
+    "early_stopping_patience",
+    "early_stopping_min_delta",
+    "loss",
+    "amp",
+    "amp_dtype",
+    "amp_cache_enabled",
+    "gradient_clip",
+    "gradient_clip_norm_type",
+    "gradient_clip_error_if_nonfinite",
+    "gradient_clip_foreach",
+}
+_EVALUATION_KEYS = {
+    "metrics",
+    "physical_clip",
+    "physical_min_kw",
+    "physical_max_kw",
+    "checkpoint_selection",
+}
+_CHECKPOINT_KEYS = {"split", "horizon", "metric", "mode"}
+_RUNTIME_KEYS = {"num_workers", "deterministic", "save_predictions", "pin_memory"}
+
+_MODEL_ALLOWED_KEYS = {
+    "hidden_dim",
+    "num_layers",
+    "dropout",
+    "patch_len",
+    "stride",
+    "kernel_size",
+    "graph_order",
+    "d_model",
+    "d_ff",
+    "n_heads",
+    "window",
+    "num_kernels",
+}
+_MODEL_FORBIDDEN_KEYS = {
+    "dataset",
+    "data_root",
+    "feature_columns",
+    "target_column",
+    "target",
+    "target_mask",
+    "mask_column",
+    "lookback",
+    "max_pred_len",
+    "horizon",
+    "eval_horizons",
+    "batch_size",
+    "train_batch_size",
+    "val_batch_size",
+    "test_batch_size",
+    "epochs",
+    "loss",
+    "metrics",
+    "early_stopping",
+    "early_stopping_patience",
+    "physical_clip",
+    "physical_min_kw",
+    "physical_max_kw",
+}
+
+
+def _load_mapping(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        raise FileNotFoundError(f"configuration file does not exist: {path}")
+    value = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ConfigError(f"configuration root must be a mapping: {path}")
+    return value
+
+
+def _keys(value: dict[str, Any], allowed: set[str], required: set[str], path: str) -> None:
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        raise ConfigError(f"unknown field at {path}: {unknown[0]}")
+    missing = sorted(required - set(value))
+    if missing:
+        raise ConfigError(f"missing field at {path}: {missing[0]}")
+
+
+def _string(value: Any, path: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ConfigError(f"{path} must be a non-empty string")
+    return value
+
+
+def _integer(value: Any, path: str, *, minimum: int | None = None) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ConfigError(f"{path} must be an integer")
+    if minimum is not None and value < minimum:
+        raise ConfigError(f"{path} must be >= {minimum}")
+    return value
+
+
+def _number(value: Any, path: str, *, minimum: float | None = None) -> float:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise ConfigError(f"{path} must be a number")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ConfigError(f"{path} must be finite")
+    if minimum is not None and number < minimum:
+        raise ConfigError(f"{path} must be >= {minimum}")
+    return number
+
+
+def _boolean(value: Any, path: str) -> bool:
+    if not isinstance(value, bool):
+        raise ConfigError(f"{path} must be a boolean")
+    return value
+
+
+def _validate_experiment(values: dict[str, Any]) -> None:
+    _keys(values, _EXPERIMENT_KEYS, _EXPERIMENT_KEYS, "root")
+
+    data = values["data"]
+    _keys(data, _DATA_KEYS, _DATA_KEYS, "data")
+    for field in (
+        "dataset",
+        "data_root",
+        "model_input_file",
+        "eval_target_file",
+        "turbine_id_column",
+        "timestamp_column",
+        "target_column",
+        "input_power_column",
+        "mask_column",
+    ):
+        _string(data[field], f"data.{field}")
+    features = data["feature_columns"]
+    if not isinstance(features, list) or not features or not all(
+        isinstance(item, str) and item for item in features
+    ):
+        raise ConfigError("data.feature_columns must be a non-empty list of strings")
+    if len(set(features)) != len(features):
+        raise ConfigError("data.feature_columns must not contain duplicates")
+    forbidden = {
+        data["target_column"],
+        data["mask_column"],
+        "Modification_Reason",
+        "anomaly_label",
+        "audit_label",
+    }
+    leaked = sorted(forbidden.intersection(features))
+    if leaked:
+        raise ConfigError(f"data.feature_columns contains forbidden input: {leaked[0]}")
+    _integer(data["num_nodes"], "data.num_nodes", minimum=1)
+    _integer(data["lookback"], "data.lookback", minimum=1)
+    _integer(data["max_pred_len"], "data.max_pred_len", minimum=1)
+    horizons = data["eval_horizons"]
+    if not isinstance(horizons, list) or not horizons:
+        raise ConfigError("data.eval_horizons must be a non-empty list")
+    for index, horizon in enumerate(horizons):
+        _integer(horizon, f"data.eval_horizons[{index}]", minimum=1)
+        if horizon > data["max_pred_len"]:
+            raise ConfigError("data.eval_horizons cannot exceed data.max_pred_len")
+    if horizons != sorted(set(horizons)):
+        raise ConfigError("data.eval_horizons must be sorted and unique")
+
+    split = values["split"]
+    _keys(split, _SPLIT_KEYS, _SPLIT_KEYS, "split")
+    if split["method"] != "chronological_ratio":
+        raise ConfigError("split.method must be chronological_ratio")
+    ratios = [_number(split[name], f"split.{name}", minimum=0.0) for name in (
+        "train_ratio", "val_ratio", "test_ratio"
+    )]
+    if any(ratio <= 0 for ratio in ratios) or not math.isclose(sum(ratios), 1.0, abs_tol=1e-9):
+        raise ConfigError("split ratios must be positive and sum to 1.0")
+
+    sampling = values["sampling"]
+    _keys(sampling, _SAMPLING_KEYS, _SAMPLING_KEYS, "sampling")
+    for name in ("train_stride", "val_stride", "test_stride"):
+        _integer(sampling[name], f"sampling.{name}", minimum=1)
+    for name in ("train_shuffle", "val_shuffle", "test_shuffle", "drop_last"):
+        _boolean(sampling[name], f"sampling.{name}")
+    offsets = sampling["loader_seed_offsets"]
+    if not isinstance(offsets, dict):
+        raise ConfigError("sampling.loader_seed_offsets must be a mapping")
+    _keys(offsets, {"train", "validation", "test"}, {"train", "validation", "test"}, "sampling.loader_seed_offsets")
+    for name, offset in offsets.items():
+        _integer(offset, f"sampling.loader_seed_offsets.{name}", minimum=0)
+
+    training = values["training"]
+    _keys(training, _TRAINING_KEYS, _TRAINING_KEYS, "training")
+    _integer(training["seed"], "training.seed", minimum=0)
+    for name in (
+        "epochs",
+        "effective_batch_size",
+        "train_batch_size",
+        "val_batch_size",
+        "test_batch_size",
+        "gradient_accumulation_steps",
+        "scheduler_patience",
+        "early_stopping_patience",
+    ):
+        _integer(training[name], f"training.{name}", minimum=1)
+    if training["effective_batch_size"] != training["train_batch_size"] * training["gradient_accumulation_steps"]:
+        raise ConfigError("training.effective_batch_size must equal train_batch_size * gradient_accumulation_steps")
+    if training["optimizer"] != "Adam":
+        raise ConfigError("training.optimizer must be Adam")
+    if training["scheduler"] != "reduce_on_plateau":
+        raise ConfigError("training.scheduler must be reduce_on_plateau")
+    if training["loss"] != "masked_score_aligned_hybrid":
+        raise ConfigError("training.loss must be masked_score_aligned_hybrid")
+    _number(training["learning_rate"], "training.learning_rate", minimum=0.0)
+    _number(training["weight_decay"], "training.weight_decay", minimum=0.0)
+    betas = training["betas"]
+    if not isinstance(betas, list) or len(betas) != 2:
+        raise ConfigError("training.betas must contain two numbers")
+    for index, beta in enumerate(betas):
+        value = _number(beta, f"training.betas[{index}]")
+        if not 0.0 <= value < 1.0:
+            raise ConfigError("training.betas must be in [0, 1)")
+    _number(training["epsilon"], "training.epsilon", minimum=0.0)
+    _number(training["scheduler_factor"], "training.scheduler_factor", minimum=0.0)
+    if not 0.0 < float(training["scheduler_factor"]) < 1.0:
+        raise ConfigError("training.scheduler_factor must be in (0, 1)")
+    _number(training["scheduler_threshold"], "training.scheduler_threshold", minimum=0.0)
+    if training["scheduler_threshold_mode"] not in {"rel", "abs"}:
+        raise ConfigError("training.scheduler_threshold_mode must be rel or abs")
+    _number(training["scheduler_min_lr"], "training.scheduler_min_lr", minimum=0.0)
+    _number(training["early_stopping_min_delta"], "training.early_stopping_min_delta", minimum=0.0)
+    for name in (
+        "amp",
+        "amp_cache_enabled",
+        "gradient_clip_error_if_nonfinite",
+        "gradient_clip_foreach",
+    ):
+        _boolean(training[name], f"training.{name}")
+    if training["amp_dtype"] != "float16":
+        raise ConfigError("training.amp_dtype must be float16")
+    _number(training["gradient_clip"], "training.gradient_clip", minimum=0.0)
+    _number(training["gradient_clip_norm_type"], "training.gradient_clip_norm_type", minimum=0.0)
+
+    evaluation = values["evaluation"]
+    _keys(evaluation, _EVALUATION_KEYS, _EVALUATION_KEYS, "evaluation")
+    metrics = evaluation["metrics"]
+    if not isinstance(metrics, list) or not metrics or not all(isinstance(item, str) for item in metrics):
+        raise ConfigError("evaluation.metrics must be a non-empty list of strings")
+    _boolean(evaluation["physical_clip"], "evaluation.physical_clip")
+    for name in ("physical_min_kw", "physical_max_kw"):
+        value = evaluation[name]
+        if value is not None:
+            _number(value, f"evaluation.{name}")
+    if evaluation["physical_clip"]:
+        if evaluation["physical_min_kw"] is None or evaluation["physical_max_kw"] is None:
+            raise ConfigError("physical clipping requires both bounds")
+        if evaluation["physical_min_kw"] > evaluation["physical_max_kw"]:
+            raise ConfigError("physical_min_kw must not exceed physical_max_kw")
+    selection = evaluation["checkpoint_selection"]
+    _keys(selection, _CHECKPOINT_KEYS, _CHECKPOINT_KEYS, "evaluation.checkpoint_selection")
+    if selection["split"] not in {"validation", "val"}:
+        raise ConfigError("checkpoint_selection.split must be validation")
+    if selection["horizon"] != "all" and selection["horizon"] not in data["eval_horizons"]:
+        raise ConfigError("checkpoint_selection.horizon must be all or an eval horizon")
+    if selection["metric"] not in metrics:
+        raise ConfigError("checkpoint_selection.metric must be listed in evaluation.metrics")
+    if selection["mode"] not in {"min", "max"}:
+        raise ConfigError("checkpoint_selection.mode must be min or max")
+
+    runtime = values["runtime"]
+    _keys(runtime, _RUNTIME_KEYS, _RUNTIME_KEYS, "runtime")
+    _integer(runtime["num_workers"], "runtime.num_workers", minimum=0)
+    for name in ("deterministic", "save_predictions", "pin_memory"):
+        _boolean(runtime[name], f"runtime.{name}")
+
+
+def load_experiment_config(path: str | Path = "configs/experiment.yaml") -> ExperimentConfig:
+    """Load and strictly validate the one public experiment YAML."""
+
+    source = Path(path).resolve()
+    values = _load_mapping(source)
+    _validate_experiment(values)
+    return ExperimentConfig(source=source, values=values)
+
+
+def load_model_config(path: str | Path) -> dict[str, Any]:
+    """Load structure-only parameters and reject public-parameter leakage."""
+
+    source = Path(path).resolve()
+    values = _load_mapping(source)
+    forbidden = sorted(set(values) & _MODEL_FORBIDDEN_KEYS)
+    if forbidden:
+        raise ConfigError(f"model config cannot define public parameter: {forbidden[0]}")
+    unknown = sorted(set(values) - _MODEL_ALLOWED_KEYS)
+    if unknown:
+        raise ConfigError(f"unknown model structure field: {unknown[0]}")
+    if not values:
+        raise ConfigError("model config must contain at least one structure field")
+    for name, value in values.items():
+        if name in {"hidden_dim", "num_layers", "patch_len", "stride", "kernel_size", "graph_order", "d_model", "d_ff", "n_heads", "window", "num_kernels"}:
+            _integer(value, f"model.{name}", minimum=1)
+        elif name == "dropout":
+            dropout = _number(value, "model.dropout", minimum=0.0)
+            if dropout >= 1.0:
+                raise ConfigError("model.dropout must be less than 1")
+    return values
+
+
+def resolved_config_values(config: ExperimentConfig, *, project_root: Path) -> dict[str, Any]:
+    """Return a serializable copy with non-semantic path resolution metadata."""
+
+    values = config.copy_values()
+    data_root = (project_root / values["data"]["data_root"]).resolve()
+    values["resolved"] = {
+        "config_file": str(config.source),
+        "data_root": str(data_root),
+        "model_input_file": str(data_root / values["data"]["model_input_file"]),
+        "eval_target_file": str(data_root / values["data"]["eval_target_file"]),
+    }
+    return values

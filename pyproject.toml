@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "phdpaper3"
+version = "0.1.0"
+description = "Lightweight, reproducible and fair time-series forecasting experiments"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=1.24",
+  "PyYAML>=6.0",
+  "pyarrow>=12.0",
+  "torch>=2.0",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-ra"

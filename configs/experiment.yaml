@@ -1,0 +1,97 @@
+data:
+  dataset: SDWPF
+  data_root: dataset
+  model_input_file: sdwpf_model_input_base.parquet
+  eval_target_file: sdwpf_eval_target.parquet
+  turbine_id_column: TurbID
+  timestamp_column: Tmstamp
+  target_column: Patv_raw
+  input_power_column: Patv_clean_for_input
+  mask_column: valid_target_mask
+  feature_columns:
+    - Wspd
+    - Wdir
+    - Etmp
+    - Itmp
+    - Ndir
+    - Pab1
+    - Pab2
+    - Pab3
+    - Prtv
+    - T2m
+    - Sp
+    - RelH
+    - Wspd_w
+    - Wdir_w
+    - Tp
+    - Patv_clean_for_input
+  num_nodes: 134
+  lookback: 144
+  max_pred_len: 10
+  eval_horizons: [3, 6, 10]
+
+split:
+  method: chronological_ratio
+  train_ratio: 0.8
+  val_ratio: 0.1
+  test_ratio: 0.1
+
+sampling:
+  train_stride: 6
+  val_stride: 3
+  test_stride: 1
+  train_shuffle: true
+  val_shuffle: false
+  test_shuffle: false
+  loader_seed_offsets:
+    train: 1001
+    validation: 2001
+    test: 3001
+  drop_last: false
+
+training:
+  seed: 2026
+  epochs: 20
+  effective_batch_size: 32
+  train_batch_size: 32
+  val_batch_size: 32
+  test_batch_size: 32
+  gradient_accumulation_steps: 1
+  optimizer: Adam
+  learning_rate: 0.001
+  weight_decay: 0.0
+  betas: [0.9, 0.999]
+  epsilon: 0.00000001
+  scheduler: reduce_on_plateau
+  scheduler_factor: 0.5
+  scheduler_patience: 3
+  scheduler_threshold: 0.0001
+  scheduler_threshold_mode: rel
+  scheduler_min_lr: 0.0
+  early_stopping_patience: 10
+  early_stopping_min_delta: 0.0
+  loss: masked_score_aligned_hybrid
+  amp: true
+  amp_dtype: float16
+  amp_cache_enabled: true
+  gradient_clip: 5.0
+  gradient_clip_norm_type: 2.0
+  gradient_clip_error_if_nonfinite: false
+  gradient_clip_foreach: false
+
+evaluation:
+  metrics: [MAE, RMSE, R2, SMAPE, MAPE, SDWPF Official Score, valid_target_count]
+  physical_clip: false
+  physical_min_kw: null
+  physical_max_kw: null
+  checkpoint_selection:
+    split: validation
+    horizon: all
+    metric: SDWPF Official Score
+    mode: min
+
+runtime:
+  num_workers: 0
+  deterministic: true
+  save_predictions: true
+  pin_memory: false
