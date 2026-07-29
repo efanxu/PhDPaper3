@@ -51,6 +51,33 @@ def seed_worker(worker_id: int) -> None:
     random.seed(worker_seed)
 
 
+def capture_rng_state() -> dict[str, Any]:
+    """Capture every process RNG used by the shared training path."""
+
+    return {
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
+        "torch_cpu": torch.get_rng_state(),
+        "torch_cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+    }
+
+
+def restore_rng_state(state: dict[str, Any]) -> None:
+    """Restore RNG state after model/optimizer construction is complete."""
+
+    if not isinstance(state, dict):
+        raise ValueError("checkpoint RNG state must be a mapping")
+    random.setstate(state["python"])
+    numpy_state = state["numpy"]
+    if isinstance(numpy_state, list):
+        numpy_state = tuple(numpy_state)
+    np.random.set_state(numpy_state)
+    torch.set_rng_state(state["torch_cpu"])
+    cuda_state = state.get("torch_cuda")
+    if cuda_state is not None and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all(cuda_state)
+
+
 def state_dict_hash(state_dict: dict[str, torch.Tensor]) -> str:
     digest = hashlib.sha256()
     for name in sorted(state_dict):

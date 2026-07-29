@@ -1,140 +1,74 @@
 # Model integration index
 
-This is the only navigation entry for adding or auditing a model. Start every
-model task with:
+This is the navigation entry for adding a model. The public command and all
+shared experiment behavior remain in `scripts/run.py` and the modules below.
 
-> 先读取仓库根目录 MODEL_INTEGRATION_INDEX.md，并按照其中的读取顺序完成本次模型接入。
-
-## 命令行入口
-
-所有任务统一使用：
-
-```text
-scripts/run.py
-```
-
-所有命令行参数的代码定义：
-
-```text
-src/cli/command_schema.py
-```
-
-完整参数说明：
-
-```text
-docs/COMMAND_REFERENCE.md
-```
-
-查看实时帮助：
-
-```powershell
-python scripts/run.py --help
-python scripts/run.py <command> --help
-```
-
-公共参数默认读取 `configs/experiment.yaml`。用户可以通过命令行显式
-覆盖；所有覆盖必须进入 `resolved_config.yaml` 和 `cli_overrides.yaml`。
-不得从旧脚本、旧 README 或历史命令推断当前参数。
-
-## 1. Mandatory reading order
+## Read these shared files
 
 1. `configs/experiment.yaml`
-2. `src/runtime/config.py`
-3. `src/data/loader.py`
-4. `src/data/split.py`
-5. `src/data/normalization.py`
-6. `src/data/window.py`
-7. `src/data/dataset.py`
-8. `src/data/dataloader.py`
-9. `src/engine/reproducibility.py`
-10. `src/engine/trainer.py`
-11. `src/engine/losses.py`
-12. `src/engine/metrics.py`
-13. `src/engine/evaluator.py`
-14. `src/models/base.py`
-15. `src/models/loader.py`
-16. `tests/test_model_interface.py`
-17. `tests/test_full_shape.py`
-18. `tests/test_repeatability.py`
+2. `configs/models/<model_name>.yaml`
+3. `src/cli/command_schema.py`
+4. `src/runtime/config.py`
+5. `src/data/loader.py`
+6. `src/data/split.py`
+7. `src/data/normalization.py`
+8. `src/data/window.py`
+9. `src/data/dataset.py`
+10. `src/data/dataloader.py`
+11. `src/engine/reproducibility.py`
+12. `src/engine/checkpoint.py`
+13. `src/engine/trainer.py`
+14. `src/engine/evaluator.py`
+15. `src/runtime/performance.py`
+16. `src/models/base.py`
+17. `src/models/loader.py`
+18. `src/cli/orchestrator.py`
 
-Read these only when the model needs the corresponding approved resource:
+Use `src/resources/graph.py` or `src/resources/static_features.py` only when
+the model genuinely needs the corresponding shared resource.
 
-- graph model: `src/resources/graph.py`
-- static features: `src/resources/static_features.py`
+## Add only the model implementation
 
-## 2. Sources of truth
+Create:
 
-Public experiment parameters have one source: `configs/experiment.yaml`.
+```text
+src/models/<model_name>/model.py
+configs/models/<model_name>.yaml
+```
 
-Model structure parameters have one source:
-`configs/models/<model_name>.yaml`.
-
-The loader rejects unknown fields and rejects public fairness parameters inside
-model YAML. Runtime metadata, the resolved YAML copy and Git commit are
-recorded automatically in a run directory; they are not a second protocol.
-
-## 3. Where a model goes
-
-Implement the model in:
-`src/models/<model_name>/model.py`.
-
-Put its structure values in:
-`configs/models/<model_name>.yaml`.
-
-The implementation must expose:
+The model module must expose:
 
 ```python
 def build_model(model_config, data_info):
     ...
 ```
 
-The public input is `models.base.ModelInput`; labels and masks belong only to
-the Trainer, loss and Evaluator. The standard output layout is the legacy
-formal layout `(batch, nodes, horizon)`. A model must subclass
-`ForecastModel`, validate its output shape, and keep model-specific logic out
-of the data and training modules.
+The returned object subclasses `models.base.ForecastModel`, consumes
+`models.base.ModelInput`, and returns `(batch, nodes, horizon)`. Labels and
+masks stay in the shared Trainer and Evaluator.
 
-An Adapter is not the default. Add the smallest local conversion only when a
-model cannot consume `ModelInput` directly; never duplicate windowing,
-DataLoader, loss, Trainer, evaluator or checkpoint selection.
+## Automatically inherited behavior
 
-## 4. Default modification boundary
+The shared path provides single-model training, multi-model subprocess
+isolation, smoke/full-shape checks, epoch checkpoints, compatible resume,
+archive-and-replace, ID-suffix reruns, evaluate-only runs, repeatability,
+training and inference timing, throughput, parameter counts, GPU memory
+measurement and CSV aggregation. New model code must not implement its own
+CLI, Trainer, Evaluator, checkpoint format, resume logic, result directory or
+subprocess scheduler.
 
-An ordinary model integration must not modify:
+The model YAML is structure-only. Public data, split, loss, optimizer, batch
+and evaluation semantics come from `configs/experiment.yaml` and explicit
+command-line overrides.
 
-- split or normalization;
-- window generation, target or mask semantics;
-- loss, metrics or evaluator;
-- early stopping or checkpoint selection;
-- the formal public YAML.
+## Commands
 
-If a shared implementation appears wrong, report the evidence first. Do not
-silently change it to make one model run.
-
-Do not introduce StudySpec, ModelSpec, model revisions, source closures,
-runtime profiles, readiness, certificates, anchors, campaigns, membership
-manifests, attestations, manual evidence indexes or model-specific protocol
-documents.
-
-## 5. Required checks
-
-Run from the repository root with the configured interpreter:
+Use the generated reference for current options:
 
 ```powershell
-python -m compileall src scripts tests
-python scripts/run.py preflight --model <model_name> --config configs/experiment.yaml
-python scripts/run.py check --model <model_name> --config configs/experiment.yaml --model-config configs/models/<model_name>.yaml
-python scripts/run.py check --model <model_name> --config configs/experiment.yaml --model-config configs/models/<model_name>.yaml --full-shape
-python -m pytest tests/test_model_interface.py -q
-python -m pytest tests/test_full_shape.py -q
-python scripts/run.py train --model <model_name> --config configs/experiment.yaml --model-config configs/models/<model_name>.yaml --run-id <run_id> --smoke
-python scripts/run.py evaluate --model <model_name> --config configs/experiment.yaml --checkpoint results/<model_name>/<run_id>/best.pt --run-id <eval_run_id>
-python scripts/run.py repeatability --model <model_name> --config configs/experiment.yaml --model-config configs/models/<model_name>.yaml
-python -m pytest -q
+python scripts\generate_command_reference.py
+python scripts\generate_command_reference.py --check
 ```
 
-The full-shape check must use the formal batch, lookback, node, feature and
-horizon values. A regular smoke may use explicit smoke limits and must be
-reported separately. A successful integration leaves `best.pt`, `last.pt`,
-resolved configuration, evaluation metrics and ordinary run metadata under
-`results/<model_name>/<run_id>/`; generated results are ignored by Git.
+Do not reintroduce StudySpec, ModelSpec, certificates, declarations,
+manifests, readiness protocols or model-specific experiment documents.

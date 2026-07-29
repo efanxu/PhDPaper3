@@ -20,8 +20,8 @@ OUTPUT_PATH = ROOT / "docs" / "COMMAND_REFERENCE.md"
 _EXAMPLES = {
     "train": """```powershell
 python scripts\\run.py train `
-  --model node_shared_lstm `
-  --run-id node_shared_lstm_seed2026 `
+  --model node_shared_lstm dlinear patchtst `
+  --run-id benchmark_seed2026 `
   --device cuda
 ```""",
     "evaluate": """```powershell
@@ -47,15 +47,9 @@ python scripts\\run.py preflight `
     "repeatability": """```powershell
 python scripts\\run.py repeatability `
   --model node_shared_lstm `
+  --run-id repeatability_seed2026 `
   --device cuda `
-  --batch-size 4
-```""",
-    "batch": """```powershell
-python scripts\\run.py batch `
-  --models node_shared_lstm `
-  --device cuda `
-  --smoke `
-  --continue-on-error
+  --prediction-atol 1e-6
 ```""",
 }
 
@@ -104,7 +98,7 @@ def _default_text(action) -> str:
 
 def _yaml_path(action) -> str:
     spec = PUBLIC_OVERRIDE_BY_DEST.get(action.dest)
-    return ".".join(spec.yaml_path) if spec is not None else "—"
+    return "; ".join(".".join(path) for path in spec.yaml_paths) if spec is not None else "—"
 
 
 def _action_row(action, group_title: str) -> str:
@@ -140,7 +134,7 @@ def render_reference() -> str:
         "configs/models/<model>.yaml < 允许的模型专属命令行覆盖",
         "```",
         "",
-        "训练或评估结果目录至少包含 `resolved_config.yaml`、`cli_overrides.yaml` 和 `command.json`。",
+        "训练或评估结果目录至少包含 `resolved_config.yaml`、`cli_overrides.yaml` 和 `command.json`；训练多模型时每个模型由独立 Python 子进程运行。",
         "",
         "## 实时帮助",
         "",

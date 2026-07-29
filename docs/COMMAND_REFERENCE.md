@@ -16,7 +16,7 @@
 configs/models/<model>.yaml < 允许的模型专属命令行覆盖
 ```
 
-训练或评估结果目录至少包含 `resolved_config.yaml`、`cli_overrides.yaml` 和 `command.json`。
+训练或评估结果目录至少包含 `resolved_config.yaml`、`cli_overrides.yaml` 和 `command.json`；训练多模型时每个模型由独立 Python 子进程运行。
 
 ## 实时帮助
 
@@ -27,20 +27,21 @@ python scripts\run.py <command> --help
 
 ## `train`
 
-训练一个 PhDPaper3 预测模型。
+训练一个或多个 PhDPaper3 预测模型；每个模型在独立 Python 子进程中运行。
 
 ### 参数
 
 | 参数 | 分组 | 必填 | 类型 | 默认行为 | YAML 字段 | 公共覆盖 | 说明 |
 |---|---|---:|---|---|---|---:|---|
-| `--model` | 任务定位 | 是 | str | 无 | `—` | 否 | 模型目录名，例如 node_shared_lstm |
-| `--run-id` | 任务定位 | 否 | str | 无 | `—` | 否 | 本次运行目录名；训练和评估未提供时自动生成 |
+| `--model` | 任务定位 | 是 | list[str] | 无 | `—` | 否 | 模型目录名；可一次指定一个或多个模型 |
+| `--run-id` | 任务定位 | 否 | str | 无 | `—` | 否 | 本次运行的共同实验 ID |
 | `--device` | 任务定位 | 否 | str | 'auto' | `—` | 否 | 运行设备；auto 根据 CUDA 可用性选择 |
 | `--output-root` | 任务定位 | 否 | path | 无 | `—` | 否 | 结果根目录；未提供时使用项目 results/ |
 | `--config` | 配置文件 | 否 | path | configs\experiment.yaml | `—` | 否 | 公共实验配置；默认 configs/experiment.yaml |
-| `--model-config` | 配置文件 | 否 | path | 无 | `—` | 否 | 模型结构配置；未提供时自动使用 configs/models/<model>.yaml |
+| `--model-config` | 配置文件 | 否 | path | 无 | `—` | 否 | 单模型结构配置；多模型时自动读取 configs/models/<model>.yaml |
 | `--lookback` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | int | 未提供：继承 configs/experiment.yaml | `data.lookback` | 是 | 覆盖 data.lookback；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
 | `--batch-size` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | int | 未提供：继承 configs/experiment.yaml | `training.train_batch_size` | 是 | 覆盖 training.train_batch_size；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
+| `--eval-batch-size` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | int | 未提供：继承 configs/experiment.yaml | `training.val_batch_size; training.test_batch_size` | 是 | 同时覆盖 training.val_batch_size 和 training.test_batch_size；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
 | `--epochs` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | int | 未提供：继承 configs/experiment.yaml | `training.epochs` | 是 | 覆盖 training.epochs；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
 | `--loss` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | str | 未提供：继承 configs/experiment.yaml | `training.loss` | 是 | 覆盖 training.loss；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
 | `--learning-rate` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | float | 未提供：继承 configs/experiment.yaml | `training.learning_rate` | 是 | 覆盖 training.learning_rate；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
@@ -52,7 +53,10 @@ python scripts\run.py <command> --help
 | `--seed` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | int | 未提供：继承 configs/experiment.yaml | `training.seed` | 是 | 覆盖 training.seed；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
 | `--num-workers` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | int | 未提供：继承 configs/experiment.yaml | `runtime.num_workers` | 是 | 覆盖 runtime.num_workers；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
 | `--amp, --no-amp` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | bool | 未提供：继承 configs/experiment.yaml | `training.amp` | 是 | 显式启用或禁用 training.amp（使用 --amp/--no-amp）；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
-| `--resume` | 训练任务专属参数 | 否 | path | 无 | `—` | 否 | 从已有 checkpoint 继续训练 |
+| `--resume` | 运行模式 | 否 | flag | 未提供时关闭 | `—` | 否 | 从每个模型目录的有效 last.pt 继续运行 |
+| `--overwrite` | 运行模式 | 否 | flag | 未提供时关闭 | `—` | 否 | 先归档旧结果，再使用原 ID 重新运行 |
+| `--id-suffix` | 运行模式 | 否 | str | 无 | `—` | 否 | 追加安全后缀，例如 rerun1；生成 <run-id>__rerun1 |
+| `--fail-fast` | 训练任务专属参数 | 否 | flag | 未提供时关闭 | `—` | 否 | 第一个模型失败后立即停止后续模型 |
 | `--smoke` | 训练任务专属参数 | 否 | flag | 未提供时关闭 | `—` | 否 | 执行明确限制的短训练 |
 | `--smoke-epochs` | 训练任务专属参数 | 否 | int | 无 | `—` | 否 | --smoke 的 epoch 上限 |
 | `--smoke-max-train-updates` | 训练任务专属参数 | 否 | int | 无 | `—` | 否 | --smoke 的训练更新上限 |
@@ -62,8 +66,8 @@ python scripts\run.py <command> --help
 
 ```powershell
 python scripts\run.py train `
-  --model node_shared_lstm `
-  --run-id node_shared_lstm_seed2026 `
+  --model node_shared_lstm dlinear patchtst `
+  --run-id benchmark_seed2026 `
   --device cuda
 ```
 
@@ -75,14 +79,14 @@ python scripts\run.py train `
 
 | 参数 | 分组 | 必填 | 类型 | 默认行为 | YAML 字段 | 公共覆盖 | 说明 |
 |---|---|---:|---|---|---|---:|---|
-| `--model` | 任务定位 | 是 | str | 无 | `—` | 否 | 模型目录名，例如 node_shared_lstm |
-| `--run-id` | 任务定位 | 否 | str | 无 | `—` | 否 | 本次运行目录名；训练和评估未提供时自动生成 |
+| `--model` | 任务定位 | 是 | str | 无 | `—` | 否 | 模型目录名 |
+| `--run-id` | 任务定位 | 否 | str | 无 | `—` | 否 | 本次运行的共同实验 ID |
 | `--device` | 任务定位 | 否 | str | 'auto' | `—` | 否 | 运行设备；auto 根据 CUDA 可用性选择 |
 | `--output-root` | 任务定位 | 否 | path | 无 | `—` | 否 | 结果根目录；未提供时使用项目 results/ |
 | `--config` | 配置文件 | 否 | path | configs\experiment.yaml | `—` | 否 | 公共实验配置；默认 configs/experiment.yaml |
-| `--model-config` | 配置文件 | 否 | path | 无 | `—` | 否 | 模型结构配置；未提供时自动使用 configs/models/<model>.yaml |
+| `--model-config` | 配置文件 | 否 | path | 无 | `—` | 否 | 单模型结构配置；多模型时自动读取 configs/models/<model>.yaml |
 | `--lookback` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | int | 未提供：继承 configs/experiment.yaml | `data.lookback` | 是 | 覆盖 data.lookback；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
-| `--batch-size` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | int | 未提供：继承 configs/experiment.yaml | `training.train_batch_size` | 是 | 覆盖 training.train_batch_size；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
+| `--eval-batch-size` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | int | 未提供：继承 configs/experiment.yaml | `training.val_batch_size; training.test_batch_size` | 是 | 同时覆盖 training.val_batch_size 和 training.test_batch_size；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
 | `--loss` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | str | 未提供：继承 configs/experiment.yaml | `training.loss` | 是 | 覆盖 training.loss；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
 | `--train-ratio` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | float | 未提供：继承 configs/experiment.yaml | `split.train_ratio` | 是 | 覆盖 split.train_ratio；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
 | `--val-ratio` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | float | 未提供：继承 configs/experiment.yaml | `split.val_ratio` | 是 | 覆盖 split.val_ratio；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
@@ -90,7 +94,8 @@ python scripts\run.py train `
 | `--eval-horizons` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | list[int] | 未提供：继承 configs/experiment.yaml | `data.eval_horizons` | 是 | 覆盖 data.eval_horizons（可传多个整数）；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
 | `--feature-columns` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | list[str] | 未提供：继承 configs/experiment.yaml | `data.feature_columns` | 是 | 覆盖 data.feature_columns（可传多个列名）；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
 | `--num-workers` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | int | 未提供：继承 configs/experiment.yaml | `runtime.num_workers` | 是 | 覆盖 runtime.num_workers；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
-| `--checkpoint` | 评估任务专属参数 | 是 | path | 无 | `—` | 否 | 待评估的 checkpoint 或其目录 |
+| `--amp, --no-amp` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | bool | 未提供：继承 configs/experiment.yaml | `training.amp` | 是 | 显式启用或禁用 training.amp（使用 --amp/--no-amp）；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
+| `--checkpoint` | 评估任务专属参数 | 否 | path | 无 | `—` | 否 | 待评估的 checkpoint 或其目录；省略时从 --run-id 自动查找 |
 | `--split` | 评估任务专属参数 | 否 | str | 'both' | `—` | 否 | 输出哪个数据划分的评估结果；默认 both |
 
 ### 示例
@@ -105,18 +110,19 @@ python scripts\run.py evaluate `
 
 ## `check`
 
-构造模型并执行 forward/backward 形状检查。
+每个模型在独立 Python 子进程中执行 forward/backward 形状检查。
 
 ### 参数
 
 | 参数 | 分组 | 必填 | 类型 | 默认行为 | YAML 字段 | 公共覆盖 | 说明 |
 |---|---|---:|---|---|---|---:|---|
-| `--model` | 任务定位 | 是 | str | 无 | `—` | 否 | 模型目录名，例如 node_shared_lstm |
+| `--model` | 任务定位 | 是 | list[str] | 无 | `—` | 否 | 模型目录名；可一次指定一个或多个模型 |
 | `--device` | 任务定位 | 否 | str | 'auto' | `—` | 否 | 运行设备；auto 根据 CUDA 可用性选择 |
 | `--config` | 配置文件 | 否 | path | configs\experiment.yaml | `—` | 否 | 公共实验配置；默认 configs/experiment.yaml |
-| `--model-config` | 配置文件 | 否 | path | 无 | `—` | 否 | 模型结构配置；未提供时自动使用 configs/models/<model>.yaml |
+| `--model-config` | 配置文件 | 否 | path | 无 | `—` | 否 | 单模型结构配置；多模型时自动读取 configs/models/<model>.yaml |
 | `--lookback` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | int | 未提供：继承 configs/experiment.yaml | `data.lookback` | 是 | 覆盖 data.lookback；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
 | `--batch-size` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | int | 未提供：继承 configs/experiment.yaml | `training.train_batch_size` | 是 | 覆盖 training.train_batch_size；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
+| `--eval-batch-size` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | int | 未提供：继承 configs/experiment.yaml | `training.val_batch_size; training.test_batch_size` | 是 | 同时覆盖 training.val_batch_size 和 training.test_batch_size；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
 | `--eval-horizons` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | list[int] | 未提供：继承 configs/experiment.yaml | `data.eval_horizons` | 是 | 覆盖 data.eval_horizons（可传多个整数）；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
 | `--feature-columns` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | list[str] | 未提供：继承 configs/experiment.yaml | `data.feature_columns` | 是 | 覆盖 data.feature_columns（可传多个列名）；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
 | `--full-shape` | 检查任务专属参数 | 否 | flag | 未提供时关闭 | `—` | 否 | 使用 YAML/覆盖后的正式 batch size |
@@ -133,18 +139,19 @@ python scripts\run.py check `
 
 ## `preflight`
 
-在正式训练前验证最终配置、数据文件和模型结构。
+每个模型在独立 Python 子进程中验证最终配置、数据文件和模型结构。
 
 ### 参数
 
 | 参数 | 分组 | 必填 | 类型 | 默认行为 | YAML 字段 | 公共覆盖 | 说明 |
 |---|---|---:|---|---|---|---:|---|
-| `--model` | 任务定位 | 是 | str | 无 | `—` | 否 | 模型目录名，例如 node_shared_lstm |
+| `--model` | 任务定位 | 是 | list[str] | 无 | `—` | 否 | 模型目录名；可一次指定一个或多个模型 |
 | `--device` | 任务定位 | 否 | str | 'auto' | `—` | 否 | 运行设备；auto 根据 CUDA 可用性选择 |
 | `--config` | 配置文件 | 否 | path | configs\experiment.yaml | `—` | 否 | 公共实验配置；默认 configs/experiment.yaml |
-| `--model-config` | 配置文件 | 否 | path | 无 | `—` | 否 | 模型结构配置；未提供时自动使用 configs/models/<model>.yaml |
+| `--model-config` | 配置文件 | 否 | path | 无 | `—` | 否 | 单模型结构配置；多模型时自动读取 configs/models/<model>.yaml |
 | `--lookback` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | int | 未提供：继承 configs/experiment.yaml | `data.lookback` | 是 | 覆盖 data.lookback；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
 | `--batch-size` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | int | 未提供：继承 configs/experiment.yaml | `training.train_batch_size` | 是 | 覆盖 training.train_batch_size；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
+| `--eval-batch-size` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | int | 未提供：继承 configs/experiment.yaml | `training.val_batch_size; training.test_batch_size` | 是 | 同时覆盖 training.val_batch_size 和 training.test_batch_size；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
 | `--eval-horizons` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | list[int] | 未提供：继承 configs/experiment.yaml | `data.eval_horizons` | 是 | 覆盖 data.eval_horizons（可传多个整数）；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
 | `--feature-columns` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | list[str] | 未提供：继承 configs/experiment.yaml | `data.feature_columns` | 是 | 覆盖 data.feature_columns（可传多个列名）；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
 | `--no-data` | 预检任务专属参数 | 否 | flag | 未提供时关闭 | `—` | 否 | 只检查配置和模型，不读取正式 parquet |
@@ -160,19 +167,21 @@ python scripts\run.py preflight `
 
 ## `repeatability`
 
-重复两次明确限制的短运行；两次使用完全相同的命令行覆盖。
+每个模型由两个完全独立的 Python 子进程完成 A/B 短运行。
 
 ### 参数
 
 | 参数 | 分组 | 必填 | 类型 | 默认行为 | YAML 字段 | 公共覆盖 | 说明 |
 |---|---|---:|---|---|---|---:|---|
-| `--model` | 任务定位 | 是 | str | 无 | `—` | 否 | 模型目录名，例如 node_shared_lstm |
+| `--model` | 任务定位 | 是 | list[str] | 无 | `—` | 否 | 模型目录名；可一次指定一个或多个模型 |
+| `--run-id` | 任务定位 | 否 | str | 无 | `—` | 否 | 本次运行的共同实验 ID |
 | `--device` | 任务定位 | 否 | str | 'auto' | `—` | 否 | 运行设备；auto 根据 CUDA 可用性选择 |
 | `--output-root` | 任务定位 | 否 | path | 无 | `—` | 否 | 结果根目录；未提供时使用项目 results/ |
 | `--config` | 配置文件 | 否 | path | configs\experiment.yaml | `—` | 否 | 公共实验配置；默认 configs/experiment.yaml |
-| `--model-config` | 配置文件 | 否 | path | 无 | `—` | 否 | 模型结构配置；未提供时自动使用 configs/models/<model>.yaml |
+| `--model-config` | 配置文件 | 否 | path | 无 | `—` | 否 | 单模型结构配置；多模型时自动读取 configs/models/<model>.yaml |
 | `--lookback` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | int | 未提供：继承 configs/experiment.yaml | `data.lookback` | 是 | 覆盖 data.lookback；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
 | `--batch-size` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | int | 未提供：继承 configs/experiment.yaml | `training.train_batch_size` | 是 | 覆盖 training.train_batch_size；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
+| `--eval-batch-size` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | int | 未提供：继承 configs/experiment.yaml | `training.val_batch_size; training.test_batch_size` | 是 | 同时覆盖 training.val_batch_size 和 training.test_batch_size；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
 | `--epochs` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | int | 未提供：继承 configs/experiment.yaml | `training.epochs` | 是 | 覆盖 training.epochs；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
 | `--loss` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | str | 未提供：继承 configs/experiment.yaml | `training.loss` | 是 | 覆盖 training.loss；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
 | `--learning-rate` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | float | 未提供：继承 configs/experiment.yaml | `training.learning_rate` | 是 | 覆盖 training.learning_rate；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
@@ -184,6 +193,8 @@ python scripts\run.py preflight `
 | `--seed` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | int | 未提供：继承 configs/experiment.yaml | `training.seed` | 是 | 覆盖 training.seed；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
 | `--num-workers` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | int | 未提供：继承 configs/experiment.yaml | `runtime.num_workers` | 是 | 覆盖 runtime.num_workers；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
 | `--amp, --no-amp` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | bool | 未提供：继承 configs/experiment.yaml | `training.amp` | 是 | 显式启用或禁用 training.amp（使用 --amp/--no-amp）；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
+| `--overwrite` | 运行模式 | 否 | flag | 未提供时关闭 | `—` | 否 | 先归档旧结果，再使用原 ID 重新运行 |
+| `--id-suffix` | 运行模式 | 否 | str | 无 | `—` | 否 | 追加安全后缀，例如 rerun1；生成 <run-id>__rerun1 |
 | `--prediction-atol` | 重复性任务专属参数 | 否 | float | 1e-06 | `—` | 否 | 预测数组允许的最大绝对误差，默认 1e-6 |
 | `--metric-atol` | 重复性任务专属参数 | 否 | float | 0.0 | `—` | 否 | 指标允许的最大绝对误差，默认 0 |
 
@@ -192,51 +203,9 @@ python scripts\run.py preflight `
 ```powershell
 python scripts\run.py repeatability `
   --model node_shared_lstm `
+  --run-id repeatability_seed2026 `
   --device cuda `
-  --batch-size 4
-```
-
-## `batch`
-
-按同一份公共配置和同一组命令行覆盖运行多个模型。
-
-### 参数
-
-| 参数 | 分组 | 必填 | 类型 | 默认行为 | YAML 字段 | 公共覆盖 | 说明 |
-|---|---|---:|---|---|---|---:|---|
-| `--models` | 任务定位 | 否 | list[str] | ['node_shared_lstm'] | `—` | 否 | 模型名称列表；默认 node_shared_lstm |
-| `--device` | 任务定位 | 否 | str | 'auto' | `—` | 否 | 运行设备；auto 根据 CUDA 可用性选择 |
-| `--output-root` | 任务定位 | 否 | path | 无 | `—` | 否 | 结果根目录；未提供时使用项目 results/ |
-| `--config` | 配置文件 | 否 | path | configs\experiment.yaml | `—` | 否 | 公共实验配置；默认 configs/experiment.yaml |
-| `--model-config` | 配置文件 | 否 | path | 无 | `—` | 否 | 模型结构配置；未提供时自动使用 configs/models/<model>.yaml |
-| `--lookback` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | int | 未提供：继承 configs/experiment.yaml | `data.lookback` | 是 | 覆盖 data.lookback；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
-| `--batch-size` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | int | 未提供：继承 configs/experiment.yaml | `training.train_batch_size` | 是 | 覆盖 training.train_batch_size；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
-| `--epochs` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | int | 未提供：继承 configs/experiment.yaml | `training.epochs` | 是 | 覆盖 training.epochs；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
-| `--loss` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | str | 未提供：继承 configs/experiment.yaml | `training.loss` | 是 | 覆盖 training.loss；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
-| `--learning-rate` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | float | 未提供：继承 configs/experiment.yaml | `training.learning_rate` | 是 | 覆盖 training.learning_rate；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
-| `--train-ratio` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | float | 未提供：继承 configs/experiment.yaml | `split.train_ratio` | 是 | 覆盖 split.train_ratio；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
-| `--val-ratio` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | float | 未提供：继承 configs/experiment.yaml | `split.val_ratio` | 是 | 覆盖 split.val_ratio；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
-| `--test-ratio` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | float | 未提供：继承 configs/experiment.yaml | `split.test_ratio` | 是 | 覆盖 split.test_ratio；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
-| `--eval-horizons` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | list[int] | 未提供：继承 configs/experiment.yaml | `data.eval_horizons` | 是 | 覆盖 data.eval_horizons（可传多个整数）；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
-| `--feature-columns` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | list[str] | 未提供：继承 configs/experiment.yaml | `data.feature_columns` | 是 | 覆盖 data.feature_columns（可传多个列名）；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
-| `--seed` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | int | 未提供：继承 configs/experiment.yaml | `training.seed` | 是 | 覆盖 training.seed；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
-| `--num-workers` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | int | 未提供：继承 configs/experiment.yaml | `runtime.num_workers` | 是 | 覆盖 runtime.num_workers；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
-| `--amp, --no-amp` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | bool | 未提供：继承 configs/experiment.yaml | `training.amp` | 是 | 显式启用或禁用 training.amp（使用 --amp/--no-amp）；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
-| `--smoke` | 批处理任务专属参数 | 否 | flag | 未提供时关闭 | `—` | 否 | 所有模型执行明确限制的短训练 |
-| `--continue-on-error` | 批处理任务专属参数 | 否 | flag | 未提供时关闭 | `—` | 否 | 一个模型失败后继续其他模型 |
-| `--skip-completed` | 批处理任务专属参数 | 否 | flag | 未提供时关闭 | `—` | 否 | 跳过已有 best.pt 的 batch_<model> 运行 |
-| `--smoke-epochs` | 批处理任务专属参数 | 否 | int | 无 | `—` | 否 | --smoke 的 epoch 上限 |
-| `--smoke-max-train-updates` | 批处理任务专属参数 | 否 | int | 无 | `—` | 否 | --smoke 的训练更新上限 |
-| `--smoke-max-eval-batches` | 批处理任务专属参数 | 否 | int | 无 | `—` | 否 | --smoke 的评估 batch 上限 |
-
-### 示例
-
-```powershell
-python scripts\run.py batch `
-  --models node_shared_lstm `
-  --device cuda `
-  --smoke `
-  --continue-on-error
+  --prediction-atol 1e-6
 ```
 
 ## 覆盖记录

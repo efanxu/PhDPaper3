@@ -22,6 +22,18 @@ class DataLoaders:
     validation: DataLoader[ForecastBatch]
     test: DataLoader[ForecastBatch]
 
+    def generator_states(self) -> dict[str, torch.Tensor]:
+        return {
+            "train": self.train.generator.get_state(),
+            "validation": self.validation.generator.get_state(),
+            "test": self.test.generator.get_state(),
+        }
+
+    def restore_generator_states(self, states: dict[str, torch.Tensor]) -> None:
+        for name, loader in (("train", self.train), ("validation", self.validation), ("test", self.test)):
+            if name in states:
+                loader.generator.set_state(states[name])
+
 
 def _worker_init(worker_id: int) -> None:
     seed = torch.initial_seed() % (2**32)

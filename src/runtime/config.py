@@ -11,6 +11,8 @@ import math
 
 import yaml
 
+from .losses import LOSS_NAMES
+
 
 class ConfigError(ValueError):
     """Raised when a formal configuration is missing or ambiguous."""
@@ -303,8 +305,8 @@ def _validate_experiment(values: dict[str, Any]) -> None:
         raise ConfigError("training.optimizer must be Adam")
     if training["scheduler"] != "reduce_on_plateau":
         raise ConfigError("training.scheduler must be reduce_on_plateau")
-    if training["loss"] != "masked_score_aligned_hybrid":
-        raise ConfigError("training.loss must be masked_score_aligned_hybrid")
+    if training["loss"] not in LOSS_NAMES:
+        raise ConfigError(f"training.loss must be one of: {', '.join(LOSS_NAMES)}")
     learning_rate = _number(training["learning_rate"], "training.learning_rate", minimum=0.0)
     if learning_rate <= 0.0:
         raise ConfigError("training.learning_rate must be greater than 0")
@@ -414,6 +416,19 @@ def _normalise_cli_overrides(cli_overrides: Any) -> dict[tuple[str, ...], Any]:
                 visit(value, (*prefix, key))
 
     visit(cli_overrides)
+    expanded: dict[tuple[str, ...], Any] = {}
+    from cli.command_schema import PUBLIC_OVERRIDE_BY_DEST
+
+    for path, value in result.items():
+        spec = PUBLIC_OVERRIDE_BY_DEST.get(".".join(path))
+        if spec is None:
+            spec = next((candidate for candidate in PUBLIC_OVERRIDE_BY_DEST.values() if candidate.yaml_path == path), None)
+        if spec is None:
+            expanded[path] = value
+        else:
+            for target in spec.yaml_paths:
+                expanded[target] = deepcopy(value)
+    result = expanded
     for path, value in list(result.items()):
         if isinstance(value, tuple):
             result[path] = list(value)

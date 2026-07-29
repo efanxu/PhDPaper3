@@ -1,11 +1,12 @@
-"""Train/evaluate one model using the shared formal pipeline."""
+"""Run one model through the shared data, training and evaluation pipeline."""
 
 from __future__ import annotations
 
 import csv
-from datetime import datetime, timezone
+from datetime import datetime
 import json
 from pathlib import Path
+import statistics
 import time
 from collections.abc import Mapping
 from typing import Any
@@ -21,7 +22,7 @@ from data.window import build_window_index
 from engine.checkpoint import load_checkpoint, read_checkpoint_manifest
 from engine.evaluator import EvaluationResult, evaluate
 from engine.reproducibility import set_seed
-from engine.trainer import Trainer, TrainResult
+from engine.trainer import TrainResult, Trainer
 from models.loader import build_model
 from runtime.config import (
     ExperimentConfig,
@@ -50,22 +51,24 @@ def _default_model_config_path(config_path: Path, model_name: str) -> Path:
 
 
 def _write_history(path: Path, history: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
     fields = ["epoch", "train_loss", "monitor", "learning_rate", "checkpoint_selected", "train_updates"]
+    rows = []
+    for row in history:
+        rows.append(
+            {
+                "epoch": row["epoch"],
+                "train_loss": row["train_loss"],
+                "monitor": row["validation"]["monitor"],
+                "learning_rate": row["learning_rate"],
+                "checkpoint_selected": row["checkpoint_selected"],
+                "train_updates": row["train_updates"],
+            }
+        )
+    path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
-        for row in history:
-            writer.writerow(
-                {
-                    "epoch": row["epoch"],
-                    "train_loss": row["train_loss"],
-                    "monitor": row["validation"]["monitor"],
-                    "learning_rate": row["learning_rate"],
-                    "checkpoint_selected": row["checkpoint_selected"],
-                    "train_updates": row["train_updates"],
-                }
-            )
+        writer.writerows(rows)
 
 
 def _write_evaluation_outputs(
@@ -146,6 +149,18 @@ _CHECKPOINT_CONFIG_PATHS: tuple[tuple[str, ...], ...] = (
     ("split", "val_ratio"),
     ("split", "test_ratio"),
     ("training", "loss"),
+    ("training", "optimizer"),
+    ("training", "train_batch_size"),
+    ("training", "val_batch_size"),
+    ("training", "test_batch_size"),
+    ("training", "gradient_accumulation_steps"),
+    ("training", "learning_rate"),
+    ("training", "weight_decay"),
+    ("training", "betas"),
+    ("training", "epsilon"),
+    ("training", "scheduler"),
+    ("training", "amp"),
+    ("training", "seed"),
 )
 
 
@@ -163,34 +178,42 @@ def _check_checkpoint_compatibility(
     config: ExperimentConfig,
     model_config: Mapping[str, Any],
     checkpoint_path: Path,
+    *,
+    model_name: str,
+    for_resume: bool = True,
 ) -> None:
-    """Reject semantic config changes before evaluating a checkpoint."""
-
-    saved_config = manifest.get("resolved_config") or manifest.get("experiment_config")
+    if manifest.get("model") not in {None, model_name}:
+        raise ValueError(f"checkpoint {checkpoint_path} belongs to model {manifest.get('model')!r}, not {model_name!r}")
+    saved_config = (
+        manifest.get("resolved_config")
+        or manifest.get("resolved_config_identity")
+        or manifest.get("experiment_config")
+    )
     if not isinstance(saved_config, Mapping):
-        raise ValueError(
-            f"checkpoint {checkpoint_path} has no saved resolved experiment config; "
-            "refusing compatibility-unsafe evaluation"
-        )
+        raise ValueError(f"checkpoint {checkpoint_path} has no saved resolved experiment config; refusing compatibility-unsafe resume")
     for path in _CHECKPOINT_CONFIG_PATHS:
+        if not for_resume and path in {
+            ("training", "train_batch_size"),
+            ("training", "val_batch_size"),
+            ("training", "test_batch_size"),
+        }:
+            continue
         saved = _at_path(saved_config, path)
         current = _at_path(config.values, path)
         if saved != current:
             dotted = ".".join(path)
-            raise ValueError(
-                f"checkpoint {checkpoint_path} is incompatible at {dotted}: "
-                f"saved={saved!r}, current={current!r}"
-            )
-    saved_model_config = manifest.get("model_config")
+            raise ValueError(f"checkpoint {checkpoint_path} is incompatible at {dotted}: saved={saved!r}, current={current!r}")
+    saved_epoch = int(manifest.get("epoch", 0))
+    if int(config.training["epochs"]) < saved_epoch:
+        raise ValueError(f"resume epochs {config.training['epochs']} cannot be less than checkpoint epoch {saved_epoch}")
+    saved_model_config = manifest.get("model_config") or manifest.get("model_config_identity")
     if not isinstance(saved_model_config, Mapping):
-        raise ValueError(
-            f"checkpoint {checkpoint_path} has no saved model config; "
-            "refusing compatibility-unsafe evaluation"
-        )
+        raise ValueError(f"checkpoint {checkpoint_path} has no saved model config; refusing compatibility-unsafe resume")
     if dict(saved_model_config) != dict(model_config):
-        raise ValueError(
-            f"checkpoint {checkpoint_path} is incompatible with the current model config"
-        )
+        raise ValueError(f"checkpoint {checkpoint_path} is incompatible with the current model config")
+    runtime_state = manifest.get("runtime_state")
+    if runtime_state is not None and ("rng" not in runtime_state or "dataloader_generators" not in runtime_state):
+        raise ValueError(f"checkpoint {checkpoint_path} does not contain complete resume RNG/DataLoader state")
 
 
 def _print_config_summary(
@@ -208,10 +231,81 @@ def _print_config_summary(
         print("  (none; using YAML values)")
     else:
         for dotted_path, new_value in cli_overrides.items():
-            path = tuple(dotted_path.split("."))
-            old_value = _at_path(base_config.values, path)
+            old_value = _at_path(base_config.values, tuple(dotted_path.split(".")))
             print(f"  {dotted_path}: {old_value!r} -> {new_value!r}")
     print(f"Resolved config saved to: {output_dir / 'resolved_config.yaml'}")
+
+
+def _memory_mb(device: torch.device) -> tuple[float | None, float | None]:
+    if device.type != "cuda":
+        return None, None
+    return (
+        float(torch.cuda.max_memory_allocated(device)) / (1024.0 * 1024.0),
+        float(torch.cuda.max_memory_reserved(device)) / (1024.0 * 1024.0),
+    )
+
+
+def _performance(
+    *,
+    output_dir: Path,
+    environment: Mapping[str, Any],
+    data_prepare_seconds: float,
+    model_build_seconds: float,
+    checkpoint_reload_seconds: float,
+    started: float,
+    device: torch.device,
+    data_info: Any,
+    config: ExperimentConfig,
+    train_result: TrainResult | None,
+    validation: EvaluationResult,
+    test: EvaluationResult,
+    best_epoch: int | None,
+    parameter_count: int,
+    trainable_parameter_count: int,
+) -> dict[str, Any]:
+    allocated_mb, reserved_mb = _memory_mb(device)
+    best_path = output_dir / "best.pt"
+    checkpoint_size_mb = float(best_path.stat().st_size) / (1024.0 * 1024.0) if best_path.is_file() else None
+    epoch_seconds = train_result.epoch_seconds if train_result else []
+    update_seconds = train_result.update_seconds if train_result else []
+    training_wall_seconds = float(sum(epoch_seconds)) if epoch_seconds else None
+    return {
+        "parameter_count": int(parameter_count),
+        "trainable_parameter_count": int(trainable_parameter_count),
+        "checkpoint_size_mb": checkpoint_size_mb,
+        "data_prepare_seconds": float(data_prepare_seconds),
+        "model_build_seconds": float(model_build_seconds),
+        "checkpoint_reload_seconds": float(checkpoint_reload_seconds),
+        "training_wall_seconds": training_wall_seconds,
+        "mean_epoch_seconds": float(statistics.mean(epoch_seconds)) if epoch_seconds else None,
+        "median_epoch_seconds": float(statistics.median(epoch_seconds)) if epoch_seconds else None,
+        "optimizer_updates": int(len(update_seconds)) if train_result else 0,
+        "mean_update_seconds": float(statistics.mean(update_seconds)) if update_seconds else None,
+        "best_epoch": best_epoch,
+        "epochs_completed": train_result.epochs_completed if train_result else 0,
+        "validation": validation.performance,
+        "test": test.performance,
+        "peak_gpu_allocated_mb": allocated_mb,
+        "peak_gpu_reserved_mb": reserved_mb,
+        "total_wall_seconds": float(time.perf_counter() - started),
+        "device": str(device),
+        "gpu": environment.get("gpu"),
+        "pytorch": environment.get("packages", {}).get("torch"),
+        "cuda": environment.get("cuda"),
+        "amp": bool(config.training["amp"]),
+        "batch_size": {
+            "train": int(config.training["train_batch_size"]),
+            "validation": int(config.training["val_batch_size"]),
+            "test": int(config.training["test_batch_size"]),
+        },
+        "input_shape": [
+            int(config.training["test_batch_size"]),
+            int(data_info.lookback),
+            int(data_info.num_nodes),
+            int(data_info.num_features),
+        ],
+        "forecast_shape": [int(data_info.num_nodes), int(data_info.max_pred_len)],
+    }
 
 
 def run_model(
@@ -244,38 +338,27 @@ def run_model(
         if requested_seed is not None and int(requested_seed) != int(seed_override):
             raise ValueError("seed_override conflicts with the explicit training.seed override")
         if requested_seed is None:
-            config = apply_cli_overrides(
-                config,
-                {"training.seed": int(seed_override)},
-                project_root=project_root,
-            )
+            config = apply_cli_overrides(config, {"training.seed": int(seed_override)}, project_root=project_root)
             effective_overrides["training.seed"] = int(seed_override)
     model_file = Path(model_config_path).resolve() if model_config_path else _default_model_config_path(config_file, model_name)
     model_config = load_model_config(model_file)
-    if evaluate_only and resume is None:
-        raise ValueError("--evaluate-only requires --resume")
     checkpoint_file = _checkpoint_path(resume) if resume is not None else None
     if checkpoint_file is not None:
-        _check_checkpoint_compatibility(
-            read_checkpoint_manifest(checkpoint_file),
-            config,
-            model_config,
-            checkpoint_file,
-        )
+        _check_checkpoint_compatibility(read_checkpoint_manifest(checkpoint_file), config, model_config, checkpoint_file, model_name=model_name, for_resume=not evaluate_only)
     run_name = run_id or datetime.now().strftime("run-%Y%m%d-%H%M%S")
     output_dir = run_directory(project_root, output_root, model_name, run_name)
+    if output_dir.exists() and any(output_dir.iterdir()) and (resume is None or evaluate_only):
+        raise ValueError(f"result directory already contains files: {output_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
     start_time = utc_now()
     started = time.perf_counter()
     selected_device = _choose_device(device)
+    if selected_device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(selected_device)
     seed_details = set_seed(int(config.training["seed"]), deterministic=bool(config.runtime["deterministic"]))
     environment = collect_environment(project_root)
-
     resolved = resolved_config_values(config, project_root=project_root)
-    resolved["resolved"]["model_name"] = model_name
-    resolved["resolved"]["run_id"] = run_name
-    resolved["resolved"]["device"] = str(selected_device)
-    resolved["resolved"]["command"] = command_name
+    resolved["resolved"].update({"model_name": model_name, "run_id": run_name, "device": str(selected_device), "command": command_name})
     if smoke:
         resolved["resolved"]["smoke"] = {
             "epochs": int(smoke_epochs or 1),
@@ -284,83 +367,52 @@ def run_model(
         }
     write_yaml(output_dir / "resolved_config.yaml", resolved)
     write_yaml(output_dir / "cli_overrides.yaml", cli_overrides_as_nested(effective_overrides))
-    write_json(
-        output_dir / "command.json",
-        {
-            "argv": list(command_argv or []),
-            "command": command_name,
-            "model": model_name,
-            "run_id": run_name,
-            "config_path": str(config_file),
-            "model_config_path": str(model_file),
-            "cli_overrides": cli_overrides_as_nested(effective_overrides),
-        },
-    )
-    _print_config_summary(
-        config_file=config_file,
-        model_file=model_file,
-        base_config=base_config,
-        cli_overrides=effective_overrides,
-        output_dir=output_dir,
-    )
+    write_json(output_dir / "command.json", {"argv": list(command_argv or []), "command": command_name, "model": model_name, "run_id": run_name, "config_path": str(config_file), "model_config_path": str(model_file), "cli_overrides": cli_overrides_as_nested(effective_overrides)})
+    _print_config_summary(config_file=config_file, model_file=model_file, base_config=base_config, cli_overrides=effective_overrides, output_dir=output_dir)
     write_yaml(output_dir / "model_config.yaml", model_config)
     write_json(output_dir / "environment.json", environment)
+    write_json(output_dir / "run_info.json", {"model": model_name, "run_id": run_name, "status": "RUNNING", "start_time": start_time})
 
+    data_started = time.perf_counter()
     arrays, data_info, splits, windows, normalization, loaders = _prepare(config, project_root)
+    data_prepare_seconds = time.perf_counter() - data_started
     normalization.save(output_dir / "normalization.npz")
-    resolved["resolved"].update(
-        {
-            "data_info": data_info.as_dict(),
-            "split_boundaries": splits.as_dict(arrays.timestamps),
-            "window_index": windows.as_dict(),
-            "normalization": normalization.as_dict(),
-        }
-    )
+    resolved["resolved"].update({"data_info": data_info.as_dict(), "split_boundaries": splits.as_dict(arrays.timestamps), "window_index": windows.as_dict(), "normalization": normalization.as_dict()})
     write_yaml(output_dir / "resolved_config.yaml", resolved)
-
+    model_started = time.perf_counter()
     model = build_model(model_name, model_config, data_info)
-    parameter_count = sum(parameter.numel() for parameter in model.parameters())
+    model_build_seconds = time.perf_counter() - model_started
+    parameter_count = int(sum(parameter.numel() for parameter in model.parameters()))
+    trainable_parameter_count = int(sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad))
     checkpoint_extra = {
         "config_file": str(config_file),
         "model_config_file": str(model_file),
         "experiment_config": config.copy_values(),
         "resolved_config": resolved,
         "model_config": model_config,
-        "parameter_count": int(parameter_count),
+        "parameter_count": parameter_count,
+        "trainable_parameter_count": trainable_parameter_count,
         "seed": int(config.training["seed"]),
+        "cli_overrides": cli_overrides_as_nested(effective_overrides),
     }
     train_result: TrainResult | None = None
     checkpoint_manifest: dict[str, Any] | None = None
     resume_manifest: dict[str, Any] | None = None
     final_eval_limit: int | None = None
+    checkpoint_reload_seconds = 0.0
     if evaluate_only:
         assert checkpoint_file is not None
-        checkpoint_manifest = load_checkpoint(
-            checkpoint_file,
-            model,
-            device=selected_device,
-        )
+        reload_started = time.perf_counter()
+        checkpoint_manifest = load_checkpoint(checkpoint_file, model, device=selected_device)
+        checkpoint_reload_seconds = time.perf_counter() - reload_started
     else:
-        trainer = Trainer(
-            model,
-            config,
-            device=selected_device,
-            model_name=model_name,
-            normalization=normalization,
-            output_dir=output_dir,
-        )
+        trainer = Trainer(model, config, device=selected_device, model_name=model_name, normalization=normalization, output_dir=output_dir, dataloader_generators={"train": loaders.train.generator, "validation": loaders.validation.generator, "test": loaders.test.generator})
         start_epoch = 1
-        if resume is not None:
-            assert checkpoint_file is not None
-            resume_manifest = load_checkpoint(
-                checkpoint_file,
-                trainer.model,
-                device=selected_device,
-                optimizer=trainer.optimizer,
-                scheduler=trainer.scheduler,
-                scaler=trainer.scaler,
-            )
+        resume_state: Mapping[str, Any] | None = None
+        if checkpoint_file is not None:
+            resume_manifest = load_checkpoint(checkpoint_file, trainer.model, device=selected_device, optimizer=trainer.optimizer, scheduler=trainer.scheduler, scaler=trainer.scaler, restore_runtime=True, dataloader_generators={"train": loaders.train.generator, "validation": loaders.validation.generator, "test": loaders.test.generator})
             start_epoch = int(resume_manifest.get("epoch", 0)) + 1
+            resume_state = resume_manifest.get("runtime_state", {}).get("trainer")
         if smoke:
             epochs = int(smoke_epochs or 1)
             max_train_updates = int(smoke_max_train_updates or 2)
@@ -369,61 +421,26 @@ def run_model(
             epochs = None
             max_train_updates = None
             max_eval_batches = None
-        train_result = trainer.fit(
-            loaders.train,
-            loaders.validation,
-            horizons=tuple(int(value) for value in config.data["eval_horizons"]),
-            total_nodes=int(data_info.num_nodes),
-            epochs=epochs,
-            max_train_updates=max_train_updates,
-            max_validation_batches=max_eval_batches,
-            start_epoch=start_epoch,
-            checkpoint_extra=checkpoint_extra,
-        )
+        train_result = trainer.fit(loaders.train, loaders.validation, horizons=tuple(int(value) for value in config.data["eval_horizons"]), total_nodes=int(data_info.num_nodes), epochs=epochs, max_train_updates=max_train_updates, max_validation_batches=max_eval_batches, start_epoch=start_epoch, resume_state=resume_state, checkpoint_extra=checkpoint_extra)
         final_eval_limit = max_eval_batches
-        checkpoint_manifest = load_checkpoint(
-            output_dir / "best.pt",
-            model,
-            device=selected_device,
-        )
-
-    validation = evaluate(
-        model,
-        loaders.validation,
-        device=selected_device,
-        normalization=normalization,
-        horizons=tuple(int(value) for value in config.data["eval_horizons"]),
-        total_nodes=int(data_info.num_nodes),
-        physical_clip=bool(config.evaluation["physical_clip"]),
-        physical_min_kw=config.evaluation["physical_min_kw"],
-        physical_max_kw=config.evaluation["physical_max_kw"],
-        max_batches=final_eval_limit,
-    )
-    test = evaluate(
-        model,
-        loaders.test,
-        device=selected_device,
-        normalization=normalization,
-        horizons=tuple(int(value) for value in config.data["eval_horizons"]),
-        total_nodes=int(data_info.num_nodes),
-        physical_clip=bool(config.evaluation["physical_clip"]),
-        physical_min_kw=config.evaluation["physical_min_kw"],
-        physical_max_kw=config.evaluation["physical_max_kw"],
-        max_batches=final_eval_limit,
-    )
-    _write_evaluation_outputs(
-        output_dir,
-        validation,
-        test,
-        save_predictions=bool(config.runtime["save_predictions"]),
-        split=evaluation_split,
-    )
+        reload_started = time.perf_counter()
+        checkpoint_manifest = load_checkpoint(output_dir / "best.pt", model, device=selected_device)
+        checkpoint_reload_seconds = time.perf_counter() - reload_started
+    validation = evaluate(model, loaders.validation, device=selected_device, normalization=normalization, horizons=tuple(int(value) for value in config.data["eval_horizons"]), total_nodes=int(data_info.num_nodes), physical_clip=bool(config.evaluation["physical_clip"]), physical_min_kw=config.evaluation["physical_min_kw"], physical_max_kw=config.evaluation["physical_max_kw"], max_batches=final_eval_limit)
+    test = evaluate(model, loaders.test, device=selected_device, normalization=normalization, horizons=tuple(int(value) for value in config.data["eval_horizons"]), total_nodes=int(data_info.num_nodes), physical_clip=bool(config.evaluation["physical_clip"]), physical_min_kw=config.evaluation["physical_min_kw"], physical_max_kw=config.evaluation["physical_max_kw"], max_batches=final_eval_limit)
+    _write_evaluation_outputs(output_dir, validation, test, save_predictions=bool(config.runtime["save_predictions"]), split=evaluation_split)
     _write_history(output_dir / "train_history.csv", train_result.history if train_result else [])
+    performance = _performance(output_dir=output_dir, environment=environment, data_prepare_seconds=data_prepare_seconds, model_build_seconds=model_build_seconds, checkpoint_reload_seconds=checkpoint_reload_seconds, started=started, device=selected_device, data_info=data_info, config=config, train_result=train_result, validation=validation, test=test, best_epoch=checkpoint_manifest.get("epoch") if checkpoint_manifest else None, parameter_count=parameter_count, trainable_parameter_count=trainable_parameter_count)
+    write_json(output_dir / "performance.json", performance)
     elapsed = time.perf_counter() - started
-    peak_memory = int(torch.cuda.max_memory_allocated(selected_device)) if selected_device.type == "cuda" else 0
+    peak_allocated = int(torch.cuda.max_memory_allocated(selected_device)) if selected_device.type == "cuda" else None
+    public_checkpoint_manifest = {
+        key: value for key, value in (checkpoint_manifest or {}).items() if key != "runtime_state"
+    }
     run_info = {
         "model": model_name,
         "run_id": run_name,
+        "status": "COMPLETED",
         "seed": int(config.training["seed"]),
         "git_commit": environment.get("git_commit"),
         "python_version": environment["python"]["version"],
@@ -434,33 +451,22 @@ def run_model(
         "start_time": start_time,
         "end_time": utc_now(),
         "duration_seconds": elapsed,
-        "parameter_count": int(parameter_count),
-        "peak_gpu_memory_bytes": peak_memory,
+        "total_wall_seconds": elapsed,
+        "parameter_count": parameter_count,
+        "peak_gpu_memory_bytes": peak_allocated,
         "best_epoch": checkpoint_manifest.get("epoch") if checkpoint_manifest else None,
         "best_metric": checkpoint_manifest.get("monitor") if checkpoint_manifest else None,
         "evaluate_only": bool(evaluate_only),
         "evaluation_split": evaluation_split,
         "cli_overrides": cli_overrides_as_nested(effective_overrides),
-        "runtime_overrides": {
-            "smoke": bool(smoke),
-            "smoke_epochs": int(smoke_epochs or 1) if smoke else None,
-            "smoke_max_train_updates": int(smoke_max_train_updates or 2) if smoke else None,
-            "smoke_max_eval_batches": int(smoke_max_eval_batches or 2) if smoke else None,
-        },
+        "runtime_overrides": {"smoke": bool(smoke), "smoke_epochs": int(smoke_epochs or 1) if smoke else None, "smoke_max_train_updates": int(smoke_max_train_updates or 2) if smoke else None, "smoke_max_eval_batches": int(smoke_max_eval_batches or 2) if smoke else None},
         "seed_details": seed_details,
         "initial_weight_hash": train_result.initial_state_hash if train_result else None,
         "first_step_loss": train_result.first_step_loss if train_result else None,
-        "checkpoint_manifest": checkpoint_manifest,
+        "checkpoint_manifest": public_checkpoint_manifest,
         "validation_monitor": validation.metrics["monitor"],
         "test_monitor": test.metrics["monitor"],
         "final_evaluation_max_batches": final_eval_limit,
     }
     write_json(output_dir / "run_info.json", run_info)
-    return {
-        "output_dir": str(output_dir),
-        "run_info": run_info,
-        "validation": validation.metrics,
-        "test": test.metrics,
-        "selected_split": evaluation_split,
-        "window_counts": windows.as_dict()["counts"],
-    }
+    return {"output_dir": str(output_dir), "run_info": run_info, "validation": validation.metrics, "test": test.metrics, "selected_split": evaluation_split, "window_counts": windows.as_dict()["counts"], "performance": performance}

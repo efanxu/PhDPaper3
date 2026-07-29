@@ -9,6 +9,7 @@ env/
 
 # Local data and source archives are never experiment inputs committed to Git.
 dataset/*
+!dataset/.gitkeep
 Time-Series-Library/*
 tsl.zip
 

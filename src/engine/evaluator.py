@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 from typing import Any, Iterable
 
 import numpy as np
@@ -14,6 +15,7 @@ from data.normalization import NormalizationStats
 from models.base import ForecastModel
 
 from .metrics import compute_metrics
+from runtime.performance import summarize_evaluation
 
 
 @dataclass(frozen=True)
@@ -24,6 +26,7 @@ class EvaluationResult:
     target_kw: np.ndarray
     target_mask: np.ndarray
     starts: np.ndarray
+    performance: dict[str, Any]
 
 
 def evaluate(
@@ -44,18 +47,38 @@ def evaluate(
     targets: list[torch.Tensor] = []
     masks: list[torch.Tensor] = []
     starts: list[torch.Tensor] = []
-    with torch.no_grad():
-        for batch_index, batch in enumerate(loader):
-            if max_batches is not None and batch_index >= max_batches:
+    end_to_end_seconds: list[float] = []
+    forward_seconds: list[float] = []
+    batch_sizes: list[int] = []
+
+    def synchronize() -> None:
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+
+    iterator = iter(loader)
+    with torch.inference_mode():
+        batch_index = 0
+        while max_batches is None or batch_index < max_batches:
+            end_to_end_started = time.perf_counter()
+            try:
+                batch = next(iterator)
+            except StopIteration:
                 break
             device_batch = batch.to(device)
+            synchronize()
+            forward_started = time.perf_counter()
             prediction = model(device_batch.model_input())
+            synchronize()
+            forward_seconds.append(time.perf_counter() - forward_started)
+            end_to_end_seconds.append(time.perf_counter() - end_to_end_started)
+            batch_sizes.append(int(batch.x.shape[0]))
             if prediction.ndim != 3 or prediction.shape[:2] != device_batch.target.shape[:2]:
                 raise ValueError("model output shape is incompatible with target shape")
             predictions.append(prediction.detach().float().cpu())
             targets.append(batch.target.detach().float().cpu())
             masks.append(batch.target_mask.detach().bool().cpu())
             starts.append(batch.starts.detach().cpu())
+            batch_index += 1
     if not predictions:
         raise ValueError("evaluation loader produced no batches")
     normalized_prediction = torch.cat(predictions, dim=0)
@@ -78,6 +101,13 @@ def evaluate(
             physical_max_kw=physical_max_kw,
         )
     official_scores = [value["SDWPF Official Score"] for value in by_horizon.values()]
+    performance = summarize_evaluation(
+        end_to_end_seconds,
+        forward_seconds,
+        batch_sizes,
+        nodes=int(prediction_kw.shape[1]),
+        horizon=int(prediction_kw.shape[2]),
+    )
     return EvaluationResult(
         metrics={
             "by_horizon": by_horizon,
@@ -88,4 +118,5 @@ def evaluate(
         target_kw=target_kw,
         target_mask=mask_np,
         starts=torch.cat(starts, dim=0).numpy(),
+        performance=performance,
     )

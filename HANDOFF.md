@@ -1,55 +1,37 @@
 # Handoff
 
-## Current goal
+## Architecture
 
-Keep `PhDPaper3` as a lightweight, unified, reproducible and fair forecasting
-framework. `PhDPaper3_old2` is read-only reference material and must never be
-modified or imported at runtime.
+`scripts/run.py` is the only public entry point. `src/cli/command_schema.py`
+defines all public arguments. The parent scheduler writes one request and
+starts one hidden worker subprocess per model with `sys.executable`; the
+worker calls the shared single-model pipeline. Data lives in `dataset/` and
+results live under `results/<model>/<run_id>/`.
 
-## Completed
+## Core capabilities
 
-- Audited the old formal SDWPF data, window, normalization, NodeSharedLSTM,
-  loss, metrics, training and checkpoint behavior.
-- Added strict public and model YAML loading.
-- Added shared parquet loading, chronological split, train-only normalization,
-  sliding windows, Dataset and deterministic DataLoaders.
-- Added one Trainer, loss, metrics, Evaluator, checkpoint and reproducibility
-  implementation.
-- Added the NodeSharedLSTM reference model with the old `(B, N, H)` output.
-- Added model checks, training/evaluate-only/repeatability scripts and tests.
+- one or many models through `train --model ...`;
+- isolated model processes, per-model logs and atomic run status;
+- fail-closed new runs, checkpoint resume, archive-based overwrite and ID suffixes;
+- complete epoch checkpoint state, deterministic resume and independent A/B repeatability;
+- shared training/evaluation timing, throughput, parameter and GPU-memory metrics;
+- generated command reference and documentation consistency tests.
 
-## Layout and commands
+## Known limitations
 
-Read `MODEL_INTEGRATION_INDEX.md` for the fixed reading order. All project
-tasks use `python scripts/run.py <command>`. The parser and option-to-YAML
-mapping are in `src/cli/command_schema.py`; `--smoke` is a short, explicitly
-recorded runtime limit. Full-shape validation is
-`python scripts/run.py check --full-shape`, and repeatability is
-`python scripts/run.py repeatability`.
+Formal training still requires the two local protocol-named parquet files in
+`dataset/`. The current public configuration keeps AMP CUDA-only and the
+loader materializes the cleaned SDWPF arrays in memory. No formal GPU claim is
+made without running the corresponding command on a CUDA machine.
 
-## Verification state
+## Next step
 
-Compile, strict config/data checks, model interface, formal GPU full-shape,
-short smoke training, checkpoint reload, repeatability and the complete pytest
-suite have passed. Exact commands and results are recorded in
-`docs/MIGRATION_REPORT.md`. A formal 20-epoch run was not started; the smoke
-run is intentionally a separate, explicitly limited artifact.
+Add a model directory and structure YAML, implement only
+`build_model(model_config, data_info)`, then run the generated command checks
+and the relevant tests.
 
-## Known constraints and next step
+## Keep out of the project
 
-The formal configuration enables the old CUDA AMP setting, so a formal training
-run requires CUDA; the code intentionally refuses a silent CPU fallback. Run
-the ordered checks, fix only observed implementation errors, and do not
-optimize the reference algorithm during migration. Other models can be added
-after NodeSharedLSTM is fully accepted.
-
-Do not reintroduce StudySpec, ModelSpec, model revisions, source closures,
-runtime profiles, readiness, certificates, anchors, campaigns, manifests,
-attestations or hand-maintained capability/evidence systems.
-
-## Repository boundary
-
-All changes, tests, docs, commits and pushes belong only to
-`D:\PaperProject\PhDPaper3`. Do not modify, move, rename, delete, commit in or
-run against `D:\PaperProject\PhDPaper3_old2`; do not restore its deleted remote
-or create links/runtime dependencies between the projects.
+Do not add a second CLI, model-specific training infrastructure, batch alias,
+`--models`, StudySpec/ModelSpec, certificates, declarations, manifests,
+readiness protocols, or experiment/report Markdown files.

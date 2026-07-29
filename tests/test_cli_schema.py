@@ -4,7 +4,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from cli.command_schema import build_parser
+from runtime.losses import LOSS_NAMES
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,7 +25,7 @@ def _run_cli(*args: str) -> subprocess.CompletedProcess[str]:
 
 
 def test_all_public_help_commands_succeed() -> None:
-    commands = ("--help", "train", "evaluate", "check", "preflight", "repeatability", "batch")
+    commands = ("--help", "train", "evaluate", "check", "preflight", "repeatability")
     for command in commands:
         result = _run_cli(command) if command == "--help" else _run_cli(command, "--help")
         assert result.returncode == 0, result.stderr
@@ -30,13 +33,32 @@ def test_all_public_help_commands_succeed() -> None:
 
 def test_public_override_defaults_are_none() -> None:
     args = build_parser().parse_args(["train", "--model", "node_shared_lstm"])
+    assert args.model == ["node_shared_lstm"]
     assert args.lookback is None
     assert args.batch_size is None
+    assert args.eval_batch_size is None
     assert args.epochs is None
     assert args.learning_rate is None
     assert args.eval_horizons is None
     assert args.feature_columns is None
     assert args.amp is None
+
+
+def test_model_accepts_one_or_many_and_legacy_batch_is_gone() -> None:
+    args = build_parser().parse_args(["train", "--model", "node_shared_lstm", "dlinear"])
+    assert args.model == ["node_shared_lstm", "dlinear"]
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["train", "--model", "node_shared_lstm", "--models", "dlinear"])
+
+
+def test_run_modes_are_mutually_exclusive_and_loss_choices_are_registry_backed() -> None:
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["train", "--model", "node_shared_lstm", "--resume", "--overwrite"])
+    parser = build_parser()
+    subparsers = next(action for action in parser._actions if action.dest == "command")
+    train = subparsers.choices["train"]
+    loss_action = next(action for action in train._actions if action.dest == "loss")
+    assert tuple(loss_action.choices) == LOSS_NAMES
 
 
 def test_help_dispatch_does_not_import_torch() -> None:
@@ -72,6 +94,7 @@ def test_old_user_entrypoints_are_removed_and_business_modules_have_no_parser() 
     }
 
     cli_dir = ROOT / "src" / "cli"
+    assert not (cli_dir / "batch.py").exists()
     for path in cli_dir.glob("*.py"):
         if path.name in {"command_schema.py", "main.py", "__init__.py"}:
             continue

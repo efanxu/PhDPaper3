@@ -6,6 +6,8 @@ from dataclasses import dataclass
 
 import torch
 
+from runtime.losses import LOSS_NAMES
+
 
 @dataclass(frozen=True)
 class ScoreAlignedHybridTerms:
@@ -61,3 +63,15 @@ def masked_score_aligned_hybrid(
     mask: torch.Tensor,
 ) -> torch.Tensor:
     return score_aligned_hybrid_terms(prediction, target, mask).loss()
+
+
+# The implementation registry is built from the dependency-free names module;
+# command help and config validation therefore cannot drift from the engine.
+LOSS_REGISTRY = {name: masked_score_aligned_hybrid for name in LOSS_NAMES}
+
+
+def resolve_loss(name: str):
+    try:
+        return LOSS_REGISTRY[name]
+    except KeyError as exc:
+        raise ValueError(f"unknown loss {name!r}; available losses: {', '.join(LOSS_NAMES)}") from exc

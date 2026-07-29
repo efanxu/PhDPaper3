@@ -19,8 +19,12 @@ def test_generated_command_reference_is_current() -> None:
     assert result.returncode == 0, result.stderr
 
     document = (ROOT / "docs" / "COMMAND_REFERENCE.md").read_text(encoding="utf-8")
-    for command in ("train", "evaluate", "check", "preflight", "repeatability", "batch"):
+    for command in ("train", "evaluate", "check", "preflight", "repeatability"):
         assert f"## `{command}`" in document
+    assert "## `batch`" not in document
+    assert "`--model`" in document
+    assert "`--eval-batch-size`" in document
     assert "内置结构默认 < configs/experiment.yaml < 命令行显式覆盖" in document
     assert "`training.train_batch_size`" in document
+    assert "`training.val_batch_size; training.test_batch_size`" in document
     assert "`data.eval_horizons`" in document
