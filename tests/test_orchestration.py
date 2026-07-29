@@ -118,6 +118,67 @@ def test_default_conflict_fails_before_starting_worker(monkeypatch, tmp_path: Pa
     assert calls == []
 
 
+def test_environment_preflight_only_does_not_start_worker_or_create_model_result(
+    monkeypatch, tmp_path: Path
+) -> None:
+    calls: list[object] = []
+
+    def fail_popen(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("environment preflight only must not start a worker")
+
+    monkeypatch.setattr(orchestrator.subprocess, "Popen", fail_popen)
+    output_root = tmp_path / "results"
+    result = orchestrator.run_training_models(
+        models=["node_shared_lstm"],
+        config_path=CONFIG,
+        model_config_path=None,
+        run_id="preflight-only",
+        device="cpu",
+        output_root=output_root,
+        resume=False,
+        overwrite=False,
+        id_suffix=None,
+        fail_fast=False,
+        smoke=False,
+        smoke_epochs=None,
+        smoke_max_train_updates=None,
+        smoke_max_eval_batches=None,
+        cli_overrides={},
+        command_argv=[],
+        environment_preflight_only=True,
+    )
+    assert result["passed"] is True
+    assert result["models"][0]["status"] == "PREFLIGHTED"
+    assert not (output_root / "node_shared_lstm" / "preflight-only").exists()
+    assert Path(result["model_comparison_csv"]).is_file()
+    assert calls == []
+
+
+def test_worker_command_uses_resolved_python_and_positional_request(tmp_path: Path) -> None:
+    resolved = ResolvedEnvironment(
+        environment_id="tsl",
+        conda_env="env_tsl",
+        python_executable=Path("target-tsl-python"),
+        source_roots=(),
+        required_imports=("tsl",),
+        resolution_source="conda_env_list",
+    )
+    command = orchestrator.build_model_worker_command(
+        project_root=tmp_path,
+        request_path=tmp_path / "request.json",
+        model_name="model_b",
+        resolved_environment=resolved,
+    )
+    assert command == [
+        "target-tsl-python",
+        str(tmp_path / "scripts" / "run.py"),
+        "_worker",
+        str(tmp_path / "request.json"),
+        "model_b",
+    ]
+
+
 def test_overwrite_archives_old_result_and_suffix_is_distinct(monkeypatch, tmp_path: Path) -> None:
     output_root = tmp_path / "results"
     old = output_root / "node_shared_lstm" / "rerun"

@@ -19,6 +19,9 @@ live under `results/<model>/<run_id>/`.
 - supports `tslib` and `tsl` runtime environments;
 - defaults to `tslib` when a model YAML omits `runtime`;
 - automatically resolves interpreters and can mix both environments in one batch;
+- environment preflight can run without creating model result directories or workers;
+- paper comparison CSVs contain H3, H6 and H10 metrics when those horizons are configured;
+- repeatability runs one complete multi-model A batch followed by one complete B batch and compares every test horizon;
 - keeps each model in an independent process;
 - treats the local `Time-Series-Library` source as read-only;
 - provides `tsl` through `env_tsl`.

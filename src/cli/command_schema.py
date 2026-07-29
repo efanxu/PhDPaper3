@@ -192,6 +192,11 @@ def _build_check(subparsers: argparse._SubParsersAction) -> None:
     _add_public_overrides(parser, names=_SHAPE_OVERRIDES)
     group = parser.add_argument_group("检查任务专属参数")
     group.add_argument("--full-shape", action="store_true", help="使用 YAML/覆盖后的正式 batch size")
+    group.add_argument(
+        "--environment-preflight-only",
+        action="store_true",
+        help="只预检本批次所需运行环境，不启动模型 worker",
+    )
 
 
 def _build_preflight(subparsers: argparse._SubParsersAction) -> None:
@@ -201,6 +206,11 @@ def _build_preflight(subparsers: argparse._SubParsersAction) -> None:
     _add_public_overrides(parser, names=_SHAPE_OVERRIDES)
     group = parser.add_argument_group("预检任务专属参数")
     group.add_argument("--no-data", action="store_true", help="只检查配置和模型，不读取正式 parquet")
+    group.add_argument(
+        "--environment-preflight-only",
+        action="store_true",
+        help="只预检本批次所需运行环境，不启动模型 worker",
+    )
 
 
 def _build_repeatability(subparsers: argparse._SubParsersAction) -> None:
@@ -212,6 +222,11 @@ def _build_repeatability(subparsers: argparse._SubParsersAction) -> None:
     group = parser.add_argument_group("重复性任务专属参数")
     group.add_argument("--prediction-atol", type=float, default=1e-6, help="预测数组允许的最大绝对误差，默认 1e-6")
     group.add_argument("--metric-atol", type=float, default=0.0, help="指标允许的最大绝对误差，默认 0")
+    group.add_argument(
+        "--environment-preflight-only",
+        action="store_true",
+        help="只预检本批次所需运行环境，不启动重复性 worker",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:

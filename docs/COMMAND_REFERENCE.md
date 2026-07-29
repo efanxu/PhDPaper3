@@ -127,6 +127,7 @@ python scripts\run.py evaluate `
 | `--eval-horizons` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | list[int] | 未提供：继承 configs/experiment.yaml | `data.eval_horizons` | 是 | 覆盖 data.eval_horizons（可传多个整数）；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
 | `--feature-columns` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | list[str] | 未提供：继承 configs/experiment.yaml | `data.feature_columns` | 是 | 覆盖 data.feature_columns（可传多个列名）；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
 | `--full-shape` | 检查任务专属参数 | 否 | flag | 未提供时关闭 | `—` | 否 | 使用 YAML/覆盖后的正式 batch size |
+| `--environment-preflight-only` | 检查任务专属参数 | 否 | flag | 未提供时关闭 | `—` | 否 | 只预检本批次所需运行环境，不启动模型 worker |
 
 ### 示例
 
@@ -156,6 +157,7 @@ python scripts\run.py check `
 | `--eval-horizons` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | list[int] | 未提供：继承 configs/experiment.yaml | `data.eval_horizons` | 是 | 覆盖 data.eval_horizons（可传多个整数）；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
 | `--feature-columns` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | list[str] | 未提供：继承 configs/experiment.yaml | `data.feature_columns` | 是 | 覆盖 data.feature_columns（可传多个列名）；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
 | `--no-data` | 预检任务专属参数 | 否 | flag | 未提供时关闭 | `—` | 否 | 只检查配置和模型，不读取正式 parquet |
+| `--environment-preflight-only` | 预检任务专属参数 | 否 | flag | 未提供时关闭 | `—` | 否 | 只预检本批次所需运行环境，不启动模型 worker |
 
 ### 示例
 
@@ -198,6 +200,7 @@ python scripts\run.py preflight `
 | `--id-suffix` | 运行模式 | 否 | str | 无 | `—` | 否 | 追加安全后缀，例如 rerun1；生成 <run-id>__rerun1 |
 | `--prediction-atol` | 重复性任务专属参数 | 否 | float | 1e-06 | `—` | 否 | 预测数组允许的最大绝对误差，默认 1e-6 |
 | `--metric-atol` | 重复性任务专属参数 | 否 | float | 0.0 | `—` | 否 | 指标允许的最大绝对误差，默认 0 |
+| `--environment-preflight-only` | 重复性任务专属参数 | 否 | flag | 未提供时关闭 | `—` | 否 | 只预检本批次所需运行环境，不启动重复性 worker |
 
 ### 示例
 

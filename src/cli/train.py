@@ -384,6 +384,9 @@ def run_model(
     environment["runtime_environment"] = runtime_metadata["runtime_environment"]
     environment["conda_env"] = runtime_metadata.get("conda_env")
     environment["python_executable"] = runtime_metadata.get("python_executable", environment["python"]["executable"])
+    environment["python_version"] = runtime_metadata.get(
+        "python_version", environment["python"]["version"]
+    )
     environment["environment_resolution_source"] = runtime_metadata.get("environment_resolution_source")
     resolved = resolved_config_values(config, project_root=project_root)
     resolved["resolved"].update({
@@ -419,6 +422,7 @@ def run_model(
                     "runtime_environment",
                     "conda_env",
                     "python_executable",
+                    "python_version",
                     "environment_resolution_source",
                 )
             },

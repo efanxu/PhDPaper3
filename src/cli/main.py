@@ -73,14 +73,14 @@ def _dispatch(args, raw_argv: list[str]) -> int:
     if args.command == "check":
         from .orchestrator import run_isolated_checks
 
-        result = run_isolated_checks(operation="check", models=list(args.model), config_path=args.config, model_config_path=args.model_config, device=args.device, cli_overrides=cli_overrides, full_shape=args.full_shape)
+        result = run_isolated_checks(operation="check", models=list(args.model), config_path=args.config, model_config_path=args.model_config, device=args.device, cli_overrides=cli_overrides, full_shape=args.full_shape, environment_preflight_only=args.environment_preflight_only)
         _print_json(result)
         return 0 if result["passed"] else 1
 
     if args.command == "preflight":
         from .orchestrator import run_isolated_checks
 
-        result = run_isolated_checks(operation="preflight", models=list(args.model), config_path=args.config, model_config_path=args.model_config, device=args.device, cli_overrides=cli_overrides, no_data=args.no_data)
+        result = run_isolated_checks(operation="preflight", models=list(args.model), config_path=args.config, model_config_path=args.model_config, device=args.device, cli_overrides=cli_overrides, no_data=args.no_data, environment_preflight_only=args.environment_preflight_only)
         _print_json(result)
         return 0 if result["passed"] else 1
 
@@ -100,6 +100,7 @@ def _dispatch(args, raw_argv: list[str]) -> int:
             overwrite=args.overwrite,
             id_suffix=args.id_suffix,
             command_argv=raw_argv,
+            environment_preflight_only=args.environment_preflight_only,
         )
         _print_json(result)
         return 0 if result["passed"] else 1

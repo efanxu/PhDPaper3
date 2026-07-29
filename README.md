@@ -16,8 +16,9 @@ defaults are in `configs/experiment.yaml`; model structure values are in
 `configs/models/<model>.yaml`. Each model YAML may declare
 `runtime.environment: tslib` or `runtime.environment: tsl`; omitted runtime
 uses `tslib`. The parent command resolves the corresponding Conda Python
-automatically. Use `--environment-preflight-only` on `train` to check the
-environments without starting workers.
+automatically. Use `--environment-preflight-only` on `train`, `check`,
+`preflight` or `repeatability` to check the environments without starting
+model workers.
 
 ## One command entry point
 
@@ -51,6 +52,16 @@ python scripts\run.py train `
   --device cuda
 ```
 
+Environment-only validation:
+
+```powershell
+python scripts\run.py train `
+  --model node_shared_lstm `
+  --run-id environment_preflight `
+  --device cuda `
+  --environment-preflight-only
+```
+
 Continue, archive-and-replace, or create a new ID explicitly:
 
 ```powershell
@@ -67,7 +78,8 @@ python scripts\run.py repeatability --model node_shared_lstm --run-id repeatabil
 
 Results are stored in `results/<model>/<run_id>/`. Multi-model dispatch
 metadata and paper-ready efficiency rows are stored in
-`results/_runs/<effective_run_id>/`, including `performance_summary.csv`.
+`results/_runs/<effective_run_id>/`, including `summary.csv`,
+`performance_summary.csv` and the complete `model_comparison.csv`.
 
 For new model integration, read
 [`MODEL_INTEGRATION_INDEX.md`](MODEL_INTEGRATION_INDEX.md) first.

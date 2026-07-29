@@ -552,6 +552,14 @@ def preflight_environment(
             kind="python",
             message=f"target Python does not exist: {executable}",
         )
+    time_series_library = root / "Time-Series-Library"
+    if not time_series_library.is_dir():
+        raise _preflight_failure(
+            resolved=resolved_environment,
+            model_name=model_name,
+            kind="source_root",
+            message=f"required project source directory does not exist: {time_series_library}",
+        )
     missing_roots = [path for path in resolved_environment.source_roots if not path.is_dir()]
     if missing_roots:
         missing = missing_roots[0]
@@ -606,6 +614,7 @@ def preflight_environment(
         "source_roots": [str(path) for path in resolved_environment.source_roots],
         "required_imports": list(resolved_environment.required_imports),
         "resolution_source": resolved_environment.resolution_source,
+        "environment_resolution_source": resolved_environment.resolution_source,
         "cuda_available": bool(payload.get("cuda_available", False)),
         "torch_version": payload.get("torch_version"),
     }

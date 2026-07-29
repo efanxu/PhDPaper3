@@ -70,6 +70,13 @@ The local `Time-Series-Library` tree is a read-only model source.  Use
 the project's `models.base` remains the active package.  `tsl` is imported by
 its formal package name in the `tsl` environment.
 
+The scheduler resolves and preflights each distinct runtime environment once
+per batch, then starts every model with the Python selected by its YAML.  A
+new model automatically contributes its test metrics and performance values
+to `summary.csv`, `performance_summary.csv` and
+`model_comparison.csv`.  Model code must not implement a second Trainer,
+timing path, environment switcher or result aggregator.
+
 The model module must expose:
 
 ```python

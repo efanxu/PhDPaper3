@@ -80,7 +80,7 @@ def test_command_reference_is_generated_from_current_parser() -> None:
     result = subprocess.run(
         [
             sys.executable,
-            "scripts\\generate_command_reference.py",
+            str(ROOT / "scripts" / "generate_command_reference.py"),
             "--check",
         ],
         cwd=ROOT,

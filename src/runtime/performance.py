@@ -17,7 +17,7 @@ def summarize_evaluation(
     *,
     nodes: int,
     horizon: int,
-) -> dict[str, float | int | bool]:
+) -> dict[str, float | int | bool | None]:
     """Summarize one existing evaluation pass without running it again.
 
     The first batch is reported separately and excluded from steady-state
@@ -54,8 +54,8 @@ def summarize_evaluation(
         "median_batch_latency_ms": float(median(steady_end_to_end)) * 1000.0,
         "p95_batch_latency_ms": _percentile(steady_end_to_end, 95.0) * 1000.0,
         "mean_sample_latency_ms": mean_batch_seconds * 1000.0 / mean_batch_size,
-        "samples_per_second": steady_sample_count / steady_seconds if steady_seconds > 0 else 0.0,
-        "forecast_values_per_second": steady_forecast_values / steady_seconds if steady_seconds > 0 else 0.0,
+        "samples_per_second": steady_sample_count / steady_seconds if steady_seconds > 0 else None,
+        "forecast_values_per_second": steady_forecast_values / steady_seconds if steady_seconds > 0 else None,
         "forecast_values": forecast_values,
         "steady_sample_count": steady_sample_count,
         "steady_forecast_values": steady_forecast_values,

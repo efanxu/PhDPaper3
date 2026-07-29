@@ -38,6 +38,15 @@ def test_single_batch_performance_marks_missing_independent_warmup() -> None:
     assert result["forecast_values_per_second"] == 2400.0
 
 
+def test_zero_steady_time_serializes_rates_as_null() -> None:
+    result = summarize_evaluation([0.0, 0.0], [0.0, 0.0], [2, 3], nodes=2, horizon=3)
+    assert result["steady_sample_count"] == 3
+    assert result["steady_forecast_values"] == 18
+    assert result["steady_seconds"] == 0.0
+    assert result["samples_per_second"] is None
+    assert result["forecast_values_per_second"] is None
+
+
 def test_json_metrics_convert_nonfinite_values_to_null(tmp_path) -> None:
     import json
     import math
