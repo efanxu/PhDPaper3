@@ -28,6 +28,12 @@ class _FakeProcess:
         return self._returncode
 
 
+class _SelectiveFakeProcess(_FakeProcess):
+    def __init__(self, command, **kwargs):
+        super().__init__(command, **kwargs)
+        self._returncode = 1 if command[-1] == "node_shared_lstm" else 0
+
+
 def test_isolated_checks_use_sys_executable_and_distinct_worker_pids(monkeypatch, tmp_path: Path) -> None:
     _FakeProcess.started.clear()
     monkeypatch.setattr(orchestrator.subprocess, "Popen", _FakeProcess)
@@ -127,3 +133,29 @@ def test_overwrite_archives_old_result_and_suffix_is_distinct(monkeypatch, tmp_p
     )
     assert suffixed["run_id"] == "rerun__rerun1"
     assert Path(suffixed["models"][0]["result_dir"]).name == "rerun__rerun1"
+
+
+def test_failed_model_continues_by_default_and_fail_fast_stops(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(orchestrator.subprocess, "Popen", _SelectiveFakeProcess)
+    common = {
+        "models": ["node_shared_lstm", "dlinear"],
+        "config_path": CONFIG,
+        "model_config_path": None,
+        "device": "cpu",
+        "output_root": tmp_path / "results",
+        "resume": False,
+        "overwrite": False,
+        "id_suffix": None,
+        "smoke": True,
+        "smoke_epochs": 1,
+        "smoke_max_train_updates": 1,
+        "smoke_max_eval_batches": 1,
+        "cli_overrides": {},
+        "command_argv": [],
+    }
+    continued = orchestrator.run_training_models(run_id="continue", fail_fast=False, **common)
+    assert [item["status"] for item in continued["models"]] == ["FAILED", "COMPLETED"]
+    stopped = orchestrator.run_training_models(run_id="stop", fail_fast=True, **common)
+    assert stopped["models"][0]["status"] == "FAILED"
+    assert stopped["models"][1]["status"] == "FAILED"
+    assert "fail-fast" in stopped["models"][1]["error_summary"]
