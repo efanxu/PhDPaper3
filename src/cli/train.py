@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import statistics
 import time
+import traceback
 from collections.abc import Mapping
 from typing import Any
 
@@ -37,6 +38,18 @@ from runtime.environment import collect_environment
 from runtime.environments import resolve_model_environment
 from runtime.paths import project_root_from_config, resolve_output_root, run_directory
 from runtime.run_info import utc_now, write_json, write_yaml
+from runtime.status import (
+    FAILED,
+    FULL,
+    PASS,
+    RUNNING,
+    SMOKE,
+    classify_validation_failure,
+    failure_summary,
+    finished_phase,
+    phase_record,
+    running_phase,
+)
 
 
 def _choose_device(value: str) -> torch.device:
@@ -313,7 +326,7 @@ def _performance(
     }
 
 
-def run_model(
+def _run_model_impl(
     *,
     model_name: str,
     config_path: str | Path = "configs/experiment.yaml",
@@ -371,7 +384,10 @@ def run_model(
     run_name = run_id or datetime.now().strftime("run-%Y%m%d-%H%M%S")
     output_dir = run_directory(project_root, output_root, model_name, run_name)
     if output_dir.exists() and any(output_dir.iterdir()) and (resume is None or evaluate_only):
-        raise ValueError(f"result directory already contains files: {output_dir}")
+        precheck_artifacts = {"validation_status.json"}
+        existing_names = {path.name for path in output_dir.iterdir()}
+        if not existing_names.issubset(precheck_artifacts):
+            raise ValueError(f"result directory already contains files: {output_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
     start_time = utc_now()
     started = time.perf_counter()
@@ -409,13 +425,32 @@ def run_model(
     _print_config_summary(config_file=config_file, model_file=model_file, base_config=base_config, cli_overrides=effective_overrides, output_dir=output_dir)
     write_yaml(output_dir / "model_config.yaml", model_config)
     write_json(output_dir / "environment.json", environment)
+    run_phases = {
+        "training": phase_record(phase="training"),
+        "checkpoint_write": phase_record(phase="checkpoint_write"),
+        "checkpoint_reload": phase_record(phase="checkpoint_reload"),
+        "validation": phase_record(phase="validation"),
+        "test": phase_record(phase="test"),
+        "overall": phase_record(phase="starting"),
+    }
+    run_info_path = output_dir / "run_info.json"
     write_json(
-        output_dir / "run_info.json",
+        run_info_path,
         {
+            "schema_version": 1,
             "model": model_name,
             "run_id": run_name,
-            "status": "RUNNING",
+            "status": RUNNING,
+            "classification": None,
+            "phase": "starting",
             "start_time": start_time,
+            "end_time": None,
+            "wall_seconds": None,
+            "exit_code": None,
+            "exception_type": None,
+            "error_message": None,
+            "traceback_tail": None,
+            "phases": run_phases,
             **{
                 key: runtime_metadata.get(key)
                 for key in (
@@ -428,6 +463,11 @@ def run_model(
             },
         },
     )
+
+    def write_progress(phase: str) -> None:
+        current = json.loads(run_info_path.read_text(encoding="utf-8"))
+        current.update({"status": RUNNING, "classification": None, "phase": phase, "phases": run_phases})
+        write_json(run_info_path, current)
 
     data_started = time.perf_counter()
     arrays, data_info, splits, windows, normalization, loaders = _prepare(config, project_root)
@@ -458,9 +498,18 @@ def run_model(
     checkpoint_reload_seconds = 0.0
     if evaluate_only:
         assert checkpoint_file is not None
+        run_phases["checkpoint_reload"] = running_phase("checkpoint_reload", artifact=str(checkpoint_file))
+        write_progress("checkpoint_reload")
         reload_started = time.perf_counter()
         checkpoint_manifest = load_checkpoint(checkpoint_file, model, device=selected_device)
         checkpoint_reload_seconds = time.perf_counter() - reload_started
+        run_phases["checkpoint_reload"] = finished_phase(
+            profile=FULL,
+            phase="checkpoint_reload",
+            artifact=str(checkpoint_file),
+            started_at=run_phases["checkpoint_reload"]["started_at"],
+            wall_seconds=checkpoint_reload_seconds,
+        )
     else:
         trainer = Trainer(model, config, device=selected_device, model_name=model_name, normalization=normalization, output_dir=output_dir, dataloader_generators={"train": loaders.train.generator, "validation": loaders.validation.generator, "test": loaders.test.generator})
         start_epoch = 1
@@ -477,13 +526,53 @@ def run_model(
             epochs = None
             max_train_updates = None
             max_eval_batches = None
+        profile = SMOKE if smoke else FULL
+        run_phases["training"] = running_phase("training")
+        write_progress("training")
         train_result = trainer.fit(loaders.train, loaders.validation, horizons=tuple(int(value) for value in config.data["eval_horizons"]), total_nodes=int(data_info.num_nodes), epochs=epochs, max_train_updates=max_train_updates, max_validation_batches=max_eval_batches, start_epoch=start_epoch, resume_state=resume_state, checkpoint_extra=checkpoint_extra)
+        run_phases["training"] = finished_phase(
+            profile=profile,
+            phase="training_complete",
+            started_at=run_phases["training"]["started_at"],
+            wall_seconds=float(sum(train_result.epoch_seconds)),
+        )
+        checkpoint_paths = (output_dir / "best.pt", output_dir / "last.pt")
+        if not all(path.is_file() for path in checkpoint_paths):
+            raise RuntimeError("checkpoint write did not produce both best.pt and last.pt")
+        run_phases["checkpoint_write"] = finished_phase(
+            profile=profile,
+            phase="checkpoint_write",
+            artifact=str(output_dir),
+        )
         final_eval_limit = max_eval_batches
+        run_phases["checkpoint_reload"] = running_phase("checkpoint_reload", artifact=str(output_dir / "best.pt"))
+        write_progress("checkpoint_reload")
         reload_started = time.perf_counter()
         checkpoint_manifest = load_checkpoint(output_dir / "best.pt", model, device=selected_device)
         checkpoint_reload_seconds = time.perf_counter() - reload_started
+        run_phases["checkpoint_reload"] = finished_phase(
+            profile=profile,
+            phase="checkpoint_reload",
+            artifact=str(output_dir / "best.pt"),
+            started_at=run_phases["checkpoint_reload"]["started_at"],
+            wall_seconds=checkpoint_reload_seconds,
+        )
+    run_phases["validation"] = running_phase("validation")
+    write_progress("validation")
     validation = evaluate(model, loaders.validation, device=selected_device, normalization=normalization, horizons=tuple(int(value) for value in config.data["eval_horizons"]), total_nodes=int(data_info.num_nodes), physical_clip=bool(config.evaluation["physical_clip"]), physical_min_kw=config.evaluation["physical_min_kw"], physical_max_kw=config.evaluation["physical_max_kw"], max_batches=final_eval_limit)
+    run_phases["validation"] = finished_phase(
+        profile=SMOKE if smoke else FULL,
+        phase="validation_complete",
+        started_at=run_phases["validation"]["started_at"],
+    )
+    run_phases["test"] = running_phase("test")
+    write_progress("test")
     test = evaluate(model, loaders.test, device=selected_device, normalization=normalization, horizons=tuple(int(value) for value in config.data["eval_horizons"]), total_nodes=int(data_info.num_nodes), physical_clip=bool(config.evaluation["physical_clip"]), physical_min_kw=config.evaluation["physical_min_kw"], physical_max_kw=config.evaluation["physical_max_kw"], max_batches=final_eval_limit)
+    run_phases["test"] = finished_phase(
+        profile=SMOKE if smoke else FULL,
+        phase="test_complete",
+        started_at=run_phases["test"]["started_at"],
+    )
     _write_evaluation_outputs(output_dir, validation, test, save_predictions=bool(config.runtime["save_predictions"]), split=evaluation_split)
     _write_history(output_dir / "train_history.csv", train_result.history if train_result else [])
     performance = _performance(output_dir=output_dir, environment=environment, data_prepare_seconds=data_prepare_seconds, model_build_seconds=model_build_seconds, checkpoint_reload_seconds=checkpoint_reload_seconds, started=started, device=selected_device, data_info=data_info, config=config, train_result=train_result, validation=validation, test=test, best_epoch=checkpoint_manifest.get("epoch") if checkpoint_manifest else None, parameter_count=parameter_count, trainable_parameter_count=trainable_parameter_count)
@@ -493,10 +582,21 @@ def run_model(
     public_checkpoint_manifest = {
         key: value for key, value in (checkpoint_manifest or {}).items() if key != "runtime_state"
     }
+    completion_profile = SMOKE if smoke else FULL
+    run_phases["overall"] = finished_phase(
+        profile=completion_profile,
+        phase="complete",
+        artifact=str(output_dir),
+        started_at=start_time,
+        wall_seconds=elapsed,
+    )
     run_info = {
+        "schema_version": 1,
         "model": model_name,
         "run_id": run_name,
-        "status": "COMPLETED",
+        "status": PASS,
+        "classification": finished_phase(profile=completion_profile, phase="complete")["classification"],
+        "phase": "complete",
         "runtime_environment": runtime_metadata.get("runtime_environment"),
         "conda_env": runtime_metadata.get("conda_env"),
         "python_executable": runtime_metadata.get("python_executable"),
@@ -510,8 +610,14 @@ def run_model(
         "device": str(selected_device),
         "start_time": start_time,
         "end_time": utc_now(),
+        "wall_seconds": elapsed,
         "duration_seconds": elapsed,
         "total_wall_seconds": elapsed,
+        "exit_code": 0,
+        "exception_type": None,
+        "error_message": None,
+        "traceback_tail": None,
+        "phases": run_phases,
         "parameter_count": parameter_count,
         "peak_gpu_memory_bytes": peak_allocated,
         "best_epoch": checkpoint_manifest.get("epoch") if checkpoint_manifest else None,
@@ -530,3 +636,83 @@ def run_model(
     }
     write_json(output_dir / "run_info.json", run_info)
     return {"output_dir": str(output_dir), "run_info": run_info, "validation": validation.metrics, "test": test.metrics, "selected_split": evaluation_split, "window_counts": windows.as_dict()["counts"], "performance": performance}
+
+
+def _write_failed_run_info(*, model_name: str, config_path: str | Path, output_root: str | Path | None, run_id: str, started: float, error: BaseException) -> None:
+    """Finalize an already-started model run without replacing earlier artifacts."""
+
+    try:
+        root = project_root_from_config(Path(config_path).resolve())
+        output_dir = run_directory(root, output_root, model_name, run_id)
+        path = output_dir / "run_info.json"
+        if not path.is_file():
+            return
+        current = json.loads(path.read_text(encoding="utf-8"))
+        phase = str(current.get("phase") or "unknown")
+        phases = current.get("phases")
+        if not isinstance(phases, dict):
+            phases = {}
+        phase_key = phase if phase in phases else "overall"
+        phases[phase_key] = finished_phase(
+            classification=classify_validation_failure(error, phase=phase),
+            phase=phase,
+            error_summary=failure_summary(error),
+            started_at=phases.get(phase_key, {}).get("started_at") if isinstance(phases.get(phase_key), Mapping) else current.get("start_time"),
+            wall_seconds=time.perf_counter() - started,
+        )
+        phases["overall"] = finished_phase(
+            classification=classify_validation_failure(error, phase=phase),
+            phase=phase,
+            artifact=str(output_dir),
+            error_summary=failure_summary(error),
+            started_at=current.get("start_time"),
+            wall_seconds=time.perf_counter() - started,
+        )
+        current.update(
+            {
+                "status": FAILED,
+                "classification": classify_validation_failure(error, phase=phase),
+                "phase": phase,
+                "end_time": utc_now(),
+                "wall_seconds": time.perf_counter() - started,
+                "duration_seconds": time.perf_counter() - started,
+                "exit_code": 1,
+                "exception_type": type(error).__name__,
+                "error_message": failure_summary(error),
+                "traceback_tail": "".join(traceback.format_exception(error))[-4000:],
+                "phases": phases,
+            }
+        )
+        write_json(path, current)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        # The parent scheduler records a FAIL_WORKER_CRASH if this emergency
+        # finalizer cannot safely persist a worker completion state.
+        return
+
+
+def run_model(*args, **kwargs) -> dict[str, Any]:
+    """Run one model and guarantee an existing ``run_info.json`` is terminal."""
+
+    if args:
+        raise TypeError("run_model accepts keyword arguments only")
+    values = dict(kwargs)
+    model_name = str(values.get("model_name"))
+    config_path = values.get("config_path", "configs/experiment.yaml")
+    output_root = values.get("output_root")
+    run_id = values.get("run_id")
+    if run_id is None:
+        run_id = datetime.now().strftime("run-%Y%m%d-%H%M%S")
+        values["run_id"] = run_id
+    started = time.perf_counter()
+    try:
+        return _run_model_impl(**values)
+    except BaseException as exc:
+        _write_failed_run_info(
+            model_name=model_name,
+            config_path=config_path,
+            output_root=output_root,
+            run_id=str(run_id),
+            started=started,
+            error=exc,
+        )
+        raise

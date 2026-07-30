@@ -7,6 +7,8 @@ from pathlib import Path
 import sys
 from typing import Any
 
+from runtime.status import PASS
+
 
 def _print(value: Any) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2, default=str))
@@ -80,9 +82,30 @@ def main(argv: list[str] | None = None) -> int:
                 device=request["device"],
                 full_shape=bool(request.get("full_shape", False)),
                 cli_overrides=request.get("cli_overrides", {}),
+                run_id=request.get("run_id"),
+                operation="check",
+                runtime_environment=model_request.get("environment", {}).get("runtime_environment"),
+                status_path=model_request.get("status_path"),
             )
             _print(result)
-            return 0
+            return 0 if result.get("status") == PASS else 1
+        if operation == "validate_shape":
+            from runtime.validation import run_shape_validation
+
+            result = run_shape_validation(
+                model_name=model_name,
+                config_path=request["config_path"],
+                model_config_path=model_request["model_config_path"],
+                device=request["device"],
+                profile=request["profile"],
+                cli_overrides=request.get("cli_overrides", {}),
+                run_id=request.get("run_id"),
+                operation="train",
+                runtime_environment=model_request.get("environment", {}).get("runtime_environment"),
+                status_path=model_request.get("status_path"),
+            )
+            _print(result)
+            return 0 if result.get("status") == PASS else 1
         if operation == "preflight":
             from .preflight import run_preflight
 

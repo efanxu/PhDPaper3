@@ -32,10 +32,45 @@ from runtime.paths import (
     run_directory,
 )
 from runtime.run_info import utc_now, write_json, write_text_atomic
+from runtime.status import (
+    ENVIRONMENT_PREFLIGHT,
+    FAIL_CONFIG,
+    FAIL_SIGNAL,
+    FAIL_WORKER_CRASH,
+    FAILED,
+    FORMAL_DEFAULT_SHAPE,
+    INTERFACE_SMALL,
+    MODEL_PREFLIGHT,
+    PASS,
+    PENDING,
+    RESOLVED_SHAPE,
+    RUNNING,
+    SKIPPED,
+    TOP_LEVEL_STATUSES,
+    classify_validation_failure,
+    failure_summary,
+    finished_phase,
+    pass_classification,
+    phase_record,
+    running_phase,
+    write_validation_status,
+)
 
 
 def _default_model_config(config_file: Path, model: str) -> Path:
     return config_file.parent / "models" / f"{model}.yaml"
+
+
+def validate_unique_models(models: list[str]) -> None:
+    """Reject duplicate work before creating a run directory or starting a worker."""
+
+    duplicates = sorted({model for model in models if models.count(model) > 1})
+    if duplicates:
+        names = ", ".join(duplicates)
+        raise ValueError(
+            f"--model contains duplicate model names: {names}; "
+            "use repeatability or separate --run-id/--id-suffix runs instead"
+        )
 
 
 def _validate_model_configs(models: list[str], config_file: Path, explicit: str | Path | None) -> dict[str, Path]:
@@ -413,6 +448,7 @@ def _write_csv(path: Path, fieldnames: list[str], rows: list[dict[str, Any]]) ->
 
 def _status_payload(run_id: str, operation: str, records: list[dict[str, Any]]) -> dict[str, Any]:
     return {
+        "schema_version": 1,
         "run_id": run_id,
         "operation": operation,
         "updated_at": utc_now(),
@@ -486,10 +522,24 @@ def _new_record(
     *,
     runtime_fields: Mapping[str, Any],
 ) -> dict[str, Any]:
+    phases = {
+        "environment_preflight": phase_record(phase="environment_preflight"),
+        "model_preflight": phase_record(phase="model_preflight"),
+        "resolved_shape": phase_record(phase="resolved_shape"),
+        "training": phase_record(phase="training"),
+        "checkpoint_write": phase_record(phase="checkpoint_write"),
+        "checkpoint_reload": phase_record(phase="checkpoint_reload"),
+        "validation": phase_record(phase="validation"),
+        "test": phase_record(phase="test"),
+        "overall": phase_record(phase="pending"),
+    }
     return {
         "model": model,
         **dict(runtime_fields),
-        "status": "PENDING",
+        "status": PENDING,
+        "classification": None,
+        "phase": "pending",
+        "profile": None,
         "operation": "train",
         "pid": None,
         "exit_code": None,
@@ -499,8 +549,9 @@ def _new_record(
         "result_dir": str(result_dir),
         "log_path": str(log_path),
         "error_summary": None,
-        "status_history": ["PENDING"],
+        "status_history": [PENDING],
         "archive_path": None,
+        "phases": phases,
     }
 
 
@@ -511,7 +562,7 @@ def _run_worker(
     model: str,
     log_path: Path,
     resolved_environment: ResolvedEnvironment,
-) -> tuple[int, str]:
+) -> tuple[int, str, int]:
     command = build_model_worker_command(
         project_root=project_root,
         request_path=request_path,
@@ -537,7 +588,69 @@ def _run_worker(
             log_handle.flush()
             print(f"[{model}] {line.rstrip()}")
         exit_code = process.wait()
-    return exit_code, "".join(output)[-2000:]
+    return exit_code, "".join(output)[-2000:], int(process.pid)
+
+
+def _validation_profile_for_training(*, smoke: bool) -> str:
+    """Training always validates the exact resolved shape before its worker."""
+
+    del smoke
+    return RESOLVED_SHAPE
+
+
+def _shape_result_from_worker(
+    *,
+    status_path: Path,
+    model: str,
+    run_id: str,
+    runtime_fields: Mapping[str, Any],
+    exit_code: int,
+    output_tail: str,
+    wall_seconds: float,
+    profile: str,
+) -> dict[str, Any]:
+    """Read worker-written validation JSON or synthesize an honest crash state."""
+
+    payload = _read_json_mapping(status_path)
+    if payload and payload.get("status") in TOP_LEVEL_STATUSES:
+        payload.setdefault("wall_seconds", wall_seconds)
+        payload.setdefault("exit_code", exit_code)
+        return payload
+    classification = classify_validation_failure(
+        message=output_tail,
+        phase="worker",
+        exit_code=exit_code,
+        worker_status_present=False,
+    )
+    payload = {
+        "schema_version": 1,
+        "model": model,
+        "run_id": run_id,
+        "operation": "train",
+        "profile": profile,
+        "status": FAILED,
+        "classification": classification,
+        "phase": "worker_completion_missing",
+        "started_at": None,
+        "ended_at": utc_now(),
+        "wall_seconds": wall_seconds,
+        **dict(runtime_fields),
+        "exception_type": None,
+        "error_message": output_tail or f"validation worker exited with code {exit_code}",
+        "exit_code": exit_code,
+    }
+    write_validation_status(status_path, payload)
+    return payload
+
+
+def _copy_worker_run_phases(record: dict[str, Any]) -> None:
+    info = _read_json_mapping(Path(record["result_dir"]) / "run_info.json")
+    phases = info.get("phases")
+    if isinstance(phases, Mapping):
+        for name in ("training", "checkpoint_write", "checkpoint_reload", "validation", "test"):
+            value = phases.get(name)
+            if isinstance(value, Mapping):
+                record["phases"][name] = dict(value)
 
 
 def run_training_models(
@@ -566,6 +679,7 @@ def run_training_models(
 ) -> dict[str, Any]:
     if not models:
         raise ValueError("at least one model is required")
+    validate_unique_models(models)
     if resume and overwrite or resume and id_suffix or overwrite and id_suffix:
         raise ValueError("--resume, --overwrite and --id-suffix are mutually exclusive")
     config_file = Path(config_path).resolve()
@@ -586,13 +700,51 @@ def run_training_models(
         if cached is not None:
             environment_context = cached
     if environment_context is None:
-        environment_context = _prepare_batch_environments(
-            models=models,
-            model_configs=model_configs,
-            project_root=project_root,
-            device=device,
-            config_path=config_file,
-        )
+        try:
+            environment_context = _prepare_batch_environments(
+                models=models,
+                model_configs=model_configs,
+                project_root=project_root,
+                device=device,
+                config_path=config_file,
+            )
+        except BaseException as exc:
+            classification = classify_validation_failure(exc, phase="environment")
+            records = [
+                _new_record(
+                    model,
+                    run_directory(project_root, root, model, effective_id),
+                    logs_root / f"{model}.log",
+                    runtime_fields={},
+                )
+                for model in models
+            ]
+            for record in records:
+                record.update(
+                    {"status": FAILED, "classification": classification, "phase": "environment_preflight"}
+                )
+                record["error_summary"] = failure_summary(exc)
+                record["phases"]["environment_preflight"] = finished_phase(
+                    classification=classification,
+                    phase="environment_preflight",
+                    error_summary=record["error_summary"],
+                )
+                record["phases"]["overall"] = finished_phase(
+                    classification=classification,
+                    phase="environment_preflight",
+                    error_summary=record["error_summary"],
+                )
+            _save_status(run_root, effective_id, "train", records)
+            _write_summaries(run_root, records)
+            return {
+                "passed": False,
+                "run_id": effective_id,
+                "run_root": str(run_root),
+                "models": records,
+                "summary_csv": str(run_root / "summary.csv"),
+                "performance_summary_csv": str(run_root / "performance_summary.csv"),
+                "model_comparison_csv": str(run_root / "model_comparison.csv"),
+            }
         if environment_context_holder is not None:
             environment_context_holder["value"] = environment_context
     model_environments, preflight_results = environment_context
@@ -610,8 +762,22 @@ def run_training_models(
     ]
     if environment_preflight_only:
         for record in records:
-            record["status"] = "PREFLIGHTED"
-            record["status_history"].append("PREFLIGHTED")
+            record["status"] = PASS
+            record["classification"] = pass_classification(ENVIRONMENT_PREFLIGHT)
+            record["phase"] = "environment_preflight_complete"
+            record["phases"]["environment_preflight"] = finished_phase(
+                profile=ENVIRONMENT_PREFLIGHT,
+                phase="environment_preflight_complete",
+            )
+            record["phases"]["model_preflight"] = finished_phase(
+                profile=MODEL_PREFLIGHT,
+                phase="model_preflight_complete",
+            )
+            record["phases"]["overall"] = finished_phase(
+                profile=ENVIRONMENT_PREFLIGHT,
+                phase="environment_preflight_complete",
+            )
+            record["status_history"].append(PASS)
         _save_status(run_root, effective_id, "environment_preflight", records)
         _write_summaries(run_root, records)
         return {
@@ -660,16 +826,30 @@ def run_training_models(
     for record in records:
         result_dir = Path(record["result_dir"])
         model = record["model"]
+        record["phases"]["environment_preflight"] = finished_phase(
+            profile=ENVIRONMENT_PREFLIGHT, phase="environment_preflight_complete"
+        )
+        record["phases"]["model_preflight"] = finished_phase(
+            profile=MODEL_PREFLIGHT, phase="model_preflight_complete"
+        )
         if resume:
             if not result_dir.exists() or not any(result_dir.iterdir()):
                 continue
             if is_completed_run(result_dir):
-                record["status"] = "SKIPPED_COMPLETED"
+                record["status"] = SKIPPED
+                record["classification"] = None
+                record["phase"] = "completed_run_reused"
+                record["phases"]["overall"] = phase_record(
+                    status=SKIPPED, phase="completed_run_reused", artifact=str(result_dir)
+                )
                 continue
             checkpoint = result_dir / "last.pt"
             if not checkpoint.is_file():
-                record["status"] = "FAILED"
+                record.update({"status": FAILED, "classification": FAIL_CONFIG, "phase": "resume"})
                 record["error_summary"] = "--resume requires a valid last.pt; use --overwrite or --id-suffix"
+                record["phases"]["overall"] = finished_phase(
+                    classification=FAIL_CONFIG, phase="resume", error_summary=record["error_summary"]
+                )
                 blocked = True
                 continue
             try:
@@ -677,28 +857,32 @@ def run_training_models(
 
                 read_checkpoint_manifest(checkpoint)
             except (OSError, RuntimeError, ValueError, TypeError) as exc:
-                record["status"] = "FAILED"
+                record.update({"status": FAILED, "classification": classify_validation_failure(exc, phase="checkpoint"), "phase": "resume"})
                 record["error_summary"] = f"invalid last.pt: {exc}; use --overwrite or --id-suffix"
+                record["phases"]["overall"] = finished_phase(
+                    classification=record["classification"], phase="resume", error_summary=record["error_summary"]
+                )
                 blocked = True
                 continue
             requests["models"][model]["resume_checkpoint"] = str(checkpoint)
-            record["status"] = "RESUMED"
-            record["status_history"].append("RESUMED")
-        elif overwrite:
-            if result_dir.exists():
-                if not result_dir.is_dir():
-                    record["status"] = "FAILED"
-                    record["error_summary"] = f"result path is not a directory: {result_dir}"
-                    blocked = True
-                    continue
-                if formal_result_exists(result_dir) or any(result_dir.iterdir()):
-                    archive = archive_directory(result_dir, root / "_archive" / model, label=effective_id)
-                    record["archive_path"] = str(archive)
-                    record["status"] = "OVERWRITTEN"
-                    record["status_history"].append("OVERWRITTEN")
+        elif overwrite and result_dir.exists():
+            if not result_dir.is_dir():
+                record.update({"status": FAILED, "classification": FAIL_CONFIG, "phase": "output_directory"})
+                record["error_summary"] = f"result path is not a directory: {result_dir}"
+                record["phases"]["overall"] = finished_phase(
+                    classification=FAIL_CONFIG, phase="output_directory", error_summary=record["error_summary"]
+                )
+                blocked = True
+                continue
+            if formal_result_exists(result_dir) or any(result_dir.iterdir()):
+                archive = archive_directory(result_dir, root / "_archive" / model, label=effective_id)
+                record["archive_path"] = str(archive)
         elif result_dir.exists() and (formal_result_exists(result_dir) or any(result_dir.iterdir())):
-            record["status"] = "FAILED"
+            record.update({"status": FAILED, "classification": FAIL_CONFIG, "phase": "output_directory"})
             record["error_summary"] = "result directory is not empty; choose --resume, --overwrite or --id-suffix"
+            record["phases"]["overall"] = finished_phase(
+                classification=FAIL_CONFIG, phase="output_directory", error_summary=record["error_summary"]
+            )
             blocked = True
     write_json(run_root / "request.json", requests)
     _save_status(run_root, effective_id, "train", records)
@@ -706,78 +890,176 @@ def run_training_models(
 
     failed = blocked
     for index, record in enumerate(records):
-        if record["status"] not in {"PENDING", "OVERWRITTEN", "RESUMED"}:
+        if record["status"] not in {PENDING}:
             continue
         if fail_fast and failed:
-            record["status"] = "FAILED"
+            record.update({"status": SKIPPED, "phase": "fail_fast"})
             record["error_summary"] = "not started because --fail-fast stopped the scheduler"
-            failed = True
+            record["phases"]["overall"] = phase_record(
+                status=SKIPPED, phase="fail_fast", error_summary=record["error_summary"]
+            )
             continue
         model = record["model"]
+        result_dir = Path(record["result_dir"])
+        result_dir.mkdir(parents=True, exist_ok=True)
+        profile = _validation_profile_for_training(smoke=smoke)
+        status_path = result_dir / "validation_status.json"
+        requests["models"][model]["status_path"] = str(status_path)
         requests["models"][model]["resume_checkpoint"] = requests["models"][model].get("resume_checkpoint")
+        shape_request = dict(requests)
+        shape_request["operation"] = "validate_shape"
+        shape_request["profile"] = profile
+        shape_request_path = run_root / f"{model}.resolved_shape.request.json"
+        write_json(shape_request_path, shape_request)
+        record["status"] = RUNNING
+        record["profile"] = profile
+        record["phase"] = "resolved_shape"
+        record["phases"]["resolved_shape"] = running_phase(
+            "resolved_shape", artifact=str(status_path)
+        )
+        _save_status(run_root, effective_id, "train", records)
+        shape_started = time.perf_counter()
+        shape_exit, shape_tail, shape_pid = _run_worker(
+            project_root=project_root,
+            request_path=shape_request_path,
+            model=model,
+            log_path=logs_root / f"{model}.resolved_shape.log",
+            resolved_environment=model_environments[model],
+        )
+        record["resolved_shape_pid"] = shape_pid
+        shape_seconds = time.perf_counter() - shape_started
+        shape = _shape_result_from_worker(
+            status_path=status_path,
+            model=model,
+            run_id=effective_id,
+            runtime_fields=_runtime_record_fields(
+                model_environments[model], preflight_results[model_environments[model].environment_id]
+            ),
+            exit_code=shape_exit,
+            output_tail=shape_tail,
+            wall_seconds=shape_seconds,
+            profile=profile,
+        )
+        record["validation_status"] = shape
+        record["phases"]["resolved_shape"] = {
+            "status": shape.get("status", FAILED),
+            "classification": shape.get("classification"),
+            "phase": shape.get("phase"),
+            "started_at": shape.get("started_at"),
+            "ended_at": shape.get("ended_at"),
+            "wall_seconds": shape.get("wall_seconds"),
+            "artifact": str(status_path),
+            "error_summary": shape.get("error_message"),
+        }
+        if shape.get("status") != PASS:
+            record.update(
+                {
+                    "status": FAILED,
+                    "classification": shape.get("classification", FAIL_WORKER_CRASH),
+                    "phase": "resolved_shape",
+                    "exit_code": shape_exit,
+                    "ended_at": utc_now(),
+                    "wall_seconds": shape_seconds,
+                    "error_summary": shape.get("error_message") or shape_tail,
+                }
+            )
+            record["phases"]["overall"] = finished_phase(
+                classification=record["classification"],
+                phase="resolved_shape",
+                artifact=str(status_path),
+                error_summary=record["error_summary"],
+            )
+            failed = True
+            _save_status(run_root, effective_id, "train", records)
+            _write_summaries(run_root, records)
+            continue
+
         write_json(run_root / "request.json", requests)
-        execution_origin = record["status"]
-        record["status"] = "RUNNING"
+        record["phase"] = "training"
         record["started_at"] = utc_now()
         record["pid"] = None
+        record["phases"]["training"] = running_phase("training")
         _save_status(run_root, effective_id, "train", records)
         started = time.perf_counter()
-        resolved_environment = model_environments[model]
-        command = build_model_worker_command(
+        exit_code, tail, pid = _run_worker(
             project_root=project_root,
             request_path=run_root / "request.json",
-            model_name=model,
-            resolved_environment=resolved_environment,
+            model=model,
+            log_path=Path(record["log_path"]),
+            resolved_environment=model_environments[model],
         )
-        log_path = Path(record["log_path"])
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        output: list[str] = []
-        with log_path.open("w", encoding="utf-8", newline="") as log_handle:
-            process = subprocess.Popen(
-                command,
-                cwd=project_root,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                env=build_worker_environment(resolved_environment, project_root=project_root),
-            )
-            record["pid"] = int(process.pid)
-            _save_status(run_root, effective_id, "train", records)
-            assert process.stdout is not None
-            for line in process.stdout:
-                output.append(line)
-                log_handle.write(line)
-                log_handle.flush()
-                print(f"[{model}] {line.rstrip()}")
-            exit_code = process.wait()
+        record["pid"] = pid
         record["exit_code"] = int(exit_code)
         record["ended_at"] = utc_now()
         record["wall_seconds"] = time.perf_counter() - started
-        if exit_code == 0:
-            if execution_origin not in {"RESUMED", "OVERWRITTEN"}:
-                record["status"] = "COMPLETED"
-            else:
-                record["status"] = execution_origin
-            record["error_summary"] = record["error_summary"] or None
+        _copy_worker_run_phases(record)
+        run_info = _read_json_mapping(result_dir / "run_info.json")
+        if exit_code == 0 and run_info.get("status") == PASS:
+            record.update(
+                {
+                    "status": PASS,
+                    "classification": run_info.get("classification"),
+                    "phase": run_info.get("phase", "complete"),
+                    "error_summary": None,
+                }
+            )
+            record["phases"]["overall"] = finished_phase(
+                classification=record["classification"],
+                phase=record["phase"],
+                artifact=str(result_dir),
+                wall_seconds=record["wall_seconds"],
+            )
         else:
-            record["status"] = "FAILED"
-            record["error_summary"] = "".join(output)[-2000:] or f"worker exited with code {exit_code}"
+            worker_status_present = bool(run_info) and run_info.get("status") == FAILED
+            classification = run_info.get("classification") if worker_status_present else classify_validation_failure(
+                message=tail,
+                phase="worker",
+                exit_code=exit_code,
+                worker_status_present=False,
+            )
+            record.update(
+                {
+                    "status": FAILED,
+                    "classification": classification,
+                    "phase": run_info.get("phase", "worker_completion_missing"),
+                    "error_summary": run_info.get("error_message") or tail or f"worker exited with code {exit_code}",
+                }
+            )
+            training_phase = record["phases"].get("training")
+            if isinstance(training_phase, Mapping) and training_phase.get("status") == RUNNING:
+                record["phases"]["training"] = finished_phase(
+                    classification=classification,
+                    phase=record["phase"],
+                    artifact=str(result_dir),
+                    error_summary=record["error_summary"],
+                    started_at=training_phase.get("started_at"),
+                    wall_seconds=record["wall_seconds"],
+                )
+            record["phases"]["overall"] = finished_phase(
+                classification=classification,
+                phase=record["phase"],
+                artifact=str(result_dir),
+                error_summary=record["error_summary"],
+                wall_seconds=record["wall_seconds"],
+            )
             failed = True
         _save_status(run_root, effective_id, "train", records)
         _write_summaries(run_root, records)
         if failed and fail_fast:
             for remaining in records[index + 1 :]:
-                if remaining["status"] == "PENDING":
-                    remaining["status"] = "FAILED"
+                if remaining["status"] == PENDING:
+                    remaining.update({"status": SKIPPED, "phase": "fail_fast"})
                     remaining["error_summary"] = "not started because --fail-fast stopped the scheduler"
+                    remaining["phases"]["overall"] = phase_record(
+                        status=SKIPPED, phase="fail_fast", error_summary=remaining["error_summary"]
+                    )
             _save_status(run_root, effective_id, "train", records)
             _write_summaries(run_root, records)
             break
     _save_status(run_root, effective_id, "train", records)
     _write_summaries(run_root, records)
     return {
-        "passed": not any(record["status"] == "FAILED" for record in records),
+        "passed": not any(record["status"] == FAILED for record in records),
         "run_id": effective_id,
         "run_root": str(run_root),
         "models": records,
@@ -795,22 +1077,67 @@ def run_isolated_checks(
     model_config_path: str | Path | None,
     device: str,
     cli_overrides: Mapping[str, Any] | None,
+    run_id: str | None = None,
+    output_root: str | Path | None = None,
     full_shape: bool = False,
     no_data: bool = False,
     environment_preflight_only: bool = False,
 ) -> dict[str, Any]:
     if operation not in {"check", "preflight"}:
         raise ValueError(f"unsupported isolated operation: {operation}")
+    if not models:
+        raise ValueError("at least one model is required")
+    validate_unique_models(models)
     config_file = Path(config_path).resolve()
     project_root = project_root_from_config(config_file)
-    model_configs = _validate_model_configs(models, config_file, model_config_path)
-    model_environments, preflight_results = _prepare_batch_environments(
-        models=models,
-        model_configs=model_configs,
-        project_root=project_root,
-        device=device,
-        config_path=config_file,
+    root = resolve_output_root(project_root, output_root)
+    run_name = effective_run_id(
+        run_id or f"{operation}-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}",
+        None,
     )
+    run_root = (root / ("_checks" if operation == "check" else "_runs") / run_name).resolve()
+    model_configs = _validate_model_configs(models, config_file, model_config_path)
+    try:
+        model_environments, preflight_results = _prepare_batch_environments(
+            models=models,
+            model_configs=model_configs,
+            project_root=project_root,
+            device=device,
+            config_path=config_file,
+        )
+    except BaseException as exc:
+        classification = classify_validation_failure(exc, phase="environment")
+        run_root.mkdir(parents=True, exist_ok=True)
+        results = [
+            {
+                "schema_version": 1,
+                "model": model,
+                "run_id": run_name,
+                "operation": operation,
+                "status": FAILED,
+                "classification": classification,
+                "phase": "environment_preflight",
+                "exit_code": 1,
+                "error_message": failure_summary(exc),
+            }
+            for model in models
+        ]
+        result = {
+            "schema_version": 1,
+            "passed": False,
+            "operation": operation,
+            "run_id": run_name,
+            "results": results,
+        }
+        for item in results:
+            write_validation_status(run_root / f"{item['model']}.json", item)
+        write_json(run_root / "status.json", result)
+        _write_csv(
+            run_root / "summary.csv",
+            ["model", "status", "classification", "phase", "exit_code", "error_message"],
+            results,
+        )
+        return result
     if environment_preflight_only:
         results = [
             {
@@ -819,7 +1146,8 @@ def run_isolated_checks(
                     model_environments[model],
                     preflight_results[model_environments[model].environment_id],
                 ),
-                "status": "PREFLIGHTED",
+                "status": PASS,
+                "classification": pass_classification(ENVIRONMENT_PREFLIGHT),
                 "exit_code": 0,
             }
             for model in models
@@ -830,11 +1158,10 @@ def run_isolated_checks(
             "results": results,
             "environment_preflight_only": True,
         }
-    run_name = f"{operation}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}"
-    run_root = (project_root / "results" / "_runs" / run_name).resolve()
     run_root.mkdir(parents=True, exist_ok=True)
     request: dict[str, Any] = {
         "operation": operation,
+        "run_id": run_name,
         "config_path": str(config_file),
         "device": device,
         "cli_overrides": dict(cli_overrides or {}),
@@ -843,6 +1170,7 @@ def run_isolated_checks(
         "models": {
             model: {
                 "model_config_path": str(model_configs[model]),
+                "status_path": str(run_root / f"{model}.json"),
                 "environment": {
                     **_runtime_record_fields(
                         model_environments[model],
@@ -863,27 +1191,64 @@ def run_isolated_checks(
     for model in models:
         log_path = project_root / "logs" / run_name / f"{model}.log"
         started = time.perf_counter()
-        exit_code, tail = _run_worker(
+        exit_code, tail, pid = _run_worker(
             project_root=project_root,
             request_path=request_path,
             model=model,
             log_path=log_path,
             resolved_environment=model_environments[model],
         )
-        results.append(
-            {
-                "model": model,
-                **_runtime_record_fields(
-                    model_environments[model],
-                    preflight_results[model_environments[model].environment_id],
-                ),
-                "status": "COMPLETED" if exit_code == 0 else "FAILED",
-                "exit_code": exit_code,
-                "log_path": str(log_path),
-                "wall_seconds": time.perf_counter() - started,
-                "output_tail": tail,
-            }
+        wall_seconds = time.perf_counter() - started
+        runtime_fields = _runtime_record_fields(
+            model_environments[model], preflight_results[model_environments[model].environment_id]
         )
-    result = {"passed": not any(item["status"] == "FAILED" for item in results), "operation": operation, "results": results}
+        if operation == "check":
+            item = _shape_result_from_worker(
+                status_path=run_root / f"{model}.json",
+                model=model,
+                run_id=run_name,
+                runtime_fields=runtime_fields,
+                exit_code=exit_code,
+                output_tail=tail,
+                wall_seconds=wall_seconds,
+                profile=FORMAL_DEFAULT_SHAPE if full_shape and not cli_overrides else RESOLVED_SHAPE if full_shape else INTERFACE_SMALL,
+            )
+            item.update({**runtime_fields, "pid": pid, "log_path": str(log_path), "output_tail": tail})
+        else:
+            classification = pass_classification(MODEL_PREFLIGHT) if exit_code == 0 else classify_validation_failure(
+                message=tail,
+                phase="worker",
+                exit_code=exit_code,
+                worker_status_present=False,
+            )
+            item = {
+                "schema_version": 1,
+                "model": model,
+                "run_id": run_name,
+                "operation": operation,
+                **runtime_fields,
+                "status": PASS if exit_code == 0 else FAILED,
+                "classification": classification,
+                "phase": "model_preflight_complete" if exit_code == 0 else "worker_completion_missing",
+                "exit_code": exit_code,
+                "pid": pid,
+                "log_path": str(log_path),
+                "wall_seconds": wall_seconds,
+                "error_message": None if exit_code == 0 else tail,
+            }
+            write_validation_status(run_root / f"{model}.json", item)
+        results.append(item)
+    result = {
+        "schema_version": 1,
+        "passed": not any(item["status"] == FAILED for item in results),
+        "operation": operation,
+        "run_id": run_name,
+        "results": results,
+    }
     write_json(run_root / "status.json", result)
+    _write_csv(
+        run_root / "summary.csv",
+        ["model", "profile", "status", "classification", "phase", "batch_size", "batch_size_source", "input_shape", "output_shape", "parameter_count", "exit_code", "wall_seconds"],
+        results,
+    )
     return result

@@ -97,7 +97,10 @@ def test_gitignore_allows_small_csv_fixtures_but_keeps_runtime_artifacts_ignored
     checks = {
         "tests/fixtures/turbine_locations_small.csv": False,
         "results/example.csv": True,
+        "logs/example.log": True,
+        "dataset/example.parquet": True,
         "Time-Series-Library/models/Crossformer.py": True,
+        "results/example.pt": True,
     }
     for path, expected_ignored in checks.items():
         result = subprocess.run(["git", "check-ignore", "-q", path], cwd=ROOT, check=False)

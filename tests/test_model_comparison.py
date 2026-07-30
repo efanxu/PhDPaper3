@@ -9,6 +9,7 @@ import pytest
 import yaml
 
 from cli import orchestrator
+from runtime.status import FAILED, PASS
 
 
 MODEL_COMPARISON_FIELDS = [
@@ -87,21 +88,21 @@ def test_model_comparison_contains_complete_horizon_and_failure_rows(tmp_path: P
     records = [
         {
             "model": "node_shared_lstm",
-            "status": "COMPLETED",
+            "status": PASS,
             "result_dir": str(result_dir),
             "runtime_environment": "tslib",
             "python_executable": sys.executable,
         },
         {
             "model": "crossformer",
-            "status": "COMPLETED",
+            "status": PASS,
             "result_dir": str(result_dir),
             "runtime_environment": "tslib",
             "python_executable": sys.executable,
         },
         {
             "model": "stcn",
-            "status": "FAILED",
+            "status": FAILED,
             "result_dir": str(failed_dir),
             "runtime_environment": "tsl",
             "python_executable": "target-python",
@@ -124,7 +125,7 @@ def test_model_comparison_contains_complete_horizon_and_failure_rows(tmp_path: P
     assert rows[0]["runtime_environment"] == "tslib"
     assert rows[0]["python_executable"] == sys.executable
     assert rows[0]["result_dir"] == str(result_dir)
-    assert rows[1]["status"] == "COMPLETED"
-    assert rows[2]["status"] == "FAILED"
+    assert rows[1]["status"] == PASS
+    assert rows[2]["status"] == FAILED
     assert rows[2]["H3_MAE"] == ""
     assert rows[2]["H10_Official_Score"] == ""

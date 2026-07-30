@@ -12,6 +12,15 @@ live under `results/<model>/<run_id>/`.
 
 - one or many models through `train --model ...`;
 - isolated model processes, per-model logs and atomic run status;
+- every training worker is preceded by an independent resolved-shape worker;
+- `check --full-shape` without public shape overrides records the separate
+  YAML-default formal shape;
+- shared `PENDING`/`RUNNING`/`PASS`/`FAILED`/`SKIPPED` states use explicit
+  classifications and are atomically persisted in `validation_status.json`,
+  model `run_info.json`, batch `results/_runs/<run-id>/status.json`, and
+  standalone `results/_checks/<run-id>/status.json`;
+- duplicate names in `--model` are rejected before directories or workers;
+- batch-1 resolved checks and default-batch formal checks remain distinct.
 - fail-closed new runs, checkpoint resume, archive-based overwrite and ID suffixes;
 - complete epoch checkpoint state, deterministic resume and independent A/B repeatability;
 - shared training/evaluation timing, throughput, parameter and GPU-memory metrics;

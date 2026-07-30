@@ -7,6 +7,8 @@ import re
 from datetime import datetime, timezone
 from uuid import uuid4
 
+from .status import PASS, PASS_FULL, PASS_SMOKE
+
 
 SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 FORMAL_RESULT_ARTIFACTS = (
@@ -69,8 +71,10 @@ def formal_result_exists(path: Path) -> bool:
 def is_completed_run(path: Path) -> bool:
     required = (
         path / "best.pt",
+        path / "last.pt",
         path / "run_info.json",
         path / "performance.json",
+        path / "metrics_validation.json",
     )
     if not all(item.is_file() for item in required):
         return False
@@ -82,7 +86,10 @@ def is_completed_run(path: Path) -> bool:
         info = json.loads((path / "run_info.json").read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
         return False
-    return info.get("status") == "COMPLETED"
+    return info.get("status") == PASS and info.get("classification") in {
+        PASS_FULL,
+        PASS_SMOKE,
+    }
 
 
 def archive_directory(path: Path, archive_root: Path, *, label: str) -> Path:

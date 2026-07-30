@@ -73,7 +73,18 @@ def _dispatch(args, raw_argv: list[str]) -> int:
     if args.command == "check":
         from .orchestrator import run_isolated_checks
 
-        result = run_isolated_checks(operation="check", models=list(args.model), config_path=args.config, model_config_path=args.model_config, device=args.device, cli_overrides=cli_overrides, full_shape=args.full_shape, environment_preflight_only=args.environment_preflight_only)
+        result = run_isolated_checks(
+            operation="check",
+            models=list(args.model),
+            config_path=args.config,
+            model_config_path=args.model_config,
+            device=args.device,
+            output_root=args.output_root,
+            run_id=args.run_id,
+            cli_overrides=cli_overrides,
+            full_shape=args.full_shape,
+            environment_preflight_only=args.environment_preflight_only,
+        )
         _print_json(result)
         return 0 if result["passed"] else 1
 

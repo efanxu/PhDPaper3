@@ -18,9 +18,18 @@ from .orchestrator import (
     _validate_model_configs,
     extract_metric_value,
     run_training_models,
+    validate_unique_models,
 )
 from runtime.paths import archive_directory, effective_run_id, project_root_from_config, resolve_output_root
 from runtime.run_info import write_json
+from runtime.status import (
+    ENVIRONMENT_PREFLIGHT,
+    FAILED,
+    FAIL_REPEATABILITY,
+    PASS,
+    REPEATABILITY,
+    pass_classification,
+)
 
 
 def _remove_run_id(value: dict[str, Any]) -> dict[str, Any]:
@@ -177,8 +186,7 @@ def compare_repeated_runs(
         raise ValueError("repeatability tolerances must be non-negative")
     if not models:
         raise ValueError("at least one model is required")
-    if len(set(models)) != len(models):
-        raise ValueError("repeatability requires unique model names")
+    validate_unique_models(models)
     if model_config_path is not None and len(models) > 1:
         raise ValueError("--model-config is only valid with exactly one --model; multi-model repeatability loads configs/models/<model>.yaml separately")
     config_file = Path(config_path).resolve()
@@ -197,7 +205,8 @@ def compare_repeated_runs(
         results = [
             {
                 "model": model,
-                "status": "PREFLIGHTED",
+                "status": PASS,
+                "classification": pass_classification(ENVIRONMENT_PREFLIGHT),
                 "runtime_environment": model_environments[model].environment_id,
                 "conda_env": model_environments[model].conda_env,
                 "python_executable": str(model_environments[model].python_executable),
@@ -284,7 +293,7 @@ def compare_repeated_runs(
             # Keep the seam usable for lightweight test doubles that predate
             # the scheduler's explicit status field.
             return True
-        return status in {"COMPLETED", "RESUMED", "OVERWRITTEN", "SKIPPED_COMPLETED"}
+        return status == PASS
 
     for model in models:
         first_record = first_by_model.get(model)
@@ -324,6 +333,11 @@ def compare_repeated_runs(
             }
         comparison.update(
             {
+                "status": PASS if comparison["passed"] else FAILED,
+                "classification": pass_classification(REPEATABILITY)
+                if comparison["passed"]
+                else FAIL_REPEATABILITY,
+                "profile": REPEATABILITY,
                 "run_a": str(first_dir),
                 "run_b": str(second_dir),
                 "subprocess_pids": [
@@ -336,8 +350,18 @@ def compare_repeated_runs(
         )
         write_json(report_dir / "repeatability_report.json", comparison)
         reports.append(comparison)
+    passed = bool(reports) and all(item["passed"] for item in reports)
+    status = {
+        "schema_version": 1,
+        "run_id": base_id,
+        "operation": "repeatability",
+        "status": PASS if passed else FAILED,
+        "classification": pass_classification(REPEATABILITY) if passed else FAIL_REPEATABILITY,
+        "models": reports,
+    }
+    write_json(repeat_root / "status.json", status)
     return {
-        "passed": bool(reports) and all(item["passed"] for item in reports),
+        "passed": passed,
         "run_id": base_id,
         "models": reports,
         "repeatability_root": str(repeat_root),

@@ -83,6 +83,20 @@ to `summary.csv`, `performance_summary.csv` and
 `model_comparison.csv`.  Model code must not implement a second Trainer,
 timing path, environment switcher or result aggregator.
 
+## Fixed acceptance sequence
+
+New models complete, in order: `INTERFACE_SMALL`, environment preflight,
+model preflight, `RESOLVED_SHAPE`, Smoke, `FORMAL_DEFAULT_SHAPE`, and
+Repeatability before a formal Full run. Every `train` command independently
+runs `RESOLVED_SHAPE` before the training worker. Smoke validates the resolved
+command batch; `check --full-shape` with no public shape override validates the
+YAML-default formal batch. Report batch-1 and default-batch results separately.
+
+Environment preflight does not validate the real data node order. Data
+preflight, resolved/formal shape checks and Smoke validate node IDs against
+the public graph resources. Persisted states classify configuration, resource,
+OOM and worker-crash failures separately.
+
 The model module must expose:
 
 ```python

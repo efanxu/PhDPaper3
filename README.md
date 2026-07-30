@@ -55,6 +55,18 @@ python scripts\run.py train `
   --eval-batch-size 1
 ```
 
+Every training command first runs an isolated shape check for its resolved
+configuration. New model integration should also run an independent default
+formal-shape check with no public shape overrides:
+
+```powershell
+python scripts\run.py check `
+  --model node_shared_lstm crossformer stcn `
+  --run-id formal_shape_seed2026 `
+  --device cuda `
+  --full-shape
+```
+
 Environment-only validation:
 
 ```powershell

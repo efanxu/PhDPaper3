@@ -1,0 +1,215 @@
+"""One forward/backward shape validation implementation for every command."""
+
+from __future__ import annotations
+
+import sys
+import time
+import traceback
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any
+
+import torch
+
+from data.loader import load_data
+from engine.losses import resolve_loss
+from engine.reproducibility import set_seed
+from models.base import DataInfoView, ModelInput
+from models.loader import build_model
+from runtime.config import (
+    apply_cli_overrides,
+    cli_overrides_as_nested,
+    load_experiment_config,
+    load_model_config,
+)
+from runtime.paths import project_root_from_config
+from runtime.status import (
+    FORMAL_DEFAULT_SHAPE,
+    FAILED,
+    INTERFACE_SMALL,
+    PASS,
+    RESOLVED_SHAPE,
+    classify_validation_failure,
+    failure_summary,
+    pass_classification,
+    write_validation_status,
+)
+from runtime.run_info import utc_now
+
+
+def _choose_device(value: str) -> torch.device:
+    if value == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if value == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA was requested but is unavailable")
+    return torch.device(value)
+
+
+def _batch_size(profile: str, configured: int, cli_overrides: Mapping[str, Any]) -> tuple[int, str]:
+    if profile == INTERFACE_SMALL:
+        return min(2, configured), "interface_small"
+    if "training.train_batch_size" in cli_overrides:
+        return configured, "cli_override"
+    return configured, "yaml_default"
+
+
+def _memory_snapshot(device: torch.device) -> dict[str, float | None]:
+    if device.type != "cuda":
+        return {
+            "gpu_total_mb": None,
+            "gpu_allocated_mb": None,
+            "gpu_reserved_mb": None,
+            "peak_gpu_allocated_mb": None,
+            "peak_gpu_reserved_mb": None,
+        }
+    free, total = torch.cuda.mem_get_info(device)
+    del free
+    scale = 1024.0 * 1024.0
+    return {
+        "gpu_total_mb": float(total) / scale,
+        "gpu_allocated_mb": float(torch.cuda.memory_allocated(device)) / scale,
+        "gpu_reserved_mb": float(torch.cuda.memory_reserved(device)) / scale,
+        "peak_gpu_allocated_mb": float(torch.cuda.max_memory_allocated(device)) / scale,
+        "peak_gpu_reserved_mb": float(torch.cuda.max_memory_reserved(device)) / scale,
+    }
+
+
+def _requested_allocation_mb(batch: int, info: DataInfoView) -> float:
+    values = batch * (
+        info.lookback * info.num_nodes * info.num_features + 2 * info.num_nodes * info.max_pred_len
+    )
+    return float(values * 4) / (1024.0 * 1024.0)
+
+
+def run_shape_validation(
+    *,
+    model_name: str,
+    config_path: str | Path,
+    model_config_path: str | Path | None,
+    device: str,
+    profile: str,
+    cli_overrides: Mapping[str, Any] | None = None,
+    run_id: str | None = None,
+    operation: str = "check",
+    runtime_environment: str | None = None,
+    status_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Validate actual resolved tensor dimensions in the current process.
+
+    Callers intentionally run this function in a short-lived worker.  It loads
+    real metadata and graph resources, but only passes synthetic ``x`` through
+    ``ModelInput``; labels and masks remain owned by this validator.
+    """
+
+    if profile not in {INTERFACE_SMALL, RESOLVED_SHAPE, FORMAL_DEFAULT_SHAPE}:
+        raise ValueError(f"unsupported shape validation profile: {profile}")
+    started_at = utc_now()
+    started = time.perf_counter()
+    phase = "config"
+    selected_device: torch.device | None = None
+    model = None
+    x = target = target_mask = output = loss = None
+    overrides = dict(cli_overrides or {})
+    payload: dict[str, Any] = {
+        "schema_version": 1,
+        "model": model_name,
+        "run_id": run_id,
+        "operation": operation,
+        "profile": profile,
+        "status": PASS,
+        "classification": pass_classification(profile),
+        "phase": "starting",
+        "started_at": started_at,
+        "ended_at": None,
+        "wall_seconds": None,
+        "runtime_environment": runtime_environment,
+        "python_executable": sys.executable,
+        "device": device,
+        "batch_size": None,
+        "batch_size_source": None,
+        "cli_overrides": cli_overrides_as_nested(overrides),
+        "input_shape": None,
+        "output_shape": None,
+        "parameter_count": None,
+        "requested_allocation_mb": None,
+        "exception_type": None,
+        "error_message": None,
+        "traceback_tail": None,
+        "exit_code": 0,
+    }
+    try:
+        config_file = Path(config_path).resolve()
+        root = project_root_from_config(config_file)
+        base_config = load_experiment_config(config_file)
+        config = apply_cli_overrides(base_config, overrides, project_root=root)
+        model_file = Path(model_config_path).resolve() if model_config_path else root / "configs" / "models" / f"{model_name}.yaml"
+        model_config = load_model_config(model_file)
+        selected_device = _choose_device(device)
+        payload["device"] = str(selected_device)
+        set_seed(int(config.training["seed"]), deterministic=bool(config.runtime["deterministic"]))
+        phase = "data"
+        _, loaded_data_info = load_data(config, project_root=root)
+        data_info = DataInfoView.from_object(loaded_data_info)
+        batch_size, source = _batch_size(profile, int(config.training["train_batch_size"]), overrides)
+        payload["batch_size"] = int(batch_size)
+        payload["batch_size_source"] = source
+        payload["requested_allocation_mb"] = _requested_allocation_mb(batch_size, data_info)
+        payload["input_shape"] = [
+            int(batch_size),
+            int(data_info.lookback),
+            int(data_info.num_nodes),
+            int(data_info.num_features),
+        ]
+        if selected_device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(selected_device)
+        phase = "model_build"
+        model = build_model(model_name, model_config, data_info).to(selected_device)
+        payload["parameter_count"] = int(sum(parameter.numel() for parameter in model.parameters()))
+        phase = "forward"
+        x = torch.randn(batch_size, data_info.lookback, data_info.num_nodes, data_info.num_features, device=selected_device)
+        target = torch.randn(batch_size, data_info.num_nodes, data_info.max_pred_len, device=selected_device)
+        target_mask = torch.ones_like(target, dtype=torch.bool)
+        model.train()
+        output = model(ModelInput(x=x))
+        payload["output_shape"] = [int(value) for value in output.shape]
+        expected = (batch_size, data_info.num_nodes, data_info.max_pred_len)
+        if tuple(output.shape) != expected:
+            raise ValueError(f"output must have shape {expected}, got {tuple(output.shape)}")
+        if not bool(torch.isfinite(output).all()):
+            raise FloatingPointError("output contains NaN or Inf")
+        phase = "loss"
+        loss_fn = resolve_loss(str(config.training["loss"]))
+        loss = loss_fn(output, target, target_mask)
+        if not bool(torch.isfinite(loss)):
+            raise FloatingPointError("loss contains NaN or Inf")
+        phase = "backward"
+        loss.backward()
+        gradients = [parameter.grad for parameter in model.parameters() if parameter.requires_grad]
+        if not all(gradient is not None for gradient in gradients):
+            raise RuntimeError("missing gradient after backward")
+        if not all(bool(torch.isfinite(gradient).all()) for gradient in gradients if gradient is not None):
+            raise FloatingPointError("gradient contains NaN or Inf")
+        payload["phase"] = "backward_complete"
+    except BaseException as exc:
+        payload.update(
+            {
+                "status": FAILED,
+                "classification": classify_validation_failure(exc, phase=phase),
+                "phase": phase,
+                "exception_type": type(exc).__name__,
+                "error_message": failure_summary(exc),
+                "traceback_tail": "".join(traceback.format_exception(exc))[-4000:],
+                "exit_code": 1,
+            }
+        )
+    finally:
+        if selected_device is not None:
+            payload.update(_memory_snapshot(selected_device))
+        payload["ended_at"] = utc_now()
+        payload["wall_seconds"] = time.perf_counter() - started
+        del model, x, target, target_mask, output, loss
+        if selected_device is not None and selected_device.type == "cuda":
+            torch.cuda.empty_cache()
+        if status_path is not None:
+            write_validation_status(Path(status_path), payload)
+    return payload

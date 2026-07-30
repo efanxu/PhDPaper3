@@ -20,7 +20,7 @@ OUTPUT_PATH = ROOT / "docs" / "COMMAND_REFERENCE.md"
 _EXAMPLES = {
     "train": """```powershell
 python scripts\\run.py train `
-  --model node_shared_lstm dlinear patchtst `
+  --model node_shared_lstm crossformer stcn `
   --run-id benchmark_seed2026 `
   --device cuda
 ```""",
@@ -33,10 +33,10 @@ python scripts\\run.py evaluate `
 ```""",
     "check": """```powershell
 python scripts\\run.py check `
-  --model node_shared_lstm `
+  --model node_shared_lstm crossformer stcn `
+  --run-id formal_shape_seed2026 `
   --device cuda `
-  --full-shape `
-  --batch-size 4
+  --full-shape
 ```""",
     "preflight": """```powershell
 python scripts\\run.py preflight `

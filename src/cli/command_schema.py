@@ -187,11 +187,11 @@ def _build_evaluate(subparsers: argparse._SubParsersAction) -> None:
 
 def _build_check(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser("check", help="检查一个或多个模型的形状和反向传播", description="每个模型在独立 Python 子进程中执行 forward/backward 形状检查。")
-    _add_task_context(parser, allow_multiple_models=True, include_run_id=False, include_output_root=False)
+    _add_task_context(parser, allow_multiple_models=True)
     _add_config_files(parser)
     _add_public_overrides(parser, names=_SHAPE_OVERRIDES)
     group = parser.add_argument_group("检查任务专属参数")
-    group.add_argument("--full-shape", action="store_true", help="使用 YAML/覆盖后的正式 batch size")
+    group.add_argument("--full-shape", action="store_true", help="验证正式 batch；没有公共形状覆盖时记录为 FORMAL_DEFAULT_SHAPE")
     group.add_argument(
         "--environment-preflight-only",
         action="store_true",

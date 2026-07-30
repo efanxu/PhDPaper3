@@ -67,7 +67,7 @@ python scripts\run.py <command> --help
 
 ```powershell
 python scripts\run.py train `
-  --model node_shared_lstm dlinear patchtst `
+  --model node_shared_lstm crossformer stcn `
   --run-id benchmark_seed2026 `
   --device cuda
 ```
@@ -118,7 +118,9 @@ python scripts\run.py evaluate `
 | 参数 | 分组 | 必填 | 类型 | 默认行为 | YAML 字段 | 公共覆盖 | 说明 |
 |---|---|---:|---|---|---|---:|---|
 | `--model` | 任务定位 | 是 | list[str] | 无 | `—` | 否 | 模型目录名；可一次指定一个或多个模型 |
+| `--run-id` | 任务定位 | 否 | str | 无 | `—` | 否 | 本次运行的共同实验 ID |
 | `--device` | 任务定位 | 否 | str | 'auto' | `—` | 否 | 运行设备；auto 根据 CUDA 可用性选择 |
+| `--output-root` | 任务定位 | 否 | path | 无 | `—` | 否 | 结果根目录；未提供时使用项目 results/ |
 | `--config` | 配置文件 | 否 | path | configs\experiment.yaml | `—` | 否 | 公共实验配置；默认 configs/experiment.yaml |
 | `--model-config` | 配置文件 | 否 | path | 无 | `—` | 否 | 单模型结构配置；多模型时自动读取 configs/models/<model>.yaml |
 | `--lookback` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | int | 未提供：继承 configs/experiment.yaml | `data.lookback` | 是 | 覆盖 data.lookback；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
@@ -126,17 +128,17 @@ python scripts\run.py evaluate `
 | `--eval-batch-size` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | int | 未提供：继承 configs/experiment.yaml | `training.val_batch_size; training.test_batch_size` | 是 | 同时覆盖 training.val_batch_size 和 training.test_batch_size；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
 | `--eval-horizons` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | list[int] | 未提供：继承 configs/experiment.yaml | `data.eval_horizons` | 是 | 覆盖 data.eval_horizons（可传多个整数）；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
 | `--feature-columns` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | list[str] | 未提供：继承 configs/experiment.yaml | `data.feature_columns` | 是 | 覆盖 data.feature_columns（可传多个列名）；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
-| `--full-shape` | 检查任务专属参数 | 否 | flag | 未提供时关闭 | `—` | 否 | 使用 YAML/覆盖后的正式 batch size |
+| `--full-shape` | 检查任务专属参数 | 否 | flag | 未提供时关闭 | `—` | 否 | 验证正式 batch；没有公共形状覆盖时记录为 FORMAL_DEFAULT_SHAPE |
 | `--environment-preflight-only` | 检查任务专属参数 | 否 | flag | 未提供时关闭 | `—` | 否 | 只预检本批次所需运行环境，不启动模型 worker |
 
 ### 示例
 
 ```powershell
 python scripts\run.py check `
-  --model node_shared_lstm `
+  --model node_shared_lstm crossformer stcn `
+  --run-id formal_shape_seed2026 `
   --device cuda `
-  --full-shape `
-  --batch-size 4
+  --full-shape
 ```
 
 ## `preflight`
