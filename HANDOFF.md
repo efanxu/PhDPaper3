@@ -1,63 +1,84 @@
-# Handoff
+# PhDPaper3 当前交接
 
-## Architecture
+## 1. 项目目标
 
-`scripts/run.py` is the only public entry point. `src/cli/command_schema.py`
-defines all public arguments. The parent scheduler reads each model's
-`runtime.environment`, resolves its target Python, writes one request, and
-starts one worker subprocess per model. Data lives in `dataset/` and results
-live under `results/<model>/<run_id>/`.
+PhDPaper3 是可复现的 SDWPF 时间序列预测科研实验工程。统一入口是
+`scripts/run.py`，正式模型为 NodeSharedLSTM、Crossformer 和 STCN；训练、
+评估、指标和汇总逻辑由共享路径提供。
 
-## Core capabilities
+## 2. 当前稳定架构
 
-- one or many models through `train --model ...`;
-- isolated model processes, per-model logs and atomic run status;
-- every training worker is preceded by an independent resolved-shape worker;
-- `check --full-shape` without public shape overrides records the separate
-  YAML-default formal shape;
-- schema-v2 statuses use `PENDING`/`RUNNING`/`PASS`/`FAILED`/`SKIPPED`, a
-  small stable failure classification, and detailed `error.code`/`details`;
-  readers accept existing schema-v1 results. Long-lived state is limited to
-  batch `results/_runs/<run-id>/status.json`, model `run_info.json`, and
-  `results/_checks/<check-id>/<model>.json`;
-- duplicate names in `--model` are rejected before directories or workers;
-- batch-1 resolved checks and default-batch formal checks remain distinct.
-- fail-closed new runs, checkpoint resume, archive-based overwrite and ID suffixes;
-- complete epoch checkpoint state, deterministic resume and independent A/B repeatability;
-- shared training/evaluation timing, throughput, parameter and GPU-memory metrics;
-- generated command reference and documentation consistency tests.
-- supports `tslib` and `tsl` runtime environments;
-- defaults to `tslib` when a model YAML omits `runtime`;
-- automatically resolves interpreters and can mix both environments in one batch;
-- environment preflight can run without creating model result directories or workers;
-- paper comparison CSVs group H3, H6 and H10 metrics in a two-row header;
-  the matching flat CSV has stable machine-readable fields and both can be
-  regenerated from existing results through `summarize`;
-- repeatability runs one complete multi-model A batch followed by one complete B batch and compares every test horizon;
-- keeps each model in an independent process;
-- treats the local `Time-Series-Library` source as read-only;
-- provides `tsl` through `env_tsl`.
-- provides a real Node Shared Time-Series-Library integration path and a pure
-  `tsl` graph-model path; the parent scheduler switches workers between them.
-- builds shared SDWPF graph resources once at model construction, then stores
-  sparse edge buffers in graph adapters for checkpoint-safe device movement.
+父调度器按模型 YAML 选择环境，并为每个模型启动独立 worker。Crossformer 使用
+Node Shared 和 `env_tslib`；STCN 使用 `env_tsl` 和公共 `k=5` 物理图。训练前
+执行 resolved-shape 检查；默认 Full-shape 与覆盖 batch 检查分开报告。
 
-## Known limitations
+长期公共状态只有：
 
-Formal training still requires the two local protocol-named parquet files in
-`dataset/`. The current public configuration keeps AMP CUDA-only and the
-loader materializes the cleaned SDWPF arrays in memory. No formal GPU claim is
-made without running the corresponding command on a CUDA machine.
+- 批次：`results/_runs/<run-id>/status.json`；
+- 模型：`results/<model>/<run-id>/run_info.json`；
+- 独立检查：`results/_checks/<check-id>/status.json` 和模型结果文件。
 
-## Next step
+顶层状态只有 `PENDING/RUNNING/PASS/FAILED/SKIPPED`，失败分类保持粗粒度，
+具体原因放在 `error.code` 和 `details`。新状态使用 schema v2，读取器兼容
+schema v1。`validation_status.json` 只是 worker 内部临时通信文件，不是长期
+公共接口；Resume、完成判断和 summarize 不依赖它。
 
-Add a model directory and a `runtime`/`model` YAML, implement only
-`build_model(model_config, data_info)`, then run the generated command checks
-and the relevant tests. Ordinary model parameters do not require public
-documentation changes.
+## 3. 已完成
 
-## Keep out of the project
+- 公共状态写入集中到 `src/runtime/status.py` 的 `normalize_status_payload()`
+  和 `write_status()`；新运行、worker 和 repeatability 状态统一写 schema v2。
+- profile 与 classification 已分离；Resume/Skip completed 只依赖稳定状态、
+  profile 和必要 artifacts。
+- 已有结果可通过 summarize 重新生成汇总；`model_comparison.csv` 是论文/Excel
+  两行分组表头版本，`model_comparison_flat.csv` 是程序读取版本。
+- 保留环境调度、Smoke、Full-shape、Repeatability、Crossformer、STCN、NodeSharedLSTM
+  和共享数据流程。
 
-Do not add a second CLI, model-specific training infrastructure, batch alias,
-`--models`, StudySpec/ModelSpec, certificates, declarations, manifests,
-readiness protocols, or experiment/report Markdown files.
+## 4. 当前限制
+
+正式训练仍需要 `dataset/` 中两个协议命名的 parquet 文件。没有对应 CUDA 机器
+和数据时，不声称完成正式 GPU 实验；正式 Full 训练未执行时标记 `NOT RUN`。
+
+## 5. 下一步
+
+接手新模型时先读 `MODEL_INTEGRATION_INDEX.md`，再读公共配置、共享数据/训练/
+评估路径和调度器；只新增模型代码与模型 YAML，运行相关检查和测试。
+
+## 6. 项目维护原则
+
+本项目是科研实验工程，不是企业平台。优先正确、可运行、公平、可复现、容易
+维护和容易接入模型。不要过度设计，不要为猜测的未来需求提前增加复杂抽象；
+公共接口要少且稳定，只有存在两个以上真实调用方时才考虑新增公共抽象。模型
+特殊需求优先放在 Adapter 或模型 YAML 中；公共数据、Trainer、Evaluator、
+Metrics、图和汇总逻辑只实现一次；配置优先于硬编码。
+
+不要重新引入 StudySpec、ModelSpec、证书、Manifest、Readiness、复杂协议层或
+模型专属 Trainer/Evaluator。
+
+## 7. 文档更新规则
+
+- `README.md` → 稳定用户入口、常用命令和主要输出。
+- `MODEL_INTEGRATION_INDEX.md` → Codex 读取顺序、模型接入规则和共享接口。
+- `docs/COMMAND_REFERENCE.md` → 由 `command_schema.py` 自动生成，禁止手工修改。
+- `HANDOFF.md` → 当前任务状态、限制、下一步、维护原则和踩坑。
+
+CLI 改变时修改 `command_schema.py` 并运行生成器；普通模型参数只改模型 YAML；
+公共实验参数只改 `experiment.yaml`，只有长期语义或用户操作变化才更新手写
+文档。新增模型只有共享接入方式变化时才修改模型索引。普通重构、变量改名或
+测试数量变化不更新所有 Markdown。
+
+## 8. 不要再踩的坑
+
+- 不要用 batch 1 Shape PASS 冒充默认正式 Shape PASS。
+- 不要从 k=4 STCN checkpoint Resume 到 k=5。
+- 不要从 metrics JSON 的 display 字段读取完整指标，也不要把 NaN R2/MAPE 填成 0。
+- 不要用 validation monitor 代替测试 Horizon Score。
+- 不要让 Time-Series-Library 的 `models` 覆盖项目 `src/models`；纯 `tsl` 模型不得绑定它。
+- 不要手工修改 `COMMAND_REFERENCE.md`，不要无意义更新所有 Markdown。
+- 不要提交 dataset、results、logs、checkpoint 或外部库；不要强制推送或批量递归删除。
+
+## 9. 新会话接手顺序
+
+先读取本文件和 `MODEL_INTEGRATION_INDEX.md`，检查 `git status`，再按索引读取
+配置、共享路径、调度器和相关测试。修改前确认没有触及模型、数据流程、训练
+协议、损失函数、评估公式、公共 `k=5` 图或汇总 CSV 契约。

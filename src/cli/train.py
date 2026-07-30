@@ -44,11 +44,12 @@ from runtime.status import (
     PASS,
     RUNNING,
     SMOKE,
-    classify_validation_failure,
+    failure_details,
     failure_summary,
     finished_phase,
     phase_record,
     running_phase,
+    stable_phase,
     write_status,
 )
 
@@ -443,23 +444,25 @@ def _run_model_impl(
     write_yaml(output_dir / "model_config.yaml", model_config)
     write_json(output_dir / "environment.json", environment)
     run_phases = {
+        "preflight": phase_record(phase="preflight"),
+        "resolved_shape": phase_record(phase="resolved_shape"),
         "training": phase_record(phase="training"),
-        "checkpoint_write": phase_record(phase="checkpoint_write"),
-        "checkpoint_reload": phase_record(phase="checkpoint_reload"),
-        "validation": phase_record(phase="validation"),
-        "test": phase_record(phase="test"),
-        "overall": phase_record(phase="starting"),
+        "checkpoint": phase_record(phase="checkpoint"),
+        "evaluation": phase_record(phase="evaluation"),
+        "overall": phase_record(phase="overall"),
     }
     run_info_path = output_dir / "run_info.json"
     write_status(
         run_info_path,
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "model": model_name,
             "run_id": run_name,
+            "operation": "train",
+            "profile": SMOKE if smoke else FULL,
             "status": RUNNING,
             "classification": None,
-            "phase": "starting",
+            "phase": "preflight",
             "start_time": start_time,
             "end_time": None,
             "wall_seconds": None,
@@ -467,6 +470,7 @@ def _run_model_impl(
             "exception_type": None,
             "error_message": None,
             "traceback_tail": None,
+            "error": None,
             "metrics_complete": None,
             "phases": run_phases,
             **{
@@ -484,7 +488,15 @@ def _run_model_impl(
 
     def write_progress(phase: str) -> None:
         current = json.loads(run_info_path.read_text(encoding="utf-8"))
-        current.update({"status": RUNNING, "classification": None, "phase": phase, "phases": run_phases})
+        current.update(
+            {
+                "status": RUNNING,
+                "classification": None,
+                "phase": stable_phase(phase),
+                "error": None,
+                "phases": run_phases,
+            }
+        )
         write_status(run_info_path, current)
 
     data_started = time.perf_counter()
@@ -498,6 +510,7 @@ def _run_model_impl(
     model_build_seconds = time.perf_counter() - model_started
     parameter_count = int(sum(parameter.numel() for parameter in model.parameters()))
     trainable_parameter_count = int(sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad))
+    run_phases["preflight"] = finished_phase(phase="preflight")
     checkpoint_extra = {
         "config_file": str(config_file),
         "model_config_file": str(model_file),
@@ -516,16 +529,16 @@ def _run_model_impl(
     checkpoint_reload_seconds = 0.0
     if evaluate_only:
         assert checkpoint_file is not None
-        run_phases["checkpoint_reload"] = running_phase("checkpoint_reload", artifact=str(checkpoint_file))
+        run_phases["checkpoint"] = running_phase("checkpoint_reload", artifact=str(checkpoint_file))
         write_progress("checkpoint_reload")
         reload_started = time.perf_counter()
         checkpoint_manifest = load_checkpoint(checkpoint_file, model, device=selected_device)
         checkpoint_reload_seconds = time.perf_counter() - reload_started
-        run_phases["checkpoint_reload"] = finished_phase(
+        run_phases["checkpoint"] = finished_phase(
             profile=FULL,
             phase="checkpoint_reload",
             artifact=str(checkpoint_file),
-            started_at=run_phases["checkpoint_reload"]["started_at"],
+            started_at=run_phases["checkpoint"]["started_at"],
             wall_seconds=checkpoint_reload_seconds,
         )
     else:
@@ -557,39 +570,39 @@ def _run_model_impl(
         checkpoint_paths = (output_dir / "best.pt", output_dir / "last.pt")
         if not all(path.is_file() for path in checkpoint_paths):
             raise RuntimeError("checkpoint write did not produce both best.pt and last.pt")
-        run_phases["checkpoint_write"] = finished_phase(
+        run_phases["checkpoint"] = finished_phase(
             profile=profile,
             phase="checkpoint_write",
             artifact=str(output_dir),
         )
         final_eval_limit = max_eval_batches
-        run_phases["checkpoint_reload"] = running_phase("checkpoint_reload", artifact=str(output_dir / "best.pt"))
+        run_phases["checkpoint"] = running_phase("checkpoint_reload", artifact=str(output_dir / "best.pt"))
         write_progress("checkpoint_reload")
         reload_started = time.perf_counter()
         checkpoint_manifest = load_checkpoint(output_dir / "best.pt", model, device=selected_device)
         checkpoint_reload_seconds = time.perf_counter() - reload_started
-        run_phases["checkpoint_reload"] = finished_phase(
+        run_phases["checkpoint"] = finished_phase(
             profile=profile,
             phase="checkpoint_reload",
             artifact=str(output_dir / "best.pt"),
-            started_at=run_phases["checkpoint_reload"]["started_at"],
+            started_at=run_phases["checkpoint"]["started_at"],
             wall_seconds=checkpoint_reload_seconds,
         )
-    run_phases["validation"] = running_phase("validation")
+    run_phases["evaluation"] = running_phase("validation")
     write_progress("validation")
     validation = evaluate(model, loaders.validation, device=selected_device, normalization=normalization, horizons=tuple(int(value) for value in config.data["eval_horizons"]), total_nodes=int(data_info.num_nodes), physical_clip=bool(config.evaluation["physical_clip"]), physical_min_kw=config.evaluation["physical_min_kw"], physical_max_kw=config.evaluation["physical_max_kw"], max_batches=final_eval_limit)
-    run_phases["validation"] = finished_phase(
+    run_phases["evaluation"] = finished_phase(
         profile=SMOKE if smoke else FULL,
         phase="validation_complete",
-        started_at=run_phases["validation"]["started_at"],
+        started_at=run_phases["evaluation"]["started_at"],
     )
-    run_phases["test"] = running_phase("test")
+    run_phases["evaluation"] = running_phase("test")
     write_progress("test")
     test = evaluate(model, loaders.test, device=selected_device, normalization=normalization, horizons=tuple(int(value) for value in config.data["eval_horizons"]), total_nodes=int(data_info.num_nodes), physical_clip=bool(config.evaluation["physical_clip"]), physical_min_kw=config.evaluation["physical_min_kw"], physical_max_kw=config.evaluation["physical_max_kw"], max_batches=final_eval_limit)
-    run_phases["test"] = finished_phase(
+    run_phases["evaluation"] = finished_phase(
         profile=SMOKE if smoke else FULL,
         phase="test_complete",
-        started_at=run_phases["test"]["started_at"],
+        started_at=run_phases["evaluation"]["started_at"],
     )
     _write_evaluation_outputs(output_dir, validation, test, save_predictions=bool(config.runtime["save_predictions"]), split=evaluation_split)
     _write_history(output_dir / "train_history.csv", train_result.history if train_result else [])
@@ -609,12 +622,14 @@ def _run_model_impl(
         wall_seconds=elapsed,
     )
     run_info = {
-        "schema_version": 1,
+        "schema_version": 2,
         "model": model_name,
         "run_id": run_name,
+        "operation": "evaluate" if evaluate_only else "train",
+        "profile": completion_profile,
         "status": PASS,
-        "classification": finished_phase(profile=completion_profile, phase="complete")["classification"],
-        "phase": "complete",
+        "classification": None,
+        "phase": "overall",
         "runtime_environment": runtime_metadata.get("runtime_environment"),
         "conda_env": runtime_metadata.get("conda_env"),
         "python_executable": runtime_metadata.get("python_executable"),
@@ -635,6 +650,7 @@ def _run_model_impl(
         "exception_type": None,
         "error_message": None,
         "traceback_tail": None,
+        "error": None,
         "phases": run_phases,
         "parameter_count": parameter_count,
         "peak_gpu_memory_bytes": peak_allocated,
@@ -671,34 +687,43 @@ def _write_failed_run_info(*, model_name: str, config_path: str | Path, output_r
         phases = current.get("phases")
         if not isinstance(phases, dict):
             phases = {}
-        phase_key = phase if phase in phases else "overall"
+        phase_key = stable_phase(phase)
+        traceback_tail = "".join(traceback.format_exception(error))[-4000:]
+        details = failure_details(
+            error,
+            phase=phase,
+            traceback_tail=traceback_tail,
+        )
         phases[phase_key] = finished_phase(
-            classification=classify_validation_failure(error, phase=phase),
+            classification=details["classification"],
             phase=phase,
             error_summary=failure_summary(error),
+            error=details["error"],
             started_at=phases.get(phase_key, {}).get("started_at") if isinstance(phases.get(phase_key), Mapping) else current.get("start_time"),
             wall_seconds=time.perf_counter() - started,
         )
         phases["overall"] = finished_phase(
-            classification=classify_validation_failure(error, phase=phase),
+            classification=details["classification"],
             phase=phase,
             artifact=str(output_dir),
             error_summary=failure_summary(error),
+            error=details["error"],
             started_at=current.get("start_time"),
             wall_seconds=time.perf_counter() - started,
         )
         current.update(
             {
                 "status": FAILED,
-                "classification": classify_validation_failure(error, phase=phase),
-                "phase": phase,
+                "classification": details["classification"],
+                "phase": stable_phase(phase),
                 "end_time": utc_now(),
                 "wall_seconds": time.perf_counter() - started,
                 "duration_seconds": time.perf_counter() - started,
                 "exit_code": 1,
                 "exception_type": type(error).__name__,
                 "error_message": failure_summary(error),
-                "traceback_tail": "".join(traceback.format_exception(error))[-4000:],
+                "traceback_tail": traceback_tail,
+                "error": details["error"],
                 "phases": phases,
             }
         )
@@ -707,7 +732,7 @@ def _write_failed_run_info(*, model_name: str, config_path: str | Path, output_r
         )
         write_status(path, current)
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
-        # The parent scheduler records a FAIL_WORKER_CRASH if this emergency
+        # The parent scheduler records a worker crash if this emergency
         # finalizer cannot safely persist a worker completion state.
         return
 

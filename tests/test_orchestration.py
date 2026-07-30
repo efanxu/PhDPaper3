@@ -9,7 +9,7 @@ import pytest
 
 from cli import orchestrator
 from runtime.environments import ResolvedEnvironment
-from runtime.status import FAILED, PASS, PASS_RESOLVED_SHAPE, PASS_SMOKE
+from runtime.status import FAILED, PASS, SMOKE
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -65,12 +65,13 @@ class _FakeProcess:
             Path(model_request["status_path"]).write_text(
                 json.dumps(
                     {
-                        "schema_version": 1,
+                        "schema_version": 2,
                         "model": model,
                         "status": PASS,
-                        "classification": PASS_RESOLVED_SHAPE,
-                        "phase": "backward_complete",
+                        "classification": None,
+                        "phase": "resolved_shape",
                         "profile": request.get("profile", "RESOLVED_SHAPE"),
+                        "error": None,
                         "exit_code": 0,
                     }
                 ),
@@ -82,9 +83,12 @@ class _FakeProcess:
             (result_dir / "run_info.json").write_text(
                 json.dumps(
                     {
+                        "schema_version": 2,
                         "status": PASS,
-                        "classification": PASS_SMOKE,
-                        "phase": "complete",
+                        "classification": None,
+                        "profile": SMOKE,
+                        "phase": "overall",
+                        "error": None,
                         "phases": {},
                     }
                 ),
@@ -104,12 +108,17 @@ class _SelectiveFakeProcess(_FakeProcess):
             status_path.write_text(
                 json.dumps(
                     {
-                        "schema_version": 1,
+                        "schema_version": 2,
                         "model": command[-1],
                         "status": FAILED,
-                        "classification": "FAIL_FORWARD",
-                        "phase": "forward",
-                        "error_message": "synthetic forward failure",
+                        "classification": "MODEL",
+                        "phase": "resolved_shape",
+                        "error": {
+                            "code": "FORWARD_FAILED",
+                            "type": "RuntimeError",
+                            "message": "synthetic forward failure",
+                            "traceback_tail": None,
+                        },
                         "exit_code": 1,
                     }
                 ),
@@ -150,7 +159,9 @@ def test_isolated_check_persists_model_json_status_and_summary(monkeypatch, tmp_
     root = tmp_path / "results" / "_checks" / "persisted-check"
     assert result["passed"] is True
     assert json.loads((root / "node_shared_lstm.json").read_text(encoding="utf-8"))["status"] == PASS
-    assert not (root / "status.json").exists()
+    saved = json.loads((root / "status.json").read_text(encoding="utf-8"))
+    assert saved["schema_version"] == 2
+    assert saved["status"] == PASS
     assert (root / "summary.csv").is_file()
 
 

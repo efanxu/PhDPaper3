@@ -96,9 +96,20 @@ metadata and paper-ready efficiency rows are stored in
 `results/_runs/<effective_run_id>/`, including `summary.csv`,
 `performance_summary.csv` and the complete `model_comparison.csv`.
 `model_comparison.csv` is the two-row grouped paper/Excel view, while
-`model_comparison_flat.csv` has a stable one-row header for programs. Regenerate
-both from existing artifacts without training by running
-`python scripts\run.py summarize --run-id <run-id>`.
+`model_comparison_flat.csv` is the one-row programmatic view. Existing completed
+runs can be summarized without retraining:
+
+```text
+python scripts/run.py summarize --run-id <run-id>
+```
+
+Stable status locations are:
+
+```text
+Batch status:       results/_runs/<run-id>/status.json
+Model status:       results/<model>/<run-id>/run_info.json
+Standalone checks:  results/_checks/<check-id>/
+```
 
 For new model integration, read
 [`MODEL_INTEGRATION_INDEX.md`](MODEL_INTEGRATION_INDEX.md) first.

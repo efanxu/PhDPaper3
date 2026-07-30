@@ -7,7 +7,7 @@ import re
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from .status import PASS, PASS_FULL, PASS_SMOKE
+from .status import FULL, PASS, SMOKE, normalize_status_payload
 
 
 SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
@@ -83,13 +83,11 @@ def is_completed_run(path: Path) -> bool:
     try:
         import json
 
-        info = json.loads((path / "run_info.json").read_text(encoding="utf-8"))
+        raw_info = json.loads((path / "run_info.json").read_text(encoding="utf-8"))
+        info = normalize_status_payload(raw_info)
     except (OSError, ValueError, TypeError):
         return False
-    return info.get("status") == PASS and info.get("classification") in {
-        PASS_FULL,
-        PASS_SMOKE,
-    }
+    return info.get("status") == PASS and info.get("profile") in {FULL, SMOKE}
 
 
 def archive_directory(path: Path, archive_root: Path, *, label: str) -> Path:

@@ -21,14 +21,10 @@ from .orchestrator import (
     validate_unique_models,
 )
 from runtime.paths import archive_directory, effective_run_id, project_root_from_config, resolve_output_root
-from runtime.run_info import write_json
 from runtime.status import (
-    ENVIRONMENT_PREFLIGHT,
     FAILED,
-    FAIL_REPEATABILITY,
     PASS,
     REPEATABILITY,
-    pass_classification,
     write_status,
 )
 
@@ -205,9 +201,14 @@ def compare_repeated_runs(
         )
         results = [
             {
+                "schema_version": 2,
                 "model": model,
+                "operation": "preflight",
+                "profile": None,
                 "status": PASS,
-                "classification": pass_classification(ENVIRONMENT_PREFLIGHT),
+                "classification": None,
+                "phase": "preflight",
+                "error": None,
                 "runtime_environment": model_environments[model].environment_id,
                 "conda_env": model_environments[model].conda_env,
                 "python_executable": str(model_environments[model].python_executable),
@@ -220,8 +221,14 @@ def compare_repeated_runs(
             for model in models
         ]
         return {
+            "schema_version": 2,
             "passed": True,
             "run_id": base_id,
+            "operation": "preflight",
+            "status": PASS,
+            "classification": None,
+            "phase": "preflight",
+            "error": None,
             "models": results,
             "environment_preflight_only": True,
         }
@@ -279,8 +286,8 @@ def compare_repeated_runs(
         command_argv=command_argv,
         environment_context_holder=environment_context_holder,
     )
-    write_json(repeat_root / "run_a.json", first)
-    write_json(repeat_root / "run_b.json", second)
+    write_status(repeat_root / "run_a.json", first)
+    write_status(repeat_root / "run_b.json", second)
 
     first_by_model = {item["model"]: item for item in first["models"]}
     second_by_model = {item["model"]: item for item in second["models"]}
@@ -334,11 +341,20 @@ def compare_repeated_runs(
             }
         comparison.update(
             {
+                "schema_version": 2,
+                "operation": "repeatability",
                 "status": PASS if comparison["passed"] else FAILED,
-                "classification": pass_classification(REPEATABILITY)
-                if comparison["passed"]
-                else FAIL_REPEATABILITY,
+                "classification": None if comparison["passed"] else REPEATABILITY,
                 "profile": REPEATABILITY,
+                "phase": "evaluation" if comparison["passed"] else "overall",
+                "error": None
+                if comparison["passed"]
+                else {
+                    "code": "REPEATABILITY_MISMATCH",
+                    "type": None,
+                    "message": comparison.get("first_failure"),
+                    "traceback_tail": None,
+                },
                 "run_a": str(first_dir),
                 "run_b": str(second_dir),
                 "subprocess_pids": [
@@ -349,15 +365,28 @@ def compare_repeated_runs(
                 "batch_run_b": str(second.get("run_root")),
             }
         )
-        write_json(report_dir / "repeatability_report.json", comparison)
+        write_status(report_dir / "repeatability_report.json", comparison)
         reports.append(comparison)
     passed = bool(reports) and all(item["passed"] for item in reports)
     status = {
-        "schema_version": 1,
+        "schema_version": 2,
         "run_id": base_id,
         "operation": "repeatability",
         "status": PASS if passed else FAILED,
-        "classification": pass_classification(REPEATABILITY) if passed else FAIL_REPEATABILITY,
+        "classification": None if passed else REPEATABILITY,
+        "profile": REPEATABILITY,
+        "phase": "evaluation" if passed else "overall",
+        "error": None
+        if passed
+        else {
+            "code": "REPEATABILITY_MISMATCH",
+            "type": None,
+            "message": next(
+                (item.get("first_failure") for item in reports if item.get("first_failure")),
+                "repeatability mismatch",
+            ),
+            "traceback_tail": None,
+        },
         "models": reports,
     }
     write_status(repeat_root / "status.json", status)

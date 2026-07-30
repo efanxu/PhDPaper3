@@ -29,10 +29,10 @@ from runtime.status import (
     INTERFACE_SMALL,
     PASS,
     RESOLVED_SHAPE,
-    classify_validation_failure,
-    failure_summary,
-    pass_classification,
-    write_validation_status,
+    RUNNING,
+    failure_details,
+    stable_phase,
+    write_status,
 )
 from runtime.run_info import utc_now
 
@@ -111,14 +111,14 @@ def run_shape_validation(
     x = target = target_mask = output = loss = None
     overrides = dict(cli_overrides or {})
     payload: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "model": model_name,
         "run_id": run_id,
         "operation": operation,
         "profile": profile,
-        "status": PASS,
-        "classification": pass_classification(profile),
-        "phase": "starting",
+        "status": RUNNING,
+        "classification": None,
+        "phase": "preflight",
         "started_at": started_at,
         "ended_at": None,
         "wall_seconds": None,
@@ -133,9 +133,8 @@ def run_shape_validation(
         "parameter_count": None,
         "estimated_input_tensor_mb": None,
         "oom_requested_allocation_mb": None,
-        "exception_type": None,
-        "error_message": None,
-        "traceback_tail": None,
+        "error": None,
+        "details": {},
         "exit_code": 0,
     }
     try:
@@ -190,16 +189,23 @@ def run_shape_validation(
             raise RuntimeError("missing gradient after backward")
         if not all(bool(torch.isfinite(gradient).all()) for gradient in gradients if gradient is not None):
             raise FloatingPointError("gradient contains NaN or Inf")
-        payload["phase"] = "backward_complete"
+        payload["status"] = PASS
+        payload["classification"] = None
+        payload["phase"] = "resolved_shape"
+        payload["error"] = None
     except BaseException as exc:
+        traceback_tail = "".join(traceback.format_exception(exc))[-4000:]
+        details = failure_details(
+            exc,
+            phase=phase,
+            traceback_tail=traceback_tail,
+        )
         payload.update(
             {
                 "status": FAILED,
-                "classification": classify_validation_failure(exc, phase=phase),
-                "phase": phase,
-                "exception_type": type(exc).__name__,
-                "error_message": failure_summary(exc),
-                "traceback_tail": "".join(traceback.format_exception(exc))[-4000:],
+                "classification": details["classification"],
+                "phase": stable_phase(phase),
+                "error": details["error"],
                 "exit_code": 1,
             }
         )
@@ -215,5 +221,5 @@ def run_shape_validation(
         if selected_device is not None and selected_device.type == "cuda":
             torch.cuda.empty_cache()
         if status_path is not None:
-            write_validation_status(Path(status_path), payload)
+            write_status(Path(status_path), payload)
     return payload

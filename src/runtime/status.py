@@ -1,4 +1,9 @@
-"""Stable status values and atomic status helpers shared by all commands."""
+"""Stable status values and the single atomic status writer.
+
+The public status contract is intentionally small.  The legacy classification
+names below are kept only for reading old result directories; new callers use
+stable classifications plus a structured ``error`` object.
+"""
 
 from __future__ import annotations
 
@@ -35,6 +40,19 @@ STABLE_CLASSIFICATIONS = frozenset(
 STABLE_PHASES = frozenset(
     {"preflight", "resolved_shape", "training", "checkpoint", "evaluation", "overall"}
 )
+STABLE_OPERATIONS = frozenset(
+    {"train", "check", "preflight", "evaluate", "repeatability", "summarize"}
+)
+PROFILES = frozenset(
+    {
+        "INTERFACE_SMALL",
+        "RESOLVED_SHAPE",
+        "FORMAL_DEFAULT_SHAPE",
+        "SMOKE",
+        "FULL",
+        "REPEATABILITY",
+    }
+)
 
 INTERFACE_SMALL = "INTERFACE_SMALL"
 RESOLVED_SHAPE = "RESOLVED_SHAPE"
@@ -42,93 +60,76 @@ FORMAL_DEFAULT_SHAPE = "FORMAL_DEFAULT_SHAPE"
 SMOKE = "SMOKE"
 FULL = "FULL"
 REPEATABILITY = "REPEATABILITY"
-ENVIRONMENT_PREFLIGHT = "ENVIRONMENT_PREFLIGHT"
-MODEL_PREFLIGHT = "MODEL_PREFLIGHT"
 
-PASS_INTERFACE_SMALL = "PASS_INTERFACE_SMALL"
-PASS_RESOLVED_SHAPE = "PASS_RESOLVED_SHAPE"
-PASS_FORMAL_DEFAULT_SHAPE = "PASS_FORMAL_DEFAULT_SHAPE"
-PASS_SMOKE = "PASS_SMOKE"
-PASS_FULL = "PASS_FULL"
-PASS_REPEATABILITY = "PASS_REPEATABILITY"
-PASS_ENVIRONMENT_PREFLIGHT = "PASS_ENVIRONMENT_PREFLIGHT"
-PASS_MODEL_PREFLIGHT = "PASS_MODEL_PREFLIGHT"
 
-FAIL_CONFIG = "FAIL_CONFIG"
-FAIL_MISSING_RESOURCE = "FAIL_MISSING_RESOURCE"
-FAIL_ENVIRONMENT = "FAIL_ENVIRONMENT"
-FAIL_CUDA_UNAVAILABLE = "FAIL_CUDA_UNAVAILABLE"
-FAIL_MODEL_IMPORT = "FAIL_MODEL_IMPORT"
-FAIL_MODEL_BUILD = "FAIL_MODEL_BUILD"
-FAIL_GRAPH = "FAIL_GRAPH"
-FAIL_DATA = "FAIL_DATA"
-FAIL_FORWARD = "FAIL_FORWARD"
-FAIL_OUTPUT_SHAPE = "FAIL_OUTPUT_SHAPE"
-FAIL_NONFINITE_OUTPUT = "FAIL_NONFINITE_OUTPUT"
-FAIL_LOSS = "FAIL_LOSS"
-FAIL_BACKWARD = "FAIL_BACKWARD"
-FAIL_MISSING_GRADIENT = "FAIL_MISSING_GRADIENT"
-FAIL_NONFINITE_GRADIENT = "FAIL_NONFINITE_GRADIENT"
-FAIL_OOM = "FAIL_OOM"
-FAIL_CHECKPOINT = "FAIL_CHECKPOINT"
-FAIL_EVALUATION = "FAIL_EVALUATION"
-FAIL_REPEATABILITY = "FAIL_REPEATABILITY"
-FAIL_RESULT_WRITE = "FAIL_RESULT_WRITE"
-FAIL_WORKER_CRASH = "FAIL_WORKER_CRASH"
-FAIL_SIGNAL = "FAIL_SIGNAL"
-FAIL_UNKNOWN = "FAIL_UNKNOWN"
-
-PASS_CLASSIFICATIONS = frozenset(
-    {
-        PASS_INTERFACE_SMALL,
-        PASS_RESOLVED_SHAPE,
-        PASS_FORMAL_DEFAULT_SHAPE,
-        PASS_SMOKE,
-        PASS_FULL,
-        PASS_REPEATABILITY,
-        PASS_ENVIRONMENT_PREFLIGHT,
-        PASS_MODEL_PREFLIGHT,
-    }
-)
-FAIL_CLASSIFICATIONS = frozenset(
-    {
-        FAIL_CONFIG,
-        FAIL_MISSING_RESOURCE,
-        FAIL_ENVIRONMENT,
-        FAIL_CUDA_UNAVAILABLE,
-        FAIL_MODEL_IMPORT,
-        FAIL_MODEL_BUILD,
-        FAIL_GRAPH,
-        FAIL_DATA,
-        FAIL_FORWARD,
-        FAIL_OUTPUT_SHAPE,
-        FAIL_NONFINITE_OUTPUT,
-        FAIL_LOSS,
-        FAIL_BACKWARD,
-        FAIL_MISSING_GRADIENT,
-        FAIL_NONFINITE_GRADIENT,
-        FAIL_OOM,
-        FAIL_CHECKPOINT,
-        FAIL_EVALUATION,
-        FAIL_REPEATABILITY,
-        FAIL_RESULT_WRITE,
-        FAIL_WORKER_CRASH,
-        FAIL_SIGNAL,
-        FAIL_UNKNOWN,
-    }
-)
-
-_PROFILE_PASS = {
-    INTERFACE_SMALL: PASS_INTERFACE_SMALL,
-    RESOLVED_SHAPE: PASS_RESOLVED_SHAPE,
-    FORMAL_DEFAULT_SHAPE: PASS_FORMAL_DEFAULT_SHAPE,
-    SMOKE: PASS_SMOKE,
-    FULL: PASS_FULL,
-    REPEATABILITY: PASS_REPEATABILITY,
-    ENVIRONMENT_PREFLIGHT: PASS_ENVIRONMENT_PREFLIGHT,
-    MODEL_PREFLIGHT: PASS_MODEL_PREFLIGHT,
+# This is a read-only compatibility table.  These names must never be
+# imported by another production module or emitted by a new run.
+_LEGACY_CLASSIFICATION_MAP: dict[str, tuple[str, str]] = {
+    "FAIL_CONFIG": ("CONFIG", "INVALID_CONFIG"),
+    "FAIL_MISSING_RESOURCE": ("DATA", "MISSING_RESOURCE"),
+    "FAIL_ENVIRONMENT": ("ENVIRONMENT", "ENVIRONMENT_PREFLIGHT_FAILED"),
+    "FAIL_CUDA_UNAVAILABLE": ("ENVIRONMENT", "CUDA_UNAVAILABLE"),
+    "FAIL_MODEL_IMPORT": ("MODEL", "MODEL_IMPORT_FAILED"),
+    "FAIL_MODEL_BUILD": ("MODEL", "MODEL_BUILD_FAILED"),
+    "FAIL_GRAPH": ("DATA", "GRAPH_BUILD_FAILED"),
+    "FAIL_DATA": ("DATA", "DATA_PREPARATION_FAILED"),
+    "FAIL_FORWARD": ("MODEL", "FORWARD_FAILED"),
+    "FAIL_OUTPUT_SHAPE": ("MODEL", "OUTPUT_SHAPE_MISMATCH"),
+    "FAIL_NONFINITE_OUTPUT": ("MODEL", "NONFINITE_OUTPUT"),
+    "FAIL_LOSS": ("TRAINING", "LOSS_FAILED"),
+    "FAIL_BACKWARD": ("TRAINING", "BACKWARD_FAILED"),
+    "FAIL_MISSING_GRADIENT": ("TRAINING", "MISSING_GRADIENT"),
+    "FAIL_NONFINITE_GRADIENT": ("TRAINING", "NONFINITE_GRADIENT"),
+    "FAIL_OOM": ("OOM", "CUDA_OUT_OF_MEMORY"),
+    "FAIL_CHECKPOINT": ("CHECKPOINT", "CHECKPOINT_FAILED"),
+    "FAIL_EVALUATION": ("EVALUATION", "EVALUATION_FAILED"),
+    "FAIL_REPEATABILITY": ("REPEATABILITY", "REPEATABILITY_MISMATCH"),
+    "FAIL_RESULT_WRITE": ("RUNTIME", "RESULT_WRITE_FAILED"),
+    "FAIL_WORKER_CRASH": ("RUNTIME", "WORKER_CRASH"),
+    "FAIL_SIGNAL": ("RUNTIME", "WORKER_SIGNAL"),
+    "FAIL_UNKNOWN": ("UNKNOWN", "UNKNOWN_ERROR"),
+}
+_LEGACY_PASS_PROFILE_MAP = {
+    "PASS_INTERFACE_SMALL": INTERFACE_SMALL,
+    "PASS_RESOLVED_SHAPE": RESOLVED_SHAPE,
+    "PASS_FORMAL_DEFAULT_SHAPE": FORMAL_DEFAULT_SHAPE,
+    "PASS_SMOKE": SMOKE,
+    "PASS_FULL": FULL,
+    "PASS_REPEATABILITY": REPEATABILITY,
+    # These old preflight values had no useful stable profile.
+    "PASS_ENVIRONMENT_PREFLIGHT": None,
+    "PASS_MODEL_PREFLIGHT": None,
 }
 
+_LEGACY_PHASE_MAP = {
+    "environment_preflight": "preflight",
+    "environment_preflight_complete": "preflight",
+    "model_preflight": "preflight",
+    "model_preflight_complete": "preflight",
+    "config": "preflight",
+    "data": "preflight",
+    "model_build": "preflight",
+    "starting": "preflight",
+    "forward": "resolved_shape",
+    "backward_complete": "resolved_shape",
+    "loss": "resolved_shape",
+    "backward": "resolved_shape",
+    "checkpoint_write": "checkpoint",
+    "checkpoint_reload": "checkpoint",
+    "validation": "evaluation",
+    "validation_complete": "evaluation",
+    "test": "evaluation",
+    "test_complete": "evaluation",
+    "training_complete": "training",
+    "complete": "overall",
+    "completed": "overall",
+    "pending": "overall",
+    "fail_fast": "overall",
+    "resume": "overall",
+    "output_directory": "overall",
+    "worker_completion_missing": "overall",
+    "completed_run_reused": "overall",
+}
 _OOM_MARKERS = (
     "outofmemoryerror",
     "out of memory",
@@ -136,109 +137,177 @@ _OOM_MARKERS = (
     "cuda error: out of memory",
     "cublas_status_alloc_failed",
 )
-
-_LEGACY_CLASSIFICATION_MAP: dict[str, tuple[str, str]] = {
-    FAIL_CONFIG: ("CONFIG", "CONFIGURATION_ERROR"),
-    FAIL_MISSING_RESOURCE: ("DATA", "MISSING_RESOURCE"),
-    FAIL_ENVIRONMENT: ("ENVIRONMENT", "ENVIRONMENT_FAILURE"),
-    FAIL_CUDA_UNAVAILABLE: ("ENVIRONMENT", "CUDA_UNAVAILABLE"),
-    FAIL_MODEL_IMPORT: ("MODEL", "MODEL_IMPORT_ERROR"),
-    FAIL_MODEL_BUILD: ("MODEL", "MODEL_BUILD_ERROR"),
-    FAIL_GRAPH: ("MODEL", "GRAPH_CONFIGURATION_ERROR"),
-    FAIL_DATA: ("DATA", "DATA_ERROR"),
-    FAIL_FORWARD: ("MODEL", "FORWARD_FAILURE"),
-    FAIL_OUTPUT_SHAPE: ("MODEL", "OUTPUT_SHAPE_MISMATCH"),
-    FAIL_NONFINITE_OUTPUT: ("MODEL", "NONFINITE_OUTPUT"),
-    FAIL_LOSS: ("TRAINING", "LOSS_FAILURE"),
-    FAIL_BACKWARD: ("TRAINING", "BACKWARD_FAILURE"),
-    FAIL_MISSING_GRADIENT: ("TRAINING", "MISSING_GRADIENT"),
-    FAIL_NONFINITE_GRADIENT: ("TRAINING", "NONFINITE_GRADIENT"),
-    FAIL_OOM: ("OOM", "CUDA_OUT_OF_MEMORY"),
-    FAIL_CHECKPOINT: ("CHECKPOINT", "CHECKPOINT_FAILURE"),
-    FAIL_EVALUATION: ("EVALUATION", "EVALUATION_FAILURE"),
-    FAIL_REPEATABILITY: ("REPEATABILITY", "REPEATABILITY_FAILURE"),
-    FAIL_RESULT_WRITE: ("RUNTIME", "RESULT_WRITE_FAILURE"),
-    FAIL_WORKER_CRASH: ("RUNTIME", "WORKER_CRASH"),
-    FAIL_SIGNAL: ("RUNTIME", "WORKER_SIGNAL"),
-    FAIL_UNKNOWN: ("UNKNOWN", "UNKNOWN_FAILURE"),
-}
-_LEGACY_PHASE_MAP = {
-    "environment_preflight": "preflight",
-    "model_preflight": "preflight",
-    "config": "preflight",
-    "data": "preflight",
-    "model_build": "preflight",
-    "starting": "preflight",
-    "forward": "resolved_shape",
-    "loss": "resolved_shape",
-    "backward": "resolved_shape",
-    "checkpoint_write": "checkpoint",
-    "checkpoint_reload": "checkpoint",
-    "validation": "evaluation",
-    "test": "evaluation",
-    "complete": "overall",
-    "pending": "overall",
-    "fail_fast": "overall",
-    "resume": "overall",
-    "output_directory": "overall",
-    "worker_completion_missing": "overall",
-}
-_OOM_REQUEST = re.compile(r"tried to allocate\s+([0-9]+(?:\.[0-9]+)?)\s*(ki?b|mi?b|gi?b)", re.IGNORECASE)
+_OOM_REQUEST = re.compile(
+    r"tried to allocate\s+([0-9]+(?:\.[0-9]+)?)\s*(ki?b|mi?b|gi?b)",
+    re.IGNORECASE,
+)
 
 
-def pass_classification(profile: str) -> str:
-    """Return the one canonical PASS classification for a profile."""
-
-    try:
-        return _PROFILE_PASS[profile]
-    except KeyError as exc:
-        raise ValueError(f"unsupported status profile: {profile}") from exc
+def _stable_phase(value: Any) -> str:
+    phase = str(value or "overall")
+    if phase in STABLE_PHASES:
+        return phase
+    return _LEGACY_PHASE_MAP.get(phase, "overall")
 
 
-def phase_record(*, status: str = PENDING, classification: str | None = None, phase: str | None = None, artifact: str | None = None, error_summary: str | None = None, started_at: str | None = None, ended_at: str | None = None, wall_seconds: float | None = None) -> dict[str, Any]:
-    """Construct one JSON-safe stage record used in batch and model statuses."""
+def stable_phase(value: Any) -> str:
+    """Return the coarse public phase for an implementation phase."""
 
-    if status not in TOP_LEVEL_STATUSES:
-        raise ValueError(f"unsupported top-level status: {status}")
+    return _stable_phase(value)
+
+
+def _failure_kind(
+    error: BaseException | None = None,
+    *,
+    message: str | None = None,
+    phase: str | None = None,
+    exit_code: int | None = None,
+    worker_status_present: bool = True,
+) -> tuple[str, str]:
+    detail = " ".join(
+        part for part in (str(error) if error else "", message or "", phase or "") if part
+    ).casefold()
+    error_name = type(error).__name__.casefold() if error is not None else ""
+    if exit_code is not None and exit_code < 0:
+        return "RUNTIME", "WORKER_SIGNAL"
+    if is_oom_failure(error) or is_oom_failure(message):
+        return "OOM", "CUDA_OUT_OF_MEMORY"
+    if "cuda was requested" in detail or "cuda unavailable" in detail:
+        return "ENVIRONMENT", "CUDA_UNAVAILABLE"
+    if (
+        phase == "environment"
+        or "environment" in error_name
+        or "environment preflight" in detail
+        or "conda" in detail
+    ):
+        return "ENVIRONMENT", "ENVIRONMENT_PREFLIGHT_FAILED"
+    if (
+        "modulenotfound" in error_name
+        or "importerror" in error_name
+        or "model implementation not found" in detail
+    ):
+        return "MODEL", "MODEL_IMPORT_FAILED"
+    if (
+        "filenotfound" in error_name
+        or "does not exist" in detail
+        or "missing resource" in detail
+    ):
+        return "DATA", "MISSING_RESOURCE"
+    if "graph" in detail:
+        return "DATA", "GRAPH_BUILD_FAILED"
+    if (
+        "configerror" in error_name
+        or phase in {"config", "resume", "output_directory"}
+        or "configuration" in detail
+        or "result directory" in detail
+        or "--resume" in detail
+    ):
+        return "CONFIG", "INVALID_CONFIG"
+    if phase == "data" or "parquet" in detail or "data" in error_name:
+        return "DATA", "DATA_PREPARATION_FAILED"
+    if "output must have shape" in detail or "output shape" in detail:
+        return "MODEL", "OUTPUT_SHAPE_MISMATCH"
+    if "output contains nan" in detail or "output contains inf" in detail or "nonfinite output" in detail:
+        return "MODEL", "NONFINITE_OUTPUT"
+    if phase == "loss" or "loss" in detail:
+        return "TRAINING", "LOSS_FAILED"
+    if "missing gradient" in detail or "gradient is none" in detail:
+        return "TRAINING", "MISSING_GRADIENT"
+    if "gradient" in detail and (
+        "nan" in detail or "inf" in detail or "nonfinite" in detail
+    ):
+        return "TRAINING", "NONFINITE_GRADIENT"
+    if phase == "backward" or "backward" in detail:
+        return "TRAINING", "BACKWARD_FAILED"
+    if phase == "forward" or "forward" in detail:
+        return "MODEL", "FORWARD_FAILED"
+    if phase == "model_build" or "build_model" in detail:
+        return "MODEL", "MODEL_BUILD_FAILED"
+    if phase == "checkpoint" or "checkpoint" in detail:
+        return "CHECKPOINT", "CHECKPOINT_FAILED"
+    if phase == "evaluation" or "evaluation" in detail:
+        return "EVALUATION", "EVALUATION_FAILED"
+    if phase == "repeatability" or "repeatability" in detail:
+        return "REPEATABILITY", "REPEATABILITY_MISMATCH"
+    if phase == "result_write" or ("write" in detail and "result" in detail):
+        return "RUNTIME", "RESULT_WRITE_FAILED"
+    if not worker_status_present and exit_code not in (None, 0):
+        return "RUNTIME", "WORKER_CRASH"
+    return "UNKNOWN", "UNKNOWN_ERROR"
+
+
+def _fallback_error_code(classification: str, *, phase: Any = None, message: Any = None, exit_code: Any = None) -> str:
+    inferred_classification, inferred_code = _failure_kind(
+        message=str(message) if message is not None else None,
+        phase=str(phase) if phase is not None else None,
+        exit_code=int(exit_code) if isinstance(exit_code, int) else None,
+        worker_status_present=False if classification == "RUNTIME" else True,
+    )
+    if inferred_classification == classification:
+        return inferred_code
     return {
-        "status": status,
+        "CONFIG": "INVALID_CONFIG",
+        "ENVIRONMENT": "ENVIRONMENT_PREFLIGHT_FAILED",
+        "DATA": "DATA_PREPARATION_FAILED",
+        "MODEL": "MODEL_BUILD_FAILED",
+        "OOM": "CUDA_OUT_OF_MEMORY",
+        "TRAINING": "BACKWARD_FAILED",
+        "CHECKPOINT": "CHECKPOINT_FAILED",
+        "EVALUATION": "EVALUATION_FAILED",
+        "REPEATABILITY": "REPEATABILITY_MISMATCH",
+        "RUNTIME": "WORKER_CRASH",
+        "UNKNOWN": "UNKNOWN_ERROR",
+    }.get(classification, "UNKNOWN_ERROR")
+
+
+def failure_details(
+    error: BaseException | None = None,
+    *,
+    message: str | None = None,
+    phase: str | None = None,
+    exit_code: int | None = None,
+    worker_status_present: bool = True,
+    traceback_tail: str | None = None,
+    limit: int = 2000,
+) -> dict[str, Any]:
+    """Return stable classification and a canonical error object."""
+
+    classification, code = _failure_kind(
+        error,
+        message=message,
+        phase=phase,
+        exit_code=exit_code,
+        worker_status_present=worker_status_present,
+    )
+    return {
         "classification": classification,
-        "phase": phase,
-        "started_at": started_at,
-        "ended_at": ended_at,
-        "wall_seconds": wall_seconds,
-        "artifact": artifact,
-        "error_summary": error_summary,
+        "error": {
+            "code": code,
+            "type": type(error).__name__ if error is not None else None,
+            "message": failure_summary(error, message=message, limit=limit),
+            "traceback_tail": traceback_tail,
+        },
     }
 
 
-def running_phase(phase: str, *, artifact: str | None = None) -> dict[str, Any]:
-    return phase_record(status=RUNNING, phase=phase, artifact=artifact, started_at=utc_now())
-
-
-def finished_phase(
+def classify_validation_failure(
+    error: BaseException | None = None,
     *,
-    profile: str | None = None,
-    classification: str | None = None,
-    phase: str,
-    artifact: str | None = None,
-    error_summary: str | None = None,
-    started_at: str | None = None,
-    wall_seconds: float | None = None,
-) -> dict[str, Any]:
-    """Create a terminal phase without leaking ad-hoc status literals."""
+    message: str | None = None,
+    phase: str | None = None,
+    exit_code: int | None = None,
+    worker_status_present: bool = True,
+) -> str:
+    """Classify a failure using only the stable public categories."""
 
-    resolved_classification = classification or (pass_classification(profile) if profile else None)
-    successful = resolved_classification in PASS_CLASSIFICATIONS
-    return phase_record(
-        status=PASS if successful else FAILED,
-        classification=resolved_classification,
-        phase=phase,
-        artifact=artifact,
-        error_summary=error_summary,
-        started_at=started_at,
-        ended_at=utc_now(),
-        wall_seconds=wall_seconds,
+    return str(
+        failure_details(
+            error,
+            message=message,
+            phase=phase,
+            exit_code=exit_code,
+            worker_status_present=worker_status_present,
+        )["classification"]
     )
 
 
@@ -253,70 +322,12 @@ def is_oom_failure(value: BaseException | str | None) -> bool:
     return any(marker in joined for marker in _OOM_MARKERS)
 
 
-def classify_validation_failure(
+def failure_summary(
     error: BaseException | None = None,
     *,
     message: str | None = None,
-    phase: str | None = None,
-    exit_code: int | None = None,
-    worker_status_present: bool = True,
-) -> str:
-    """Classify known validation and worker failures into the public schema."""
-
-    detail = " ".join(part for part in (str(error) if error else "", message or "", phase or "") if part).casefold()
-    error_name = type(error).__name__.casefold() if error is not None else ""
-    if exit_code is not None and exit_code < 0:
-        return FAIL_SIGNAL
-    if is_oom_failure(error) or is_oom_failure(message):
-        return FAIL_OOM
-    if "cuda was requested" in detail or "cuda unavailable" in detail:
-        return FAIL_CUDA_UNAVAILABLE
-    if phase == "environment" or "environment" in error_name or "environment preflight" in detail or "conda" in detail:
-        return FAIL_ENVIRONMENT
-    if "modulenotfound" in error_name or "importerror" in error_name or "model implementation not found" in detail:
-        return FAIL_MODEL_IMPORT
-    if "filenotfound" in error_name or "does not exist" in detail or "missing resource" in detail:
-        return FAIL_MISSING_RESOURCE
-    if (
-        "configerror" in error_name
-        or phase == "config"
-        or "configuration" in detail
-        or "result directory" in detail
-        or "--resume" in detail
-    ):
-        return FAIL_CONFIG
-    if "graph" in detail:
-        return FAIL_GRAPH
-    if phase == "data" or "parquet" in detail or "data" in error_name:
-        return FAIL_DATA
-    if "output must have shape" in detail or "output shape" in detail:
-        return FAIL_OUTPUT_SHAPE
-    if "output contains nan" in detail or "output contains inf" in detail or "nonfinite output" in detail:
-        return FAIL_NONFINITE_OUTPUT
-    if phase == "loss" or "loss" in detail:
-        return FAIL_LOSS
-    if "missing gradient" in detail or "gradient is none" in detail:
-        return FAIL_MISSING_GRADIENT
-    if "gradient" in detail and ("nan" in detail or "inf" in detail or "nonfinite" in detail):
-        return FAIL_NONFINITE_GRADIENT
-    if phase == "backward" or "backward" in detail:
-        return FAIL_BACKWARD
-    if phase == "forward" or "forward" in detail:
-        return FAIL_FORWARD
-    if phase == "model_build" or "build_model" in detail:
-        return FAIL_MODEL_BUILD
-    if phase == "checkpoint" or "checkpoint" in detail:
-        return FAIL_CHECKPOINT
-    if phase == "evaluation" or "evaluation" in detail:
-        return FAIL_EVALUATION
-    if phase == "result_write" or "write" in detail and "result" in detail:
-        return FAIL_RESULT_WRITE
-    if not worker_status_present and exit_code not in (None, 0):
-        return FAIL_WORKER_CRASH
-    return FAIL_UNKNOWN
-
-
-def failure_summary(error: BaseException | None = None, *, message: str | None = None, limit: int = 2000) -> str | None:
+    limit: int = 2000,
+) -> str | None:
     value = message or (str(error) if error is not None else None)
     if not value:
         return None
@@ -324,20 +335,17 @@ def failure_summary(error: BaseException | None = None, *, message: str | None =
 
 
 def normalize_legacy_classification(classification: Any) -> tuple[str | None, str | None]:
-    """Map schema-v1 detail classifications to schema-v2 category/code pairs."""
+    """Map a legacy classification to a stable category and error code."""
 
-    if classification is None or classification in PASS_CLASSIFICATIONS:
+    if classification is None:
         return None, None
     if isinstance(classification, str) and classification in STABLE_CLASSIFICATIONS:
         return classification, None
-    return _LEGACY_CLASSIFICATION_MAP.get(str(classification), ("UNKNOWN", "UNKNOWN_FAILURE"))
-
-
-def _stable_phase(value: Any) -> str:
-    phase = str(value or "overall")
-    if phase in STABLE_PHASES:
-        return phase
-    return _LEGACY_PHASE_MAP.get(phase, "overall")
+    if isinstance(classification, str) and classification in _LEGACY_PASS_PROFILE_MAP:
+        return None, None
+    return _LEGACY_CLASSIFICATION_MAP.get(
+        str(classification), ("UNKNOWN", "LEGACY_UNKNOWN_CLASSIFICATION")
+    )
 
 
 def _oom_requested_allocation_mb(message: Any) -> float | None:
@@ -355,57 +363,124 @@ def _oom_requested_allocation_mb(message: Any) -> float | None:
     return value
 
 
-def _normalize_status_record(value: Mapping[str, Any], *, phase_record_value: bool = False) -> dict[str, Any]:
-    """Normalize one v1/v2 status record without requiring optional legacy fields."""
+def _canonical_error(
+    source: Mapping[str, Any] | None,
+    *,
+    derived_code: str | None,
+    classification: str,
+    phase: Any,
+    message: Any,
+    error_type: Any,
+    traceback_tail: Any,
+    exit_code: Any,
+) -> dict[str, Any]:
+    source = source or {}
+    code = source.get("code") or derived_code or _fallback_error_code(
+        classification,
+        phase=phase,
+        message=message,
+        exit_code=exit_code,
+    )
+    return {
+        "code": str(code),
+        "type": source.get("type") or error_type,
+        "message": source.get("message") or message,
+        "traceback_tail": source.get("traceback_tail") or traceback_tail,
+    }
+
+
+def _normalize_status_record(
+    value: Mapping[str, Any], *, phase_record_value: bool = False
+) -> dict[str, Any]:
+    """Normalize one v1/v2 record without requiring optional fields."""
 
     result = deepcopy(dict(value))
-    status = result.get("status")
-    if status not in TOP_LEVEL_STATUSES:
-        status = FAILED if result.get("classification") in FAIL_CLASSIFICATIONS else PENDING
+    if result.get("operation") in {"environment_preflight", "model_preflight"}:
+        result["operation"] = "preflight"
+    raw_status = result.get("status")
+    raw_classification = result.get("classification")
+    legacy_profile = _LEGACY_PASS_PROFILE_MAP.get(str(raw_classification))
+    if result.get("profile") not in PROFILES:
+        result["profile"] = legacy_profile
+    if raw_status == "COMPLETED":
+        status = PASS
+        if result.get("profile") is None:
+            result["profile"] = FULL
+    elif raw_status == "ERROR":
+        status = FAILED
+    elif raw_status in TOP_LEVEL_STATUSES:
+        status = raw_status
+    elif raw_status is None and legacy_profile is not None:
+        status = PASS
+    else:
+        status = FAILED if str(raw_classification) in _LEGACY_CLASSIFICATION_MAP else PENDING
     result["status"] = status
-    legacy_classification = result.get("classification")
-    classification, derived_code = normalize_legacy_classification(legacy_classification)
-    result["classification"] = classification if status == FAILED else None
-    result["phase"] = _stable_phase(result.get("phase"))
+
+    classification, derived_code = normalize_legacy_classification(raw_classification)
+    phase_value = result.get("phase")
+    result["phase"] = _stable_phase(phase_value)
+    if status != FAILED:
+        result["classification"] = None
+    else:
+        result["classification"] = classification if classification in STABLE_CLASSIFICATIONS else "UNKNOWN"
 
     legacy_error = result.get("error")
-    error_source = legacy_error if isinstance(legacy_error, Mapping) else {}
-    message = error_source.get("message") or result.get("error_message")
-    error_type = error_source.get("type") or result.get("exception_type")
-    traceback_tail = error_source.get("traceback_tail") or result.get("traceback_tail")
-    code = error_source.get("code") or derived_code
+    error_source = legacy_error if isinstance(legacy_error, Mapping) else None
+    message = (
+        error_source.get("message") if error_source is not None else None
+    ) or result.get("error_message") or result.get("error_summary")
+    error_type = (
+        error_source.get("type") if error_source is not None else None
+    ) or result.get("exception_type")
+    traceback_tail = (
+        error_source.get("traceback_tail") if error_source is not None else None
+    ) or result.get("traceback_tail")
     if status == FAILED:
-        result["error"] = {
-            "code": str(code or "UNKNOWN_FAILURE"),
-            "type": error_type,
-            "message": message,
-            "traceback_tail": traceback_tail,
-        }
-        if result["classification"] is None:
-            result["classification"] = "UNKNOWN"
+        if result["classification"] == "UNKNOWN" and derived_code is None:
+            derived_code = "LEGACY_UNKNOWN_CLASSIFICATION" if raw_classification is not None else None
+        result["error"] = _canonical_error(
+            error_source,
+            derived_code=derived_code,
+            classification=result["classification"],
+            phase=phase_value,
+            message=message,
+            error_type=error_type,
+            traceback_tail=traceback_tail,
+            exit_code=result.get("exit_code"),
+        )
         if result["classification"] == "OOM":
-            result["oom_requested_allocation_mb"] = _oom_requested_allocation_mb(message)
+            result["oom_requested_allocation_mb"] = _oom_requested_allocation_mb(
+                result["error"].get("message")
+            )
     else:
-        result.pop("error", None)
+        result["error"] = None
         result.pop("oom_requested_allocation_mb", None)
 
     if "requested_allocation_mb" in result and "estimated_input_tensor_mb" not in result:
         result["estimated_input_tensor_mb"] = result["requested_allocation_mb"]
     result.pop("requested_allocation_mb", None)
-    for field in ("status_history", "validation_status", "exception_type", "error_message", "traceback_tail"):
+    for field in (
+        "status_history",
+        "validation_status",
+        "exception_type",
+        "error_message",
+        "traceback_tail",
+    ):
         result.pop(field, None)
 
     phases = result.get("phases")
     if isinstance(phases, Mapping) and not phase_record_value:
         normalized_phases: dict[str, dict[str, Any]] = {}
-        for legacy_name, phase_value in phases.items():
-            if not isinstance(phase_value, Mapping):
+        priority = {PENDING: 0, RUNNING: 1, PASS: 2, SKIPPED: 2, FAILED: 3}
+        for legacy_name, phase_value_record in phases.items():
+            if not isinstance(phase_value_record, Mapping):
                 continue
             stable_name = _stable_phase(legacy_name)
-            normalized = _normalize_status_record(phase_value, phase_record_value=True)
+            normalized = _normalize_status_record(
+                phase_value_record, phase_record_value=True
+            )
             normalized["phase"] = stable_name
             existing = normalized_phases.get(stable_name)
-            priority = {PENDING: 0, RUNNING: 1, PASS: 2, SKIPPED: 2, FAILED: 3}
             if existing is None or priority[normalized["status"]] >= priority[existing["status"]]:
                 normalized_phases[stable_name] = normalized
         result["phases"] = normalized_phases
@@ -413,11 +488,11 @@ def _normalize_status_record(value: Mapping[str, Any], *, phase_record_value: bo
 
 
 def normalize_status_payload(value: Mapping[str, Any]) -> dict[str, Any]:
-    """Read schema-v1, schema-v2 or partial status JSON as a schema-v2 payload.
+    """Read schema-v1, schema-v2 or partial status JSON as schema v2.
 
-    This is deliberately tolerant: status readers need only the stable public
-    fields, while unknown legacy details remain ignorable rather than blocking
-    existing result directories.
+    Unknown fields are retained so a newer writer can be read by an older
+    command, but no optional legacy field is required and the input mapping is
+    never modified.
     """
 
     result = deepcopy(dict(value))
@@ -428,19 +503,115 @@ def normalize_status_payload(value: Mapping[str, Any]) -> dict[str, Any]:
                 _normalize_status_record(item) if isinstance(item, Mapping) else item
                 for item in collection
             ]
-    if "status" in result:
+    if "status" in result or "classification" in result or "phase" in result:
         result = _normalize_status_record(result)
+    elif result.get("operation") in {"environment_preflight", "model_preflight"}:
+        result["operation"] = "preflight"
     result["schema_version"] = 2
     return result
 
 
+def phase_record(
+    *,
+    status: str = PENDING,
+    classification: str | None = None,
+    phase: str | None = None,
+    artifact: str | None = None,
+    error_summary: str | None = None,
+    error: Mapping[str, Any] | None = None,
+    details: Mapping[str, Any] | None = None,
+    started_at: str | None = None,
+    ended_at: str | None = None,
+    wall_seconds: float | None = None,
+) -> dict[str, Any]:
+    """Construct one JSON-safe coarse phase record."""
+
+    if status not in TOP_LEVEL_STATUSES:
+        raise ValueError(f"unsupported top-level status: {status}")
+    stable_classification = (
+        classification if classification in STABLE_CLASSIFICATIONS else None
+    )
+    result: dict[str, Any] = {
+        "status": status,
+        "classification": stable_classification if status == FAILED else None,
+        "phase": _stable_phase(phase),
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "wall_seconds": wall_seconds,
+        "artifact": artifact,
+        "error_summary": error_summary,
+        "error": deepcopy(dict(error)) if isinstance(error, Mapping) else None,
+    }
+    if isinstance(details, Mapping):
+        result["details"] = deepcopy(dict(details))
+    return result
+
+
+def running_phase(phase: str, *, artifact: str | None = None) -> dict[str, Any]:
+    return phase_record(status=RUNNING, phase=phase, artifact=artifact, started_at=utc_now())
+
+
+def finished_phase(
+    *,
+    profile: str | None = None,
+    classification: str | None = None,
+    phase: str,
+    artifact: str | None = None,
+    error_summary: str | None = None,
+    error: Mapping[str, Any] | None = None,
+    details: Mapping[str, Any] | None = None,
+    started_at: str | None = None,
+    wall_seconds: float | None = None,
+) -> dict[str, Any]:
+    """Create a terminal coarse phase without profile-specific classes."""
+
+    if profile is not None and profile not in PROFILES:
+        raise ValueError(f"unsupported status profile: {profile}")
+    stable_classification = (
+        classification if classification in STABLE_CLASSIFICATIONS else None
+    )
+    if stable_classification is None and classification is not None:
+        stable_classification, legacy_code = normalize_legacy_classification(classification)
+        if error is None and stable_classification is not None:
+            error = {
+                "code": legacy_code or _fallback_error_code(
+                    stable_classification, phase=phase, message=error_summary
+                ),
+                "type": None,
+                "message": error_summary,
+                "traceback_tail": None,
+            }
+    elif stable_classification is not None and error is None:
+        error = {
+            "code": _fallback_error_code(
+                stable_classification, phase=phase, message=error_summary
+            ),
+            "type": None,
+            "message": error_summary,
+            "traceback_tail": None,
+        }
+    successful = stable_classification is None and error is None and not error_summary
+    return phase_record(
+        status=PASS if successful else FAILED,
+        classification=stable_classification,
+        phase=phase,
+        artifact=artifact,
+        error_summary=error_summary,
+        error=error,
+        details=details,
+        started_at=started_at,
+        ended_at=utc_now(),
+        wall_seconds=wall_seconds,
+    )
+
+
 def write_status(path, value: Mapping[str, Any]) -> None:
-    """Persist schema-v2 status while accepting v1-shaped writer inputs."""
+    """Persist a schema-v2 status atomically after central normalization."""
 
     write_json(path, normalize_status_payload(value))
 
 
 def write_validation_status(path, value: Mapping[str, Any]) -> None:
-    """Compatibility alias for shape/check status writers."""
+    """Keep the worker-file name as a compatibility alias to ``write_status``."""
 
     write_status(path, value)
