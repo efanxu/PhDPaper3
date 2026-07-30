@@ -6,6 +6,7 @@ import csv
 from datetime import datetime, timezone
 from dataclasses import dataclass
 import json
+import math
 from pathlib import Path
 import re
 import subprocess
@@ -53,7 +54,9 @@ from runtime.status import (
     pass_classification,
     phase_record,
     running_phase,
+    normalize_status_payload,
     write_validation_status,
+    write_status,
 )
 
 
@@ -205,22 +208,21 @@ MODEL_COMPARISON_FIELDS = [
     "H3_MAE",
     "H3_RMSE",
     "H3_R2",
-    "H3_SMAPE",
-    "H3_MAPE",
     "H3_Official_Score",
+    "H3_MAPE",
+    "H3_SMAPE",
     "H6_MAE",
     "H6_RMSE",
     "H6_R2",
-    "H6_SMAPE",
-    "H6_MAPE",
     "H6_Official_Score",
+    "H6_MAPE",
+    "H6_SMAPE",
     "H10_MAE",
     "H10_RMSE",
     "H10_R2",
-    "H10_SMAPE",
-    "H10_MAPE",
     "H10_Official_Score",
-    "mean_official_score",
+    "H10_MAPE",
+    "H10_SMAPE",
     "training_wall_seconds",
     "test_model_forward_seconds",
     "mean_sample_latency_ms",
@@ -229,6 +231,26 @@ MODEL_COMPARISON_FIELDS = [
     "runtime_environment",
     "python_executable",
     "result_dir",
+    "metric_note",
+]
+
+_PAPER_COMPARISON_FIELDS = MODEL_COMPARISON_FIELDS[:-1]
+_PAPER_GROUP_HEADER = [
+    "Model Information", "", "", "",
+    "3-step", "", "", "", "", "",
+    "6-step", "", "", "", "", "",
+    "10-step", "", "", "", "", "",
+    "Efficiency", "", "", "", "",
+    "Runtime", "", "",
+]
+_PAPER_FIELD_HEADER = [
+    "Model", "Status", "Parameter Count", "Best Epoch",
+    "MAE", "RMSE", "R2", "Score", "MAPE", "SMAPE",
+    "MAE", "RMSE", "R2", "Score", "MAPE", "SMAPE",
+    "MAE", "RMSE", "R2", "Score", "MAPE", "SMAPE",
+    "Training Wall Seconds", "Test Forward Seconds", "Mean Sample Latency ms",
+    "Samples Per Second", "Peak GPU Allocated MB",
+    "Runtime Environment", "Python Executable", "Result Directory",
 ]
 
 _METRIC_ALIASES: dict[str, tuple[str, ...]] = {
@@ -238,11 +260,11 @@ _METRIC_ALIASES: dict[str, tuple[str, ...]] = {
     "SMAPE": ("SMAPE", "smape"),
     "MAPE": ("MAPE", "mape"),
     "Official_Score": (
+        "SDWPF Official Score",
         "Official_Score",
         "official_score",
-        "score",
-        "SDWPF Official Score",
         "official_align_score",
+        "score",
     ),
 }
 _HORIZON_FILE = re.compile(r"^metrics_test_h(?P<horizon>[1-9][0-9]*)\.json$")
@@ -292,6 +314,27 @@ def _metric_value(metrics: Mapping[str, Any], name: str) -> Any:
         if alias.casefold() in folded:
             return folded[alias.casefold()]
     return None
+
+
+def format_csv_float(value: Any) -> str:
+    """Format finite numeric CSV values consistently without changing JSON metrics."""
+
+    if value is None:
+        return ""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if not math.isfinite(parsed):
+        return ""
+    return f"{parsed:.3f}"
+
+
+def _finite_metric(value: Any) -> bool:
+    try:
+        return value is not None and math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return False
 
 
 def extract_metric_value(metrics: Mapping[str, Any], name: str) -> Any:
@@ -369,7 +412,6 @@ def collect_model_run_summary(record: Mapping[str, Any]) -> ModelRunSummary:
         "status": status,
         "parameter_count": parameter_count,
         "best_epoch": best_epoch,
-        "mean_official_score": None,
         "training_wall_seconds": performance.get("training_wall_seconds"),
         "test_model_forward_seconds": test.get("model_forward_seconds"),
         "mean_sample_latency_ms": test.get("mean_sample_latency_ms"),
@@ -381,21 +423,18 @@ def collect_model_run_summary(record: Mapping[str, Any]) -> ModelRunSummary:
     }
     for horizon in PAPER_HORIZONS:
         metrics = metrics_by_horizon.get(horizon, {})
-        for metric_name in ("MAE", "RMSE", "R2", "SMAPE", "MAPE"):
+        for metric_name in ("MAE", "RMSE", "R2", "MAPE", "SMAPE"):
             comparison[f"H{horizon}_{metric_name}"] = _metric_value(metrics, metric_name)
         comparison[f"H{horizon}_Official_Score"] = _metric_value(metrics, "Official_Score")
-
-    expected_paper_horizons = [
-        horizon for horizon in PAPER_HORIZONS if horizon in expected_horizons
-    ]
-    if not expected_paper_horizons:
-        expected_paper_horizons = [horizon for horizon in PAPER_HORIZONS if horizon in metric_files]
-    official_scores = [
-        comparison[f"H{horizon}_Official_Score"]
-        for horizon in expected_paper_horizons
-    ]
-    if official_scores and all(value is not None for value in official_scores):
-        comparison["mean_official_score"] = sum(float(value) for value in official_scores) / len(official_scores)
+    notes: list[str] = []
+    for metric_name in ("R2", "MAPE"):
+        if any(
+            horizon in metric_files
+            and not _finite_metric(comparison[f"H{horizon}_{metric_name}"])
+            for horizon in PAPER_HORIZONS
+        ):
+            notes.append(f"{metric_name}_UNDEFINED")
+    comparison["metric_note"] = ";".join(notes)
 
     summary_row = {
         "model": comparison["model"],
@@ -439,16 +478,53 @@ def collect_model_run_summary(record: Mapping[str, Any]) -> ModelRunSummary:
 
 
 def _write_csv(path: Path, fieldnames: list[str], rows: list[dict[str, Any]]) -> None:
-    buffer = StringIO()
+    buffer = StringIO(newline="")
     writer = csv.DictWriter(buffer, fieldnames=fieldnames, extrasaction="ignore")
     writer.writeheader()
     writer.writerows(rows)
     write_text_atomic(path, buffer.getvalue())
 
 
+def _comparison_value(field: str, value: Any) -> str:
+    if field in {"parameter_count", "best_epoch"}:
+        if value is None:
+            return ""
+        try:
+            return str(int(value))
+        except (TypeError, ValueError):
+            return ""
+    if field in {
+        "H3_MAE", "H3_RMSE", "H3_R2", "H3_Official_Score", "H3_MAPE", "H3_SMAPE",
+        "H6_MAE", "H6_RMSE", "H6_R2", "H6_Official_Score", "H6_MAPE", "H6_SMAPE",
+        "H10_MAE", "H10_RMSE", "H10_R2", "H10_Official_Score", "H10_MAPE", "H10_SMAPE",
+        "training_wall_seconds", "test_model_forward_seconds", "mean_sample_latency_ms",
+        "samples_per_second", "peak_gpu_allocated_mb",
+    }:
+        return format_csv_float(value)
+    return "" if value is None else str(value)
+
+
+def _write_model_comparisons(run_root: Path, rows: list[dict[str, Any]]) -> None:
+    """Write paper and programmatic CSVs from the same normalized summaries."""
+
+    flattened = [
+        {field: _comparison_value(field, row.get(field)) for field in MODEL_COMPARISON_FIELDS}
+        for row in rows
+    ]
+    _write_csv(run_root / "model_comparison_flat.csv", MODEL_COMPARISON_FIELDS, flattened)
+
+    buffer = StringIO(newline="")
+    writer = csv.writer(buffer)
+    writer.writerow(_PAPER_GROUP_HEADER)
+    writer.writerow(_PAPER_FIELD_HEADER)
+    for row in flattened:
+        writer.writerow([row[field] for field in _PAPER_COMPARISON_FIELDS])
+    write_text_atomic(run_root / "model_comparison.csv", buffer.getvalue())
+
+
 def _status_payload(run_id: str, operation: str, records: list[dict[str, Any]]) -> dict[str, Any]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "run_id": run_id,
         "operation": operation,
         "updated_at": utc_now(),
@@ -459,10 +535,20 @@ def _status_payload(run_id: str, operation: str, records: list[dict[str, Any]]) 
 def _save_status(run_root: Path, run_id: str, operation: str, records: list[dict[str, Any]]) -> None:
     for record in records:
         parsed = collect_model_run_summary(record)
-        record["metrics_complete"] = not parsed.missing_horizons
+        phase = str(record.get("phase") or "")
+        status = record.get("status")
+        if operation in {"check", "preflight", "environment_preflight"} or phase in {
+            "resolved_shape",
+            "environment_preflight",
+            "model_preflight",
+        } or status in {PENDING, RUNNING}:
+            record["metrics_complete"] = None
+        elif operation in {"train", "evaluate"}:
+            record["metrics_complete"] = not parsed.missing_horizons if status == PASS else False
+        else:
+            record["metrics_complete"] = None
         record["missing_horizons"] = list(parsed.missing_horizons)
-    write_json(run_root / "status.json", _status_payload(run_id, operation, records))
-    write_json(run_root / "logs.json", {"run_id": run_id, "models": records})
+    write_status(run_root / "status.json", _status_payload(run_id, operation, records))
 
 
 def _write_summaries(run_root: Path, records: list[dict[str, Any]]) -> None:
@@ -508,11 +594,40 @@ def _write_summaries(run_root: Path, records: list[dict[str, Any]]) -> None:
         performance_fields,
         [item.performance_row for item in parsed_rows],
     )
-    _write_csv(
-        run_root / "model_comparison.csv",
-        MODEL_COMPARISON_FIELDS,
-        [item.comparison_row for item in parsed_rows],
-    )
+    _write_model_comparisons(run_root, [item.comparison_row for item in parsed_rows])
+
+
+def summarize_existing_run(
+    *, run_id: str, output_root: str | Path | None = None, project_root: Path | None = None
+) -> dict[str, Any]:
+    """Regenerate scheduler CSVs from completed artifacts without starting a worker."""
+
+    root = (project_root or Path.cwd()).resolve()
+    results_root = resolve_output_root(root, output_root)
+    run_root = results_root / "_runs" / effective_run_id(run_id, None)
+    status_path = run_root / "status.json"
+    raw = _read_json_mapping(status_path)
+    if not raw:
+        raise FileNotFoundError(f"run status does not exist or is unreadable: {status_path}")
+    payload = normalize_status_payload(raw)
+    records_value = payload.get("models")
+    if not isinstance(records_value, list):
+        raise ValueError(f"run status has no model records: {status_path}")
+    records = [dict(item) for item in records_value if isinstance(item, Mapping)]
+    if not records:
+        raise ValueError(f"run status has no usable model records: {status_path}")
+    operation = str(payload.get("operation") or "train")
+    _save_status(run_root, str(payload.get("run_id") or run_id), operation, records)
+    _write_summaries(run_root, records)
+    return {
+        "run_id": str(payload.get("run_id") or run_id),
+        "run_root": str(run_root),
+        "model_count": len(records),
+        "summary_csv": str(run_root / "summary.csv"),
+        "performance_summary_csv": str(run_root / "performance_summary.csv"),
+        "model_comparison_csv": str(run_root / "model_comparison.csv"),
+        "model_comparison_flat_csv": str(run_root / "model_comparison_flat.csv"),
+    }
 
 
 def _new_record(
@@ -549,7 +664,6 @@ def _new_record(
         "result_dir": str(result_dir),
         "log_path": str(log_path),
         "error_summary": None,
-        "status_history": [PENDING],
         "archive_path": None,
         "phases": phases,
     }
@@ -647,10 +761,14 @@ def _copy_worker_run_phases(record: dict[str, Any]) -> None:
     info = _read_json_mapping(Path(record["result_dir"]) / "run_info.json")
     phases = info.get("phases")
     if isinstance(phases, Mapping):
-        for name in ("training", "checkpoint_write", "checkpoint_reload", "validation", "test"):
-            value = phases.get(name)
+        for source_name, target_name in (
+            ("training", "training"),
+            ("checkpoint", "checkpoint_write"),
+            ("evaluation", "test"),
+        ):
+            value = phases.get(source_name)
             if isinstance(value, Mapping):
-                record["phases"][name] = dict(value)
+                record["phases"][target_name] = dict(value)
 
 
 def run_training_models(
@@ -777,7 +895,6 @@ def run_training_models(
                 profile=ENVIRONMENT_PREFLIGHT,
                 phase="environment_preflight_complete",
             )
-            record["status_history"].append(PASS)
         _save_status(run_root, effective_id, "environment_preflight", records)
         _write_summaries(run_root, records)
         return {
@@ -903,7 +1020,7 @@ def run_training_models(
         result_dir = Path(record["result_dir"])
         result_dir.mkdir(parents=True, exist_ok=True)
         profile = _validation_profile_for_training(smoke=smoke)
-        status_path = result_dir / "validation_status.json"
+        status_path = run_root / f".{model}.resolved_shape.json"
         requests["models"][model]["status_path"] = str(status_path)
         requests["models"][model]["resume_checkpoint"] = requests["models"][model].get("resume_checkpoint")
         shape_request = dict(requests)
@@ -940,7 +1057,6 @@ def run_training_models(
             wall_seconds=shape_seconds,
             profile=profile,
         )
-        record["validation_status"] = shape
         record["phases"]["resolved_shape"] = {
             "status": shape.get("status", FAILED),
             "classification": shape.get("classification"),
@@ -948,9 +1064,25 @@ def run_training_models(
             "started_at": shape.get("started_at"),
             "ended_at": shape.get("ended_at"),
             "wall_seconds": shape.get("wall_seconds"),
-            "artifact": str(status_path),
-            "error_summary": shape.get("error_message"),
+            "artifact": str(result_dir),
+            "error_summary": (
+                shape.get("error", {}).get("message")
+                if isinstance(shape.get("error"), Mapping)
+                else shape.get("error_message")
+            ),
+            "details": {
+                key: shape.get(key)
+                for key in (
+                    "input_shape", "output_shape", "parameter_count",
+                    "estimated_input_tensor_mb", "peak_gpu_allocated_mb",
+                )
+                if key in shape
+            },
         }
+        try:
+            status_path.unlink(missing_ok=True)
+        except OSError:
+            pass
         if shape.get("status") != PASS:
             record.update(
                 {
@@ -960,7 +1092,11 @@ def run_training_models(
                     "exit_code": shape_exit,
                     "ended_at": utc_now(),
                     "wall_seconds": shape_seconds,
-                    "error_summary": shape.get("error_message") or shape_tail,
+                    "error_summary": (
+                        shape.get("error", {}).get("message")
+                        if isinstance(shape.get("error"), Mapping)
+                        else shape.get("error_message")
+                    ) or shape_tail,
                 }
             )
             record["phases"]["overall"] = finished_phase(
@@ -1003,8 +1139,8 @@ def run_training_models(
                     "error_summary": None,
                 }
             )
-            record["phases"]["overall"] = finished_phase(
-                classification=record["classification"],
+            record["phases"]["overall"] = phase_record(
+                status=PASS,
                 phase=record["phase"],
                 artifact=str(result_dir),
                 wall_seconds=record["wall_seconds"],
@@ -1096,6 +1232,8 @@ def run_isolated_checks(
         None,
     )
     run_root = (root / ("_checks" if operation == "check" else "_runs") / run_name).resolve()
+    if operation == "check" and run_root.exists() and any(run_root.iterdir()):
+        raise ValueError(f"check run directory already contains files: {run_root}; choose a new --run-id")
     model_configs = _validate_model_configs(models, config_file, model_config_path)
     try:
         model_environments, preflight_results = _prepare_batch_environments(
@@ -1131,7 +1269,7 @@ def run_isolated_checks(
         }
         for item in results:
             write_validation_status(run_root / f"{item['model']}.json", item)
-        write_json(run_root / "status.json", result)
+        write_status(run_root / "status.json", result)
         _write_csv(
             run_root / "summary.csv",
             ["model", "status", "classification", "phase", "exit_code", "error_message"],
@@ -1245,7 +1383,7 @@ def run_isolated_checks(
         "run_id": run_name,
         "results": results,
     }
-    write_json(run_root / "status.json", result)
+    write_status(run_root / "status.json", result)
     _write_csv(
         run_root / "summary.csv",
         ["model", "profile", "status", "classification", "phase", "batch_size", "batch_size_source", "input_shape", "output_shape", "parameter_count", "exit_code", "wall_seconds"],

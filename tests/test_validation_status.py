@@ -9,6 +9,7 @@ from cli import orchestrator
 from cli import train
 from runtime.config import ConfigError
 from runtime.status import (
+    FAILED,
     FAIL_BACKWARD,
     FAIL_CONFIG,
     FAIL_CUDA_UNAVAILABLE,
@@ -35,6 +36,7 @@ from runtime.status import (
     PASS_RESOLVED_SHAPE,
     RESOLVED_SHAPE,
     classify_validation_failure,
+    normalize_status_payload,
     pass_classification,
     write_validation_status,
 )
@@ -137,7 +139,8 @@ def test_train_worker_failure_finalizes_existing_run_info(monkeypatch, tmp_path:
         )
     result = json.loads((output / "run_info.json").read_text(encoding="utf-8"))
     assert result["status"] == "FAILED"
-    assert result["classification"] == "FAIL_FORWARD"
+    assert result["classification"] == "MODEL"
+    assert result["error"]["code"] == "FORWARD_FAILURE"
     assert result["phases"]["overall"]["status"] == "FAILED"
 
 
@@ -170,4 +173,51 @@ def test_environment_preflight_failure_is_persisted_at_batch_boundary(monkeypatc
     assert result["passed"] is False
     assert result["models"][0]["classification"] == FAIL_ENVIRONMENT
     saved = json.loads((tmp_path / "results" / "_runs" / "environment-failure" / "status.json").read_text(encoding="utf-8"))
-    assert saved["models"][0]["phases"]["environment_preflight"]["status"] == "FAILED"
+    assert saved["models"][0]["phases"]["preflight"]["status"] == "FAILED"
+
+
+def test_schema_v1_failure_normalizes_to_v2_error_code_without_duplicate_history() -> None:
+    normalized = normalize_status_payload(
+        {
+            "schema_version": 1,
+            "status": FAILED,
+            "classification": FAIL_NONFINITE_OUTPUT,
+            "phase": "forward",
+            "error_message": "output contains NaN or Inf",
+            "exception_type": "FloatingPointError",
+            "traceback_tail": "trace",
+            "status_history": ["PENDING", FAILED],
+            "metrics_complete": False,
+        }
+    )
+    assert normalized["schema_version"] == 2
+    assert normalized["classification"] == "MODEL"
+    assert normalized["phase"] == "resolved_shape"
+    assert normalized["error"] == {
+        "code": "NONFINITE_OUTPUT",
+        "type": "FloatingPointError",
+        "message": "output contains NaN or Inf",
+        "traceback_tail": "trace",
+    }
+    assert "status_history" not in normalized
+
+
+def test_schema_v1_oom_and_partial_v2_payload_are_backward_compatible() -> None:
+    old_oom = normalize_status_payload(
+        {
+            "status": FAILED,
+            "classification": FAIL_OOM,
+            "phase": "forward",
+            "error_message": "CUDA out of memory. Tried to allocate 1.5 GiB",
+        }
+    )
+    assert old_oom["classification"] == "OOM"
+    assert old_oom["error"]["code"] == "CUDA_OUT_OF_MEMORY"
+    assert old_oom["oom_requested_allocation_mb"] == 1536.0
+
+    partial_v2 = normalize_status_payload(
+        {"schema_version": 2, "status": PASS, "unknown_future_field": {"ok": True}}
+    )
+    assert partial_v2["schema_version"] == 2
+    assert partial_v2["classification"] is None
+    assert partial_v2["unknown_future_field"] == {"ok": True}

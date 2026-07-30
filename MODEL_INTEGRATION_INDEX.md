@@ -118,6 +118,20 @@ measurement and CSV aggregation. New model code must not implement its own
 CLI, Trainer, Evaluator, checkpoint format, resume logic, result directory or
 subprocess scheduler.
 
+## Stable result contracts
+
+Paper metrics are read from the top level of each `metrics_test_h*.json`.
+The paper CSV groups 3-step, 6-step and 10-step metrics, while display floats
+use exactly three decimals. `model_comparison.csv` is the two-row paper view;
+`model_comparison_flat.csv` is the programmatic one-row view. Both can be
+regenerated from existing artifacts with `summarize`, without training.
+
+Status schema v2 guarantees only the small top-level state vocabulary and the
+stable failure classifications; specific details belong in `error` and
+`details`. Status readers must accept existing schema-v1 records. Public graph
+configuration is owned by `resources.graph.k` in `experiment.yaml`; graph-model
+checkpoints must validate the graph configuration before resume or evaluation.
+
 The model YAML is structure-only. Public data, split, loss, optimizer, batch
 and evaluation semantics come from `configs/experiment.yaml` and explicit
 command-line overrides.

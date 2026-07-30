@@ -74,7 +74,7 @@ def _memory_snapshot(device: torch.device) -> dict[str, float | None]:
     }
 
 
-def _requested_allocation_mb(batch: int, info: DataInfoView) -> float:
+def _estimated_input_tensor_mb(batch: int, info: DataInfoView) -> float:
     values = batch * (
         info.lookback * info.num_nodes * info.num_features + 2 * info.num_nodes * info.max_pred_len
     )
@@ -131,7 +131,8 @@ def run_shape_validation(
         "input_shape": None,
         "output_shape": None,
         "parameter_count": None,
-        "requested_allocation_mb": None,
+        "estimated_input_tensor_mb": None,
+        "oom_requested_allocation_mb": None,
         "exception_type": None,
         "error_message": None,
         "traceback_tail": None,
@@ -153,7 +154,7 @@ def run_shape_validation(
         batch_size, source = _batch_size(profile, int(config.training["train_batch_size"]), overrides)
         payload["batch_size"] = int(batch_size)
         payload["batch_size_source"] = source
-        payload["requested_allocation_mb"] = _requested_allocation_mb(batch_size, data_info)
+        payload["estimated_input_tensor_mb"] = _estimated_input_tensor_mb(batch_size, data_info)
         payload["input_shape"] = [
             int(batch_size),
             int(data_info.lookback),
@@ -204,7 +205,10 @@ def run_shape_validation(
         )
     finally:
         if selected_device is not None:
-            payload.update(_memory_snapshot(selected_device))
+            try:
+                payload.update(_memory_snapshot(selected_device))
+            except Exception as diagnostic_error:
+                payload["diagnostic_error"] = str(diagnostic_error)
         payload["ended_at"] = utc_now()
         payload["wall_seconds"] = time.perf_counter() - started
         del model, x, target, target_mask, output, loss

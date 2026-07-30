@@ -52,7 +52,8 @@ def write_json(path: Path, value: dict[str, Any]) -> None:
 def write_text_atomic(path: Path, value: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    temporary.write_text(value, encoding="utf-8")
+    with temporary.open("w", encoding="utf-8", newline="") as handle:
+        handle.write(value)
     os.replace(temporary, path)
 
 

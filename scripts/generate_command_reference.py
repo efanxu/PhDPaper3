@@ -51,6 +51,10 @@ python scripts\\run.py repeatability `
   --device cuda `
   --prediction-atol 1e-6
 ```""",
+    "summarize": """```powershell
+python scripts\\run.py summarize `
+  --run-id validation_state_smoke_seed2026_fix1
+```""",
 }
 
 

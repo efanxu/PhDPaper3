@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import torch
 
 from .losses import _valid
+
+
+def display_metric(value: float | torch.Tensor) -> float | None:
+    """Return a JSON-safe, three-decimal display value without changing raw metrics."""
+
+    parsed = float(value)
+    return round(parsed, 3) if math.isfinite(parsed) else None
 
 
 def compute_metrics(
@@ -73,9 +81,12 @@ def compute_metrics(
         "valid_target_ratio": int(mask.sum().item()) / mask.numel(),
         "lower_is_better": True,
         "display": {
-            "MAE": round(float(mae), 3),
-            "RMSE": round(float(rmse), 3),
-            "SDWPF Official Score": round(official, 3),
+            "MAE": display_metric(mae),
+            "RMSE": display_metric(rmse),
+            "R2": display_metric(r2),
+            "MAPE": display_metric(mape),
+            "SMAPE": display_metric(smape),
+            "SDWPF Official Score": display_metric(official),
         },
     }
 

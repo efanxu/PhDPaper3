@@ -15,10 +15,11 @@ live under `results/<model>/<run_id>/`.
 - every training worker is preceded by an independent resolved-shape worker;
 - `check --full-shape` without public shape overrides records the separate
   YAML-default formal shape;
-- shared `PENDING`/`RUNNING`/`PASS`/`FAILED`/`SKIPPED` states use explicit
-  classifications and are atomically persisted in `validation_status.json`,
-  model `run_info.json`, batch `results/_runs/<run-id>/status.json`, and
-  standalone `results/_checks/<run-id>/status.json`;
+- schema-v2 statuses use `PENDING`/`RUNNING`/`PASS`/`FAILED`/`SKIPPED`, a
+  small stable failure classification, and detailed `error.code`/`details`;
+  readers accept existing schema-v1 results. Long-lived state is limited to
+  batch `results/_runs/<run-id>/status.json`, model `run_info.json`, and
+  `results/_checks/<check-id>/<model>.json`;
 - duplicate names in `--model` are rejected before directories or workers;
 - batch-1 resolved checks and default-batch formal checks remain distinct.
 - fail-closed new runs, checkpoint resume, archive-based overwrite and ID suffixes;
@@ -29,7 +30,9 @@ live under `results/<model>/<run_id>/`.
 - defaults to `tslib` when a model YAML omits `runtime`;
 - automatically resolves interpreters and can mix both environments in one batch;
 - environment preflight can run without creating model result directories or workers;
-- paper comparison CSVs contain H3, H6 and H10 metrics when those horizons are configured;
+- paper comparison CSVs group H3, H6 and H10 metrics in a two-row header;
+  the matching flat CSV has stable machine-readable fields and both can be
+  regenerated from existing results through `summarize`;
 - repeatability runs one complete multi-model A batch followed by one complete B batch and compares every test horizon;
 - keeps each model in an independent process;
 - treats the local `Time-Series-Library` source as read-only;

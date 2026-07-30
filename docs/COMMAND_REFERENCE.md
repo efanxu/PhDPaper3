@@ -214,6 +214,24 @@ python scripts\run.py repeatability `
   --prediction-atol 1e-6
 ```
 
+## `summarize`
+
+只读取已有 status、metrics 与 performance 文件，不加载数据、模型或 checkpoint。
+
+### 参数
+
+| 参数 | 分组 | 必填 | 类型 | 默认行为 | YAML 字段 | 公共覆盖 | 说明 |
+|---|---|---:|---|---|---|---:|---|
+| `--run-id` | options | 是 | str | 无 | `—` | 否 | 已有 results/_runs/<run-id> 批次 ID |
+| `--output-root` | options | 否 | path | 无 | `—` | 否 | 结果根目录；未提供时使用项目 results/ |
+
+### 示例
+
+```powershell
+python scripts\run.py summarize `
+  --run-id validation_state_smoke_seed2026_fix1
+```
+
 ## 覆盖记录
 
 `resolved_config.yaml` 是公共 YAML 应用命令行覆盖后的完整最终配置；`cli_overrides.yaml` 只保存本次实际提供的覆盖项；`command.json` 保存原始 argv、命令、模型和配置路径。

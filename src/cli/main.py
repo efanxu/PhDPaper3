@@ -25,6 +25,13 @@ def _print_json(value) -> None:
 
 def _dispatch(args, raw_argv: list[str]) -> int:
     cli_overrides = cli_overrides_from_namespace(args)
+    if args.command == "summarize":
+        from .orchestrator import summarize_existing_run
+
+        result = summarize_existing_run(run_id=args.run_id, output_root=args.output_root)
+        _print_json(result)
+        return 0
+
     if args.command == "train":
         from .orchestrator import run_training_models
 

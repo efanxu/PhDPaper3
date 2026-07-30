@@ -95,6 +95,10 @@ Results are stored in `results/<model>/<run_id>/`. Multi-model dispatch
 metadata and paper-ready efficiency rows are stored in
 `results/_runs/<effective_run_id>/`, including `summary.csv`,
 `performance_summary.csv` and the complete `model_comparison.csv`.
+`model_comparison.csv` is the two-row grouped paper/Excel view, while
+`model_comparison_flat.csv` has a stable one-row header for programs. Regenerate
+both from existing artifacts without training by running
+`python scripts\run.py summarize --run-id <run-id>`.
 
 For new model integration, read
 [`MODEL_INTEGRATION_INDEX.md`](MODEL_INTEGRATION_INDEX.md) first.

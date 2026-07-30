@@ -29,6 +29,7 @@ from runtime.status import (
     PASS,
     REPEATABILITY,
     pass_classification,
+    write_status,
 )
 
 
@@ -359,7 +360,7 @@ def compare_repeated_runs(
         "classification": pass_classification(REPEATABILITY) if passed else FAIL_REPEATABILITY,
         "models": reports,
     }
-    write_json(repeat_root / "status.json", status)
+    write_status(repeat_root / "status.json", status)
     return {
         "passed": passed,
         "run_id": base_id,

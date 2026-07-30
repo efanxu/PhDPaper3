@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from copy import deepcopy
+import re
 from typing import Any
 
 from .run_info import utc_now, write_json
@@ -15,6 +17,24 @@ FAILED = "FAILED"
 SKIPPED = "SKIPPED"
 
 TOP_LEVEL_STATUSES = frozenset({PENDING, RUNNING, PASS, FAILED, SKIPPED})
+STABLE_CLASSIFICATIONS = frozenset(
+    {
+        "CONFIG",
+        "ENVIRONMENT",
+        "DATA",
+        "MODEL",
+        "OOM",
+        "TRAINING",
+        "CHECKPOINT",
+        "EVALUATION",
+        "REPEATABILITY",
+        "RUNTIME",
+        "UNKNOWN",
+    }
+)
+STABLE_PHASES = frozenset(
+    {"preflight", "resolved_shape", "training", "checkpoint", "evaluation", "overall"}
+)
 
 INTERFACE_SMALL = "INTERFACE_SMALL"
 RESOLVED_SHAPE = "RESOLVED_SHAPE"
@@ -116,6 +136,54 @@ _OOM_MARKERS = (
     "cuda error: out of memory",
     "cublas_status_alloc_failed",
 )
+
+_LEGACY_CLASSIFICATION_MAP: dict[str, tuple[str, str]] = {
+    FAIL_CONFIG: ("CONFIG", "CONFIGURATION_ERROR"),
+    FAIL_MISSING_RESOURCE: ("DATA", "MISSING_RESOURCE"),
+    FAIL_ENVIRONMENT: ("ENVIRONMENT", "ENVIRONMENT_FAILURE"),
+    FAIL_CUDA_UNAVAILABLE: ("ENVIRONMENT", "CUDA_UNAVAILABLE"),
+    FAIL_MODEL_IMPORT: ("MODEL", "MODEL_IMPORT_ERROR"),
+    FAIL_MODEL_BUILD: ("MODEL", "MODEL_BUILD_ERROR"),
+    FAIL_GRAPH: ("MODEL", "GRAPH_CONFIGURATION_ERROR"),
+    FAIL_DATA: ("DATA", "DATA_ERROR"),
+    FAIL_FORWARD: ("MODEL", "FORWARD_FAILURE"),
+    FAIL_OUTPUT_SHAPE: ("MODEL", "OUTPUT_SHAPE_MISMATCH"),
+    FAIL_NONFINITE_OUTPUT: ("MODEL", "NONFINITE_OUTPUT"),
+    FAIL_LOSS: ("TRAINING", "LOSS_FAILURE"),
+    FAIL_BACKWARD: ("TRAINING", "BACKWARD_FAILURE"),
+    FAIL_MISSING_GRADIENT: ("TRAINING", "MISSING_GRADIENT"),
+    FAIL_NONFINITE_GRADIENT: ("TRAINING", "NONFINITE_GRADIENT"),
+    FAIL_OOM: ("OOM", "CUDA_OUT_OF_MEMORY"),
+    FAIL_CHECKPOINT: ("CHECKPOINT", "CHECKPOINT_FAILURE"),
+    FAIL_EVALUATION: ("EVALUATION", "EVALUATION_FAILURE"),
+    FAIL_REPEATABILITY: ("REPEATABILITY", "REPEATABILITY_FAILURE"),
+    FAIL_RESULT_WRITE: ("RUNTIME", "RESULT_WRITE_FAILURE"),
+    FAIL_WORKER_CRASH: ("RUNTIME", "WORKER_CRASH"),
+    FAIL_SIGNAL: ("RUNTIME", "WORKER_SIGNAL"),
+    FAIL_UNKNOWN: ("UNKNOWN", "UNKNOWN_FAILURE"),
+}
+_LEGACY_PHASE_MAP = {
+    "environment_preflight": "preflight",
+    "model_preflight": "preflight",
+    "config": "preflight",
+    "data": "preflight",
+    "model_build": "preflight",
+    "starting": "preflight",
+    "forward": "resolved_shape",
+    "loss": "resolved_shape",
+    "backward": "resolved_shape",
+    "checkpoint_write": "checkpoint",
+    "checkpoint_reload": "checkpoint",
+    "validation": "evaluation",
+    "test": "evaluation",
+    "complete": "overall",
+    "pending": "overall",
+    "fail_fast": "overall",
+    "resume": "overall",
+    "output_directory": "overall",
+    "worker_completion_missing": "overall",
+}
+_OOM_REQUEST = re.compile(r"tried to allocate\s+([0-9]+(?:\.[0-9]+)?)\s*(ki?b|mi?b|gi?b)", re.IGNORECASE)
 
 
 def pass_classification(profile: str) -> str:
@@ -255,7 +323,124 @@ def failure_summary(error: BaseException | None = None, *, message: str | None =
     return value[-limit:]
 
 
-def write_validation_status(path, value: Mapping[str, Any]) -> None:
-    """Atomically write the portable per-model or standalone validation JSON."""
+def normalize_legacy_classification(classification: Any) -> tuple[str | None, str | None]:
+    """Map schema-v1 detail classifications to schema-v2 category/code pairs."""
 
-    write_json(path, dict(value))
+    if classification is None or classification in PASS_CLASSIFICATIONS:
+        return None, None
+    if isinstance(classification, str) and classification in STABLE_CLASSIFICATIONS:
+        return classification, None
+    return _LEGACY_CLASSIFICATION_MAP.get(str(classification), ("UNKNOWN", "UNKNOWN_FAILURE"))
+
+
+def _stable_phase(value: Any) -> str:
+    phase = str(value or "overall")
+    if phase in STABLE_PHASES:
+        return phase
+    return _LEGACY_PHASE_MAP.get(phase, "overall")
+
+
+def _oom_requested_allocation_mb(message: Any) -> float | None:
+    if not isinstance(message, str):
+        return None
+    match = _OOM_REQUEST.search(message)
+    if match is None:
+        return None
+    value = float(match.group(1))
+    unit = match.group(2).casefold()
+    if unit.startswith("g"):
+        return value * 1024.0
+    if unit.startswith("k"):
+        return value / 1024.0
+    return value
+
+
+def _normalize_status_record(value: Mapping[str, Any], *, phase_record_value: bool = False) -> dict[str, Any]:
+    """Normalize one v1/v2 status record without requiring optional legacy fields."""
+
+    result = deepcopy(dict(value))
+    status = result.get("status")
+    if status not in TOP_LEVEL_STATUSES:
+        status = FAILED if result.get("classification") in FAIL_CLASSIFICATIONS else PENDING
+    result["status"] = status
+    legacy_classification = result.get("classification")
+    classification, derived_code = normalize_legacy_classification(legacy_classification)
+    result["classification"] = classification if status == FAILED else None
+    result["phase"] = _stable_phase(result.get("phase"))
+
+    legacy_error = result.get("error")
+    error_source = legacy_error if isinstance(legacy_error, Mapping) else {}
+    message = error_source.get("message") or result.get("error_message")
+    error_type = error_source.get("type") or result.get("exception_type")
+    traceback_tail = error_source.get("traceback_tail") or result.get("traceback_tail")
+    code = error_source.get("code") or derived_code
+    if status == FAILED:
+        result["error"] = {
+            "code": str(code or "UNKNOWN_FAILURE"),
+            "type": error_type,
+            "message": message,
+            "traceback_tail": traceback_tail,
+        }
+        if result["classification"] is None:
+            result["classification"] = "UNKNOWN"
+        if result["classification"] == "OOM":
+            result["oom_requested_allocation_mb"] = _oom_requested_allocation_mb(message)
+    else:
+        result.pop("error", None)
+        result.pop("oom_requested_allocation_mb", None)
+
+    if "requested_allocation_mb" in result and "estimated_input_tensor_mb" not in result:
+        result["estimated_input_tensor_mb"] = result["requested_allocation_mb"]
+    result.pop("requested_allocation_mb", None)
+    for field in ("status_history", "validation_status", "exception_type", "error_message", "traceback_tail"):
+        result.pop(field, None)
+
+    phases = result.get("phases")
+    if isinstance(phases, Mapping) and not phase_record_value:
+        normalized_phases: dict[str, dict[str, Any]] = {}
+        for legacy_name, phase_value in phases.items():
+            if not isinstance(phase_value, Mapping):
+                continue
+            stable_name = _stable_phase(legacy_name)
+            normalized = _normalize_status_record(phase_value, phase_record_value=True)
+            normalized["phase"] = stable_name
+            existing = normalized_phases.get(stable_name)
+            priority = {PENDING: 0, RUNNING: 1, PASS: 2, SKIPPED: 2, FAILED: 3}
+            if existing is None or priority[normalized["status"]] >= priority[existing["status"]]:
+                normalized_phases[stable_name] = normalized
+        result["phases"] = normalized_phases
+    return result
+
+
+def normalize_status_payload(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Read schema-v1, schema-v2 or partial status JSON as a schema-v2 payload.
+
+    This is deliberately tolerant: status readers need only the stable public
+    fields, while unknown legacy details remain ignorable rather than blocking
+    existing result directories.
+    """
+
+    result = deepcopy(dict(value))
+    for collection_name in ("models", "results"):
+        collection = result.get(collection_name)
+        if isinstance(collection, list):
+            result[collection_name] = [
+                _normalize_status_record(item) if isinstance(item, Mapping) else item
+                for item in collection
+            ]
+    if "status" in result:
+        result = _normalize_status_record(result)
+    result["schema_version"] = 2
+    return result
+
+
+def write_status(path, value: Mapping[str, Any]) -> None:
+    """Persist schema-v2 status while accepting v1-shaped writer inputs."""
+
+    write_json(path, normalize_status_payload(value))
+
+
+def write_validation_status(path, value: Mapping[str, Any]) -> None:
+    """Compatibility alias for shape/check status writers."""
+
+    write_status(path, value)

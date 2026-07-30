@@ -229,6 +229,16 @@ def _build_repeatability(subparsers: argparse._SubParsersAction) -> None:
     )
 
 
+def _build_summarize(subparsers: argparse._SubParsersAction) -> None:
+    parser = subparsers.add_parser(
+        "summarize",
+        help="从已有结果重新生成汇总 CSV",
+        description="只读取已有 status、metrics 与 performance 文件，不加载数据、模型或 checkpoint。",
+    )
+    parser.add_argument("--run-id", required=True, help="已有 results/_runs/<run-id> 批次 ID")
+    parser.add_argument("--output-root", type=Path, help="结果根目录；未提供时使用项目 results/")
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the sole user-facing project parser."""
 
@@ -237,13 +247,14 @@ def build_parser() -> argparse.ArgumentParser:
         dest="command",
         required=True,
         title="可用命令",
-        metavar="{train,evaluate,check,preflight,repeatability}",
+        metavar="{train,evaluate,check,preflight,repeatability,summarize}",
     )
     _build_train(subparsers)
     _build_evaluate(subparsers)
     _build_check(subparsers)
     _build_preflight(subparsers)
     _build_repeatability(subparsers)
+    _build_summarize(subparsers)
     return parser
 
 

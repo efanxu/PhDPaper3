@@ -49,6 +49,7 @@ from runtime.status import (
     finished_phase,
     phase_record,
     running_phase,
+    write_status,
 )
 
 
@@ -450,7 +451,7 @@ def _run_model_impl(
         "overall": phase_record(phase="starting"),
     }
     run_info_path = output_dir / "run_info.json"
-    write_json(
+    write_status(
         run_info_path,
         {
             "schema_version": 1,
@@ -466,6 +467,7 @@ def _run_model_impl(
             "exception_type": None,
             "error_message": None,
             "traceback_tail": None,
+            "metrics_complete": None,
             "phases": run_phases,
             **{
                 key: runtime_metadata.get(key)
@@ -483,7 +485,7 @@ def _run_model_impl(
     def write_progress(phase: str) -> None:
         current = json.loads(run_info_path.read_text(encoding="utf-8"))
         current.update({"status": RUNNING, "classification": None, "phase": phase, "phases": run_phases})
-        write_json(run_info_path, current)
+        write_status(run_info_path, current)
 
     data_started = time.perf_counter()
     arrays, data_info, splits, windows, normalization, loaders = _prepare(config, project_root)
@@ -649,8 +651,9 @@ def _run_model_impl(
         "validation_monitor": validation.metrics["monitor"],
         "test_monitor": test.metrics["monitor"],
         "final_evaluation_max_batches": final_eval_limit,
+        "metrics_complete": True,
     }
-    write_json(output_dir / "run_info.json", run_info)
+    write_status(output_dir / "run_info.json", run_info)
     return {"output_dir": str(output_dir), "run_info": run_info, "validation": validation.metrics, "test": test.metrics, "selected_split": evaluation_split, "window_counts": windows.as_dict()["counts"], "performance": performance}
 
 
@@ -699,7 +702,10 @@ def _write_failed_run_info(*, model_name: str, config_path: str | Path, output_r
                 "phases": phases,
             }
         )
-        write_json(path, current)
+        current["metrics_complete"] = (
+            False if phase in {"training", "validation", "test", "evaluation"} else None
+        )
+        write_status(path, current)
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
         # The parent scheduler records a FAIL_WORKER_CRASH if this emergency
         # finalizer cannot safely persist a worker completion state.

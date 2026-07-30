@@ -251,8 +251,9 @@ def test_training_runs_resolved_shape_in_a_distinct_worker_before_train(monkeypa
     assert result["passed"] is True
     assert [operation for _, _, operation in _FakeProcess.started] == ["validate_shape", "train"]
     assert record["resolved_shape_pid"] != record["pid"]
-    assert record["validation_status"]["classification"] == PASS_RESOLVED_SHAPE
+    assert "validation_status" not in record
     assert record["phases"]["resolved_shape"]["status"] == PASS
+    assert "details" in record["phases"]["resolved_shape"]
 
 
 def test_environment_preflight_only_does_not_start_worker_or_create_model_result(
