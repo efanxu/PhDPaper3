@@ -89,3 +89,23 @@ def test_command_reference_is_generated_from_current_parser() -> None:
         check=False,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_gitignore_allows_small_csv_fixtures_but_keeps_runtime_artifacts_ignored() -> None:
+    rules = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert "*.csv" not in rules
+    checks = {
+        "tests/fixtures/turbine_locations_small.csv": False,
+        "results/example.csv": True,
+        "Time-Series-Library/models/Crossformer.py": True,
+    }
+    for path, expected_ignored in checks.items():
+        result = subprocess.run(["git", "check-ignore", "-q", path], cwd=ROOT, check=False)
+        assert (result.returncode == 0) is expected_ignored
+
+
+def test_readme_only_references_existing_example_models() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "dlinear" not in readme and "patchtst" not in readme
+    for model in ("node_shared_lstm", "crossformer", "stcn"):
+        assert (ROOT / "configs" / "models" / f"{model}.yaml").is_file()

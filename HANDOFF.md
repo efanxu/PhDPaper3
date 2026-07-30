@@ -25,6 +25,10 @@ live under `results/<model>/<run_id>/`.
 - keeps each model in an independent process;
 - treats the local `Time-Series-Library` source as read-only;
 - provides `tsl` through `env_tsl`.
+- provides a real Node Shared Time-Series-Library integration path and a pure
+  `tsl` graph-model path; the parent scheduler switches workers between them.
+- builds shared SDWPF graph resources once at model construction, then stores
+  sparse edge buffers in graph adapters for checkpoint-safe device movement.
 
 ## Known limitations
 

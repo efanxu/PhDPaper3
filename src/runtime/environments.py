@@ -478,14 +478,7 @@ try:
 except Exception as exc:
     fail("project_import", str(exc))
 
-model_path = sys.argv[2]
-if model_path:
-    try:
-        runtime.config.load_model_config(model_path)
-    except Exception as exc:
-        fail("model_config", str(exc))
-
-device = sys.argv[3]
+device = sys.argv[2]
 cuda_available = bool(torch.cuda.is_available())
 if device == "cuda" and not cuda_available:
     fail("cuda", "CUDA was requested but torch.cuda.is_available() is false")
@@ -496,6 +489,55 @@ print(json.dumps({
     "python_executable": sys.executable,
     "cuda_available": cuda_available,
     "torch_version": getattr(torch, "__version__", "unknown"),
+}))
+'''
+
+
+_MODEL_PREFLIGHT_SCRIPT = r'''
+import json
+import sys
+from pathlib import Path
+
+
+def fail(kind, message):
+    print(json.dumps({"ok": False, "kind": kind, "message": message}))
+    raise SystemExit(1)
+
+
+project_root = Path(sys.argv[1]).resolve()
+model_name = sys.argv[2]
+config_path = Path(sys.argv[3]).resolve()
+model_config_path = Path(sys.argv[4]).resolve()
+try:
+    from models.base import DataInfoView
+    from models.loader import build_model, load_model_module
+    from runtime.config import load_experiment_config, load_model_config
+
+    config = load_experiment_config(config_path)
+    model_config = load_model_config(model_config_path)
+    load_model_module(model_name)
+    features = tuple(config.data["feature_columns"])
+    input_power = str(config.data["input_power_column"])
+    info = DataInfoView(
+        num_nodes=int(config.data["num_nodes"]),
+        num_features=len(features),
+        lookback=int(config.data["lookback"]),
+        max_pred_len=int(config.data["max_pred_len"]),
+        feature_columns=features,
+        input_power_column=input_power,
+        input_power_index=features.index(input_power) if input_power in features else -1,
+        node_ids=tuple(range(1, int(config.data["num_nodes"]) + 1)),
+        graph_config=dict(config.resources["graph"]),
+        project_root=project_root,
+    )
+    model = build_model(model_name, model_config, info)
+except Exception as exc:
+    fail("model", str(exc))
+
+print(json.dumps({
+    "ok": True,
+    "model": model_name,
+    "parameter_count": sum(parameter.numel() for parameter in model.parameters()),
 }))
 '''
 
@@ -552,14 +594,6 @@ def preflight_environment(
             kind="python",
             message=f"target Python does not exist: {executable}",
         )
-    time_series_library = root / "Time-Series-Library"
-    if not time_series_library.is_dir():
-        raise _preflight_failure(
-            resolved=resolved_environment,
-            model_name=model_name,
-            kind="source_root",
-            message=f"required project source directory does not exist: {time_series_library}",
-        )
     missing_roots = [path for path in resolved_environment.source_roots if not path.is_dir()]
     if missing_roots:
         missing = missing_roots[0]
@@ -569,7 +603,9 @@ def preflight_environment(
             kind="source_root",
             message=f"required source root does not exist: {missing}",
         )
-    model_path = str(Path(model_config_path).resolve()) if model_config_path is not None else ""
+    # Model validation belongs to ``preflight_model``. Keeping this operation
+    # environment-only means a pure TSL worker never depends on TSLib source.
+    del model_config_path
     worker_environment = build_worker_environment(resolved_environment, project_root=root)
     required = list(dict.fromkeys((*resolved_environment.required_imports, "torch")))
     try:
@@ -579,7 +615,6 @@ def preflight_environment(
                 "-c",
                 _PREFLIGHT_SCRIPT,
                 json.dumps(required),
-                model_path,
                 device,
             ],
             cwd=root,
@@ -617,4 +652,66 @@ def preflight_environment(
         "environment_resolution_source": resolved_environment.resolution_source,
         "cuda_available": bool(payload.get("cuda_available", False)),
         "torch_version": payload.get("torch_version"),
+    }
+
+
+def preflight_model(
+    resolved_environment: ResolvedEnvironment,
+    *,
+    project_root: str | Path,
+    model_name: str,
+    config_path: str | Path,
+    model_config_path: str | Path,
+    timeout_seconds: int = 120,
+) -> dict[str, Any]:
+    """Validate one model module and small construction in its own runtime."""
+
+    root = Path(project_root).resolve()
+    executable = resolved_environment.python_executable
+    if not executable.is_file():
+        raise _preflight_failure(
+            resolved=resolved_environment,
+            model_name=model_name,
+            kind="python",
+            message=f"target Python does not exist: {executable}",
+        )
+    worker_environment = build_worker_environment(resolved_environment, project_root=root)
+    try:
+        completed = subprocess.run(
+            [
+                str(executable),
+                "-c",
+                _MODEL_PREFLIGHT_SCRIPT,
+                str(root),
+                model_name,
+                str(Path(config_path).resolve()),
+                str(Path(model_config_path).resolve()),
+            ],
+            cwd=root,
+            env=worker_environment,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise _preflight_failure(
+            resolved=resolved_environment,
+            model_name=model_name,
+            kind="model",
+            message=str(exc),
+        ) from exc
+    payload = _last_json_line(completed.stdout)
+    if completed.returncode != 0 or not payload or not payload.get("ok"):
+        payload = payload or {}
+        raise _preflight_failure(
+            resolved=resolved_environment,
+            model_name=model_name,
+            kind="model",
+            message=str(payload.get("message") or completed.stderr.strip() or "model preflight failed"),
+        )
+    return {
+        "model": model_name,
+        "runtime_environment": resolved_environment.environment_id,
+        "parameter_count": payload.get("parameter_count"),
     }

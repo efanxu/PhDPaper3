@@ -9,6 +9,7 @@ from typing import Any
 
 import torch
 
+from data.loader import load_data
 from engine.losses import masked_score_aligned_hybrid
 from engine.reproducibility import set_seed
 from models.base import DataInfoView, ModelInput
@@ -52,12 +53,10 @@ def run_check(
     model_config = load_model_config(model_file)
     selected_device = _choose_device(device)
     set_seed(int(config.training["seed"]), deterministic=bool(config.runtime["deterministic"]))
-    data_info = DataInfoView(
-        num_nodes=int(config.data["num_nodes"]),
-        num_features=len(config.data["feature_columns"]),
-        lookback=int(config.data["lookback"]),
-        max_pred_len=int(config.data["max_pred_len"]),
-    )
+    # Shape checks use the real public node order so graph adapters exercise
+    # the same resource alignment as training without consuming labels.
+    _, loaded_data_info = load_data(config, project_root=root)
+    data_info = DataInfoView.from_object(loaded_data_info)
     model = build_model(model_name, model_config, data_info).to(selected_device)
     batch_size = int(config.training["train_batch_size"] if full_shape else 2)
     if selected_device.type == "cuda":

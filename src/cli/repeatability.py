@@ -192,6 +192,7 @@ def compare_repeated_runs(
             model_configs=model_configs,
             project_root=root,
             device=device,
+            config_path=config_file,
         )
         results = [
             {

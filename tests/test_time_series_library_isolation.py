@@ -32,9 +32,15 @@ def test_upstream_model_is_loaded_by_explicit_path_without_replacing_project_mod
     sys.modules.pop("layers", None)
 
 
-def test_real_time_series_library_model_can_load_without_models_shadowing() -> None:
+def test_real_crossformer_can_load_without_models_or_upstream_alias_shadowing() -> None:
+    import models as project_models
     import models.base as project_base
 
-    loaded = load_time_series_library_model("DLinear", source_root=ROOT / "Time-Series-Library")
+    loaded = load_time_series_library_model("Crossformer", source_root=ROOT / "Time-Series-Library")
     assert loaded.__name__.startswith("_phdpaper3_time_series_library.")
+    assert sys.modules["models"] is project_models
     assert sys.modules["models.base"] is project_base
+    assert not any(
+        name == "layers" or name.startswith("layers.") or name == "models.PatchTST"
+        for name in sys.modules
+    )

@@ -51,7 +51,7 @@ def _write_metrics(path: Path, values: dict[str, float]) -> None:
 
 
 def test_model_comparison_contains_complete_horizon_and_failure_rows(tmp_path: Path) -> None:
-    result_dir = tmp_path / "model_a" / "paper-run"
+    result_dir = tmp_path / "node_shared_lstm" / "paper-run"
     result_dir.mkdir(parents=True)
     (result_dir / "resolved_config.yaml").write_text(
         yaml.safe_dump({"data": {"eval_horizons": [3, 6, 10]}}),
@@ -83,17 +83,24 @@ def test_model_comparison_contains_complete_horizon_and_failure_rows(tmp_path: P
         json.dumps({"best_epoch": 7}), encoding="utf-8"
     )
 
-    failed_dir = tmp_path / "model_b" / "paper-run"
+    failed_dir = tmp_path / "stcn" / "paper-run"
     records = [
         {
-            "model": "model_a",
+            "model": "node_shared_lstm",
             "status": "COMPLETED",
             "result_dir": str(result_dir),
             "runtime_environment": "tslib",
             "python_executable": sys.executable,
         },
         {
-            "model": "model_b",
+            "model": "crossformer",
+            "status": "COMPLETED",
+            "result_dir": str(result_dir),
+            "runtime_environment": "tslib",
+            "python_executable": sys.executable,
+        },
+        {
+            "model": "stcn",
             "status": "FAILED",
             "result_dir": str(failed_dir),
             "runtime_environment": "tsl",
@@ -109,7 +116,7 @@ def test_model_comparison_contains_complete_horizon_and_failure_rows(tmp_path: P
         rows = list(csv.DictReader(handle))
         assert handle is not None
     assert list(rows[0]) == MODEL_COMPARISON_FIELDS
-    assert [row["model"] for row in rows] == ["model_a", "model_b"]
+    assert [row["model"] for row in rows] == ["node_shared_lstm", "crossformer", "stcn"]
     assert rows[0]["H3_Official_Score"] == "0.6"
     assert rows[0]["H6_Official_Score"] == "0.7"
     assert rows[0]["H10_Official_Score"] == "0.8"
@@ -117,6 +124,7 @@ def test_model_comparison_contains_complete_horizon_and_failure_rows(tmp_path: P
     assert rows[0]["runtime_environment"] == "tslib"
     assert rows[0]["python_executable"] == sys.executable
     assert rows[0]["result_dir"] == str(result_dir)
-    assert rows[1]["status"] == "FAILED"
-    assert rows[1]["H3_MAE"] == ""
-    assert rows[1]["H10_Official_Score"] == ""
+    assert rows[1]["status"] == "COMPLETED"
+    assert rows[2]["status"] == "FAILED"
+    assert rows[2]["H3_MAE"] == ""
+    assert rows[2]["H10_Official_Score"] == ""

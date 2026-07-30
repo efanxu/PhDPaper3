@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -15,6 +16,12 @@ class DataInfoView:
     num_features: int
     lookback: int
     max_pred_len: int
+    feature_columns: tuple[str, ...] = ()
+    input_power_column: str = ""
+    input_power_index: int = -1
+    node_ids: tuple[int, ...] = ()
+    graph_config: dict[str, Any] | None = None
+    project_root: Path | None = None
 
     @classmethod
     def from_object(cls, value: Any) -> "DataInfoView":
@@ -26,13 +33,37 @@ class DataInfoView:
                 int(value.num_features),
                 int(value.lookback),
                 int(value.max_pred_len),
+                tuple(getattr(value, "feature_columns", ())),
+                str(getattr(value, "input_power_column", "")),
+                int(getattr(value, "input_power_index", -1)),
+                tuple(int(item) for item in getattr(value, "node_ids", ())),
+                dict(getattr(value, "graph_config", {}) or {}) or None,
+                Path(getattr(value, "project_root")).resolve()
+                if getattr(value, "project_root", None) is not None
+                else None,
             )
         if isinstance(value, dict):
+            feature_columns = tuple(str(item) for item in value.get("feature_columns", ()))
+            input_power_column = str(value.get("input_power_column", ""))
+            input_power_index = int(
+                value.get(
+                    "input_power_index",
+                    feature_columns.index(input_power_column)
+                    if input_power_column in feature_columns
+                    else -1,
+                )
+            )
             return cls(
                 int(value["num_nodes"]),
                 int(value.get("num_features", value.get("input_dim"))),
                 int(value["lookback"]),
                 int(value.get("max_pred_len", value.get("horizon"))),
+                feature_columns,
+                input_power_column,
+                input_power_index,
+                tuple(int(item) for item in value.get("node_ids", ())),
+                dict(value.get("graph_config", {}) or {}) or None,
+                Path(value["project_root"]).resolve() if value.get("project_root") else None,
             )
         raise TypeError("data_info must expose num_nodes, num_features, lookback and max_pred_len")
 

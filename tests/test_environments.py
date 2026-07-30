@@ -15,6 +15,7 @@ from runtime.environments import (
     ResolvedEnvironment,
     load_environment_config,
     preflight_environment,
+    preflight_model,
     resolve_model_environment,
     resolve_python_executable,
 )
@@ -195,6 +196,50 @@ def test_preflight_checks_target_python_imports_and_model_config() -> None:
     assert result["python_executable"] == sys.executable
 
 
+def test_pure_tsl_environment_preflight_does_not_require_time_series_library(monkeypatch, tmp_path: Path) -> None:
+    resolved = ResolvedEnvironment(
+        environment_id="tsl",
+        conda_env="env_tsl",
+        python_executable=Path(sys.executable),
+        source_roots=(),
+        required_imports=("yaml",),
+        resolution_source="current_interpreter",
+    )
+    # The temporary project has no Time-Series-Library directory. Its empty
+    # source_roots are the whole environment-level source requirement.
+    monkeypatch.setenv("PYTHONPATH", str(ROOT / "src"))
+    result = preflight_environment(resolved, project_root=tmp_path, device="cpu")
+    assert result["environment_id"] == "tsl"
+
+
+def test_model_preflight_is_invoked_for_every_model_after_one_environment_preflight(monkeypatch, tmp_path: Path) -> None:
+    model_paths = {}
+    for name in ("model_a", "model_b", "model_c"):
+        path = tmp_path / f"{name}.yaml"
+        path.write_text("model:\n  width: 2\n", encoding="utf-8")
+        model_paths[name] = path
+    environment_calls: list[str] = []
+    model_calls: list[str] = []
+
+    def fake_environment(resolved, **kwargs):
+        environment_calls.append(resolved.environment_id)
+        return {"environment_id": resolved.environment_id, "conda_env": resolved.conda_env, "python_executable": str(resolved.python_executable), "python_version": "3.11.0"}
+
+    def fake_model(resolved, *, model_name, **kwargs):
+        model_calls.append(model_name)
+        return {"model": model_name, "runtime_environment": resolved.environment_id, "parameter_count": 1}
+
+    monkeypatch.setattr(orchestrator, "preflight_environment", fake_environment)
+    monkeypatch.setattr(orchestrator, "preflight_model", fake_model)
+    resolved, results = orchestrator._prepare_batch_environments(
+        models=list(model_paths), model_configs=model_paths, project_root=ROOT, device="cpu"
+    )
+    assert list(resolved) == ["model_a", "model_b", "model_c"]
+    assert environment_calls == ["tslib"]
+    assert model_calls == ["model_a", "model_b", "model_c"]
+    assert set(results["tslib"]["model_preflights"]) == set(model_paths)
+
+
 def test_preflight_import_failure_names_model_and_environment() -> None:
     resolved = ResolvedEnvironment(
         environment_id="tsl",
@@ -226,6 +271,11 @@ def test_batch_preflights_each_environment_once(monkeypatch, tmp_path: Path) -> 
         }
 
     monkeypatch.setattr(orchestrator, "preflight_environment", fake_preflight)
+    monkeypatch.setattr(
+        orchestrator,
+        "preflight_model",
+        lambda resolved, *, model_name, **kwargs: {"model": model_name, "runtime_environment": resolved.environment_id, "parameter_count": 1},
+    )
     resolved, results = orchestrator._prepare_batch_environments(
         models=list(model_paths),
         model_configs=model_paths,

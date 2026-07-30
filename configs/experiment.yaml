@@ -30,6 +30,15 @@ data:
   max_pred_len: 10
   eval_horizons: [3, 6, 10]
 
+resources:
+  graph:
+    type: physical_knn
+    location_file: sdwpf_turb_location_elevation.csv
+    k: 4
+    symmetrize: true
+    self_loops: false
+    weighting: binary
+
 split:
   method: chronological_ratio
   train_ratio: 0.8

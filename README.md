@@ -47,9 +47,12 @@ Multiple models run one after another in independent Python processes:
 
 ```powershell
 python scripts\run.py train `
-  --model node_shared_lstm dlinear patchtst `
-  --run-id benchmark_seed2026 `
-  --device cuda
+  --model node_shared_lstm crossformer stcn `
+  --run-id mixed_models_seed2026 `
+  --device cuda `
+  --smoke `
+  --batch-size 1 `
+  --eval-batch-size 1
 ```
 
 Environment-only validation:
@@ -65,7 +68,7 @@ python scripts\run.py train `
 Continue, archive-and-replace, or create a new ID explicitly:
 
 ```powershell
-python scripts\run.py train --model node_shared_lstm dlinear --run-id benchmark_seed2026 --resume
+python scripts\run.py train --model node_shared_lstm crossformer --run-id benchmark_seed2026 --resume
 python scripts\run.py train --model node_shared_lstm --run-id formal_seed2026 --overwrite
 python scripts\run.py train --model node_shared_lstm --run-id formal_seed2026 --id-suffix rerun1
 ```

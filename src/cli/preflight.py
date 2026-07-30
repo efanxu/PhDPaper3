@@ -75,10 +75,21 @@ def run_preflight(
         from models.base import DataInfoView
 
         info = DataInfoView(
-            int(config.data["num_nodes"]),
-            len(config.data["feature_columns"]),
-            int(config.data["lookback"]),
-            int(config.data["max_pred_len"]),
+            num_nodes=int(config.data["num_nodes"]),
+            num_features=len(config.data["feature_columns"]),
+            lookback=int(config.data["lookback"]),
+            max_pred_len=int(config.data["max_pred_len"]),
+            feature_columns=tuple(config.data["feature_columns"]),
+            input_power_column=str(config.data["input_power_column"]),
+            input_power_index=list(config.data["feature_columns"]).index(
+                config.data["input_power_column"]
+            ),
+            # ``--no-data`` has no parquet node order to inspect. SDWPF's
+            # public location table is keyed by the configured 1..N IDs; full
+            # data preflight above remains the strict alignment check.
+            node_ids=tuple(range(1, int(config.data["num_nodes"]) + 1)),
+            graph_config=dict(config.resources["graph"]),
+            project_root=root,
         )
         model = build_model(model_name, model_config, info)
         result["parameter_count"] = sum(parameter.numel() for parameter in model.parameters())

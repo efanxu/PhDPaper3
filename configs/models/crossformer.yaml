@@ -1,0 +1,10 @@
+runtime:
+  environment: tslib
+
+model:
+  d_model: 64
+  n_heads: 4
+  d_ff: 128
+  e_layers: 2
+  dropout: 0.1
+  factor: 10

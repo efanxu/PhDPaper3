@@ -19,6 +19,7 @@ from runtime.environments import (
     ResolvedEnvironment,
     build_worker_environment,
     preflight_environment,
+    preflight_model,
     resolve_model_environment,
 )
 from runtime.paths import (
@@ -79,6 +80,7 @@ def prepare_batch_environments(
     model_configs: Mapping[str, Path],
     project_root: Path,
     device: str,
+    config_path: Path | None = None,
 ) -> tuple[dict[str, ResolvedEnvironment], dict[str, dict[str, Any]]]:
     """Resolve every model and preflight each distinct environment once."""
 
@@ -88,13 +90,25 @@ def prepare_batch_environments(
             model_configs[model],
             project_root=project_root,
         )
-    return model_environments, preflight_batch_environments(
+    preflight_results = preflight_batch_environments(
         models=models,
         model_configs=model_configs,
         model_environments=model_environments,
         project_root=project_root,
         device=device,
     )
+    for model in models:
+        model_result = preflight_model(
+            model_environments[model],
+            project_root=project_root,
+            model_name=model,
+            config_path=config_path or project_root / "configs" / "experiment.yaml",
+            model_config_path=model_configs[model],
+        )
+        preflight_results[model_environments[model].environment_id].setdefault(
+            "model_preflights", {}
+        )[model] = model_result
+    return model_environments, preflight_results
 
 
 def _prepare_batch_environments(
@@ -103,6 +117,7 @@ def _prepare_batch_environments(
     model_configs: Mapping[str, Path],
     project_root: Path,
     device: str,
+    config_path: Path | None = None,
 ) -> tuple[dict[str, ResolvedEnvironment], dict[str, dict[str, Any]]]:
     """Backward-compatible seam for tests and callers of the old private name."""
 
@@ -111,6 +126,7 @@ def _prepare_batch_environments(
         model_configs=model_configs,
         project_root=project_root,
         device=device,
+        config_path=config_path,
     )
 
 
@@ -575,6 +591,7 @@ def run_training_models(
             model_configs=model_configs,
             project_root=project_root,
             device=device,
+            config_path=config_file,
         )
         if environment_context_holder is not None:
             environment_context_holder["value"] = environment_context
@@ -792,6 +809,7 @@ def run_isolated_checks(
         model_configs=model_configs,
         project_root=project_root,
         device=device,
+        config_path=config_file,
     )
     if environment_preflight_only:
         results = [

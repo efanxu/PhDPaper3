@@ -32,7 +32,11 @@ class DataInfo:
     lookback: int
     max_pred_len: int
     feature_columns: tuple[str, ...]
+    input_power_column: str
+    input_power_index: int
     node_ids: tuple[int, ...]
+    graph_config: dict[str, Any]
+    project_root: Path
     start_timestamp: str
     end_timestamp: str
 
@@ -47,7 +51,15 @@ class DataInfo:
             lookback=int(data["lookback"]),
             max_pred_len=int(data["max_pred_len"]),
             feature_columns=tuple(data["feature_columns"]),
+            input_power_column=str(data["input_power_column"]),
+            input_power_index=(
+                tuple(data["feature_columns"]).index(data["input_power_column"])
+                if data["input_power_column"] in data["feature_columns"]
+                else -1
+            ),
             node_ids=tuple(int(value) for value in arrays.node_ids),
+            graph_config=dict(config.resources["graph"]),
+            project_root=config.source.parent.parent.resolve(),
             start_timestamp=str(timestamps[0]),
             end_timestamp=str(timestamps[-1]),
         )
@@ -60,7 +72,10 @@ class DataInfo:
             "lookback": self.lookback,
             "max_pred_len": self.max_pred_len,
             "feature_columns": list(self.feature_columns),
+            "input_power_column": self.input_power_column,
+            "input_power_index": self.input_power_index,
             "node_ids": list(self.node_ids),
+            "graph": dict(self.graph_config),
             "start_timestamp": self.start_timestamp,
             "end_timestamp": self.end_timestamp,
         }

@@ -27,7 +27,9 @@ shared experiment behavior remain in `scripts/run.py` and the modules below.
 20. `src/integrations/time_series_library.py`
 
 Use `src/resources/graph.py` or `src/resources/static_features.py` only when
-the model genuinely needs the corresponding shared resource.
+the model genuinely needs the corresponding shared resource. `DataInfoView`
+contains input-only feature metadata (`feature_columns`, `input_power_column`
+and its resolved index); it never carries targets or masks.
 
 ## Add only the model implementation
 
@@ -49,7 +51,8 @@ model:
 ```
 
 Model parameters are passed to `build_model(model_config, data_info)` from the
-`model:` mapping only.  They are intentionally not copied into a shared field
+`model:` mapping only. Time-series models are Node Shared unless the task
+explicitly requires cross-node modelling. They are intentionally not copied into a shared field
 allowlist or public command documentation.  Public experiment parameters are
 rejected recursively if they appear inside model mappings or list items.
 
@@ -65,13 +68,16 @@ come from `configs/environments.yaml`; the parent scheduler resolves the
 target Python and starts one independent worker process per model.  Model code
 must not activate Conda or start another Trainer.
 
-The local `Time-Series-Library` tree is a read-only model source.  Use
-`src/integrations/time_series_library.py` for explicit file-path loading so
-the project's `models.base` remains the active package.  `tsl` is imported by
-its formal package name in the `tsl` environment.
+The local `Time-Series-Library` tree is a read-only model source. Use
+`src/integrations/time_series_library.py` for controlled explicit file-path
+loading so the project's `models.base` remains the active package. Pure `tsl`
+models import the formal `tsl` package directly and must not depend on
+Time-Series-Library. Graph models obtain deterministic shared graph buffers
+from `src/resources/graph.py`; non-graph models do not require graph files.
 
 The scheduler resolves and preflights each distinct runtime environment once
-per batch, then starts every model with the Python selected by its YAML.  A
+per batch, then validates every requested model in its selected environment
+before starting independent workers. A
 new model automatically contributes its test metrics and performance values
 to `summary.csv`, `performance_summary.csv` and
 `model_comparison.csv`.  Model code must not implement a second Trainer,

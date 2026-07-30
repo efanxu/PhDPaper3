@@ -53,11 +53,15 @@ class ExperimentConfig:
     def runtime(self) -> dict[str, Any]:
         return self.values["runtime"]
 
+    @property
+    def resources(self) -> dict[str, Any]:
+        return self.values["resources"]
+
     def copy_values(self) -> dict[str, Any]:
         return deepcopy(self.values)
 
 
-_EXPERIMENT_KEYS = {"data", "split", "sampling", "training", "evaluation", "runtime"}
+_EXPERIMENT_KEYS = {"data", "resources", "split", "sampling", "training", "evaluation", "runtime"}
 _DATA_KEYS = {
     "dataset",
     "data_root",
@@ -124,6 +128,8 @@ _EVALUATION_KEYS = {
 }
 _CHECKPOINT_KEYS = {"split", "horizon", "metric", "mode"}
 _RUNTIME_KEYS = {"num_workers", "deterministic", "save_predictions", "pin_memory"}
+_RESOURCES_KEYS = {"graph"}
+_GRAPH_KEYS = {"type", "location_file", "k", "symmetrize", "self_loops", "weighting"}
 
 _MODEL_FORBIDDEN_KEYS = {
     "dataset",
@@ -256,6 +262,23 @@ def _validate_experiment(values: dict[str, Any]) -> None:
             raise ConfigError("data.eval_horizons cannot exceed data.max_pred_len")
     if horizons != sorted(set(horizons)):
         raise ConfigError("data.eval_horizons must be sorted and unique")
+
+    resources = values["resources"]
+    _keys(resources, _RESOURCES_KEYS, _RESOURCES_KEYS, "resources")
+    graph = resources["graph"]
+    if not isinstance(graph, dict):
+        raise ConfigError("resources.graph must be a mapping")
+    _keys(graph, _GRAPH_KEYS, _GRAPH_KEYS, "resources.graph")
+    if graph["type"] != "physical_knn":
+        raise ConfigError("resources.graph.type must be physical_knn")
+    _string(graph["location_file"], "resources.graph.location_file")
+    _integer(graph["k"], "resources.graph.k", minimum=1)
+    if graph["k"] >= data["num_nodes"]:
+        raise ConfigError("resources.graph.k must be smaller than data.num_nodes")
+    _boolean(graph["symmetrize"], "resources.graph.symmetrize")
+    _boolean(graph["self_loops"], "resources.graph.self_loops")
+    if graph["weighting"] != "binary":
+        raise ConfigError("resources.graph.weighting must be binary")
 
     split = values["split"]
     _keys(split, _SPLIT_KEYS, _SPLIT_KEYS, "split")
@@ -674,5 +697,6 @@ def resolved_config_values(config: ExperimentConfig, *, project_root: Path) -> d
         "data_root": str(data_root),
         "model_input_file": str(data_root / values["data"]["model_input_file"]),
         "eval_target_file": str(data_root / values["data"]["eval_target_file"]),
+        "graph_location_file": str(data_root / values["resources"]["graph"]["location_file"]),
     }
     return values

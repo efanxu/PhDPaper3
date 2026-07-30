@@ -19,8 +19,8 @@ CONFIG = ROOT / "configs" / "experiment.yaml"
 def _stub_environment_preflight(monkeypatch):
     """Keep scheduler state-machine tests independent of Conda startup."""
 
-    def prepare(*, models, model_configs, project_root, device):
-        del model_configs, project_root, device
+    def prepare(*, models, model_configs, project_root, device, config_path=None):
+        del model_configs, project_root, device, config_path
         resolved = ResolvedEnvironment(
             environment_id="tslib",
             conda_env="env_tslib",
@@ -271,8 +271,8 @@ def test_mixed_batch_selects_environment_specific_interpreters_in_order(monkeypa
         resolution_source="conda_env_list",
     )
 
-    def prepare(*, models, model_configs, project_root, device):
-        del model_configs, project_root, device
+    def prepare(*, models, model_configs, project_root, device, config_path=None):
+        del model_configs, project_root, device, config_path
         environments = {"model_a": tslib, "model_b": tsl, "model_c": tslib}
         metadata = {
             "environment_id": "tslib",

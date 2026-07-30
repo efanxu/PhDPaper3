@@ -19,6 +19,7 @@ from .environments import (
     build_worker_environment,
     load_environment_config,
     preflight_environment,
+    preflight_model,
     resolve_model_environment,
     resolve_python_executable,
 )
@@ -40,6 +41,7 @@ __all__ = [
     "build_worker_environment",
     "load_environment_config",
     "preflight_environment",
+    "preflight_model",
     "resolve_model_environment",
     "resolve_python_executable",
 ]

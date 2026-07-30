@@ -10,6 +10,7 @@ never replaced in ``sys.modules``.
 from __future__ import annotations
 
 from contextlib import contextmanager
+import importlib
 import importlib.util
 from pathlib import Path
 import sys
@@ -38,7 +39,12 @@ def resolve_time_series_library_model(
 
 @contextmanager
 def _controlled_source_root(source_root: Path) -> Iterator[None]:
-    """Expose upstream ``layers`` after the project's source root."""
+    """Expose upstream imports without replacing the project's ``models`` package.
+
+    Crossformer imports both ``layers.*`` and ``models.PatchTST``.  Those are
+    installed only while its source file executes; all original project modules
+    and temporary upstream aliases are restored before this context exits.
+    """
 
     original = list(sys.path)
     root_text = str(source_root)
@@ -48,9 +54,26 @@ def _controlled_source_root(source_root: Path) -> Iterator[None]:
     # interpreter instead of scripts/run.py.
     insert_at = 1 if sys.path else 0
     sys.path.insert(insert_at, root_text)
+    aliases = ("layers", "models")
+    original_modules = {
+        name: value
+        for name, value in sys.modules.items()
+        if any(name == alias or name.startswith(f"{alias}.") for alias in aliases)
+    }
+    for name in list(original_modules):
+        sys.modules.pop(name, None)
+    for alias in aliases:
+        package = ModuleType(alias)
+        package.__path__ = [str(source_root / alias)]  # type: ignore[attr-defined]
+        package.__package__ = alias
+        sys.modules[alias] = package
     try:
         yield
     finally:
+        for name in list(sys.modules):
+            if any(name == alias or name.startswith(f"{alias}.") for alias in aliases):
+                sys.modules.pop(name, None)
+        sys.modules.update(original_modules)
         sys.path[:] = original
 
 
@@ -68,6 +91,9 @@ def load_time_series_library_model(
     qualified_name = module_name or f"{_NAMESPACE}.models.{safe_name}"
     if qualified_name in sys.modules:
         return sys.modules[qualified_name]
+    # Ensure the project package exists before the controlled context swaps it
+    # temporarily.  Restoring the exact object is the isolation invariant.
+    importlib.import_module("models")
     spec = importlib.util.spec_from_file_location(qualified_name, path)
     if spec is None or spec.loader is None:
         raise ImportError(f"could not create import spec for upstream model: {path}")
