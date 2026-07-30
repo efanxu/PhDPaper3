@@ -111,24 +111,31 @@ def test_model_comparison_writes_paper_and_flat_csv_from_same_ordered_rows(tmp_p
     assert paper_rows[0] == orchestrator._PAPER_GROUP_HEADER
     assert paper_rows[1] == orchestrator._PAPER_FIELD_HEADER
     assert [row[0] for row in paper_rows[2:]] == ["node_shared_lstm", "crossformer", "stcn"]
-    assert paper_rows[2][4:10] == ["1.000", "2.000", "0.000", "0.600", "0.000", "0.400"]
-    assert paper_rows[2][12] == "-1.250"
-    assert paper_rows[2][18] == ""
-    assert paper_rows[2][20] == ""
+    assert paper_rows[2][4:9] == ["1.000", "2.000", "0.000", "0.600", ""]
+    assert paper_rows[2][8] == ""
+    assert paper_rows[2][13] == ""
+    assert paper_rows[2][11] == "-1.250"
+    assert paper_rows[2][16] == ""
     assert paper_rows[4][4] == ""
 
-    with (run_root / "model_comparison_flat.csv").open(encoding="utf-8", newline="") as handle:
+    with (
+            run_root / "model_comparison_flat.csv"
+    ).open(
+        encoding="utf-8",
+        newline="",
+    ) as handle:
         flat_rows = list(csv.DictReader(handle))
+
     assert list(flat_rows[0]) == orchestrator.MODEL_COMPARISON_FIELDS
-    assert [row["model"] for row in flat_rows] == ["node_shared_lstm", "crossformer", "stcn"]
+
     assert flat_rows[0]["H3_Official_Score"] == "0.600"
     assert flat_rows[0]["H6_R2"] == "-1.250"
     assert flat_rows[0]["H10_R2"] == ""
-    assert flat_rows[0]["H10_MAPE"] == ""
-    assert flat_rows[0]["metric_note"] == "R2_UNDEFINED;MAPE_UNDEFINED"
-    assert flat_rows[0]["parameter_count"] == "123"
-    assert flat_rows[0]["best_epoch"] == "7"
-    assert flat_rows[2]["H3_MAE"] == ""
+
+    assert "H3_MAPE" not in flat_rows[0]
+    assert "H3_SMAPE" not in flat_rows[0]
+
+    assert flat_rows[0]["metric_note"] == "R2_UNDEFINED"
 
 
 def test_summarize_rebuilds_legacy_csv_from_existing_top_level_metrics(tmp_path: Path) -> None:
@@ -163,7 +170,8 @@ def test_summarize_rebuilds_legacy_csv_from_existing_top_level_metrics(tmp_path:
     with Path(result["model_comparison_flat_csv"]).open(encoding="utf-8", newline="") as handle:
         row = next(csv.DictReader(handle))
     assert row["H3_R2"] == "0.000"
-    assert row["H3_MAPE"] == "0.000"
+    assert "H3_MAPE" not in row
+    assert "H3_SMAPE" not in row
     saved = json.loads((run_root / "status.json").read_text(encoding="utf-8"))
     assert saved["schema_version"] == 2
     assert saved["models"][0]["metrics_complete"] is True

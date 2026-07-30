@@ -200,57 +200,129 @@ def build_model_worker_command(
 
 
 PAPER_HORIZONS = (3, 6, 10)
+
+# model_comparison_flat.csv 使用的字段。
+# 只保留 MAE、RMSE、R2 和 Official Score。
 MODEL_COMPARISON_FIELDS = [
     "model",
     "status",
     "parameter_count",
     "best_epoch",
+
     "H3_MAE",
     "H3_RMSE",
     "H3_R2",
     "H3_Official_Score",
-    "H3_MAPE",
-    "H3_SMAPE",
+
     "H6_MAE",
     "H6_RMSE",
     "H6_R2",
     "H6_Official_Score",
-    "H6_MAPE",
-    "H6_SMAPE",
+
     "H10_MAE",
     "H10_RMSE",
     "H10_R2",
     "H10_Official_Score",
-    "H10_MAPE",
-    "H10_SMAPE",
+
     "training_wall_seconds",
     "test_model_forward_seconds",
     "mean_sample_latency_ms",
     "samples_per_second",
     "peak_gpu_allocated_mb",
+
     "runtime_environment",
     "python_executable",
     "result_dir",
     "metric_note",
 ]
 
-_PAPER_COMPARISON_FIELDS = MODEL_COMPARISON_FIELDS[:-1]
+
+# model_comparison.csv 使用的列顺序。
+# None 表示在论文表中插入一个真正的空白列。
+_PAPER_COMPARISON_FIELDS: list[str | None] = [
+    "model",
+    "status",
+    "parameter_count",
+    "best_epoch",
+
+    "H3_MAE",
+    "H3_RMSE",
+    "H3_R2",
+    "H3_Official_Score",
+
+    None,  # H3 与 H6 之间的空白列
+
+    "H6_MAE",
+    "H6_RMSE",
+    "H6_R2",
+    "H6_Official_Score",
+
+    None,  # H6 与 H10 之间的空白列
+
+    "H10_MAE",
+    "H10_RMSE",
+    "H10_R2",
+    "H10_Official_Score",
+
+    "training_wall_seconds",
+    "test_model_forward_seconds",
+    "mean_sample_latency_ms",
+    "samples_per_second",
+    "peak_gpu_allocated_mb",
+
+    "runtime_environment",
+    "python_executable",
+    "result_dir",
+]
+
+
 _PAPER_GROUP_HEADER = [
     "Model Information", "", "", "",
-    "3-step", "", "", "", "", "",
-    "6-step", "", "", "", "", "",
-    "10-step", "", "", "", "", "",
+
+    "3-step", "", "", "", "",
+
+    "6-step", "", "", "", "",
+
+    "10-step", "", "", "",
+
     "Efficiency", "", "", "", "",
+
     "Runtime", "", "",
 ]
+
+
 _PAPER_FIELD_HEADER = [
-    "Model", "Status", "Parameter Count", "Best Epoch",
-    "MAE", "RMSE", "R2", "Score", "MAPE", "SMAPE",
-    "MAE", "RMSE", "R2", "Score", "MAPE", "SMAPE",
-    "MAE", "RMSE", "R2", "Score", "MAPE", "SMAPE",
-    "Training Wall Seconds", "Test Forward Seconds", "Mean Sample Latency ms",
-    "Samples Per Second", "Peak GPU Allocated MB",
-    "Runtime Environment", "Python Executable", "Result Directory",
+    "Model",
+    "Status",
+    "Parameter Count",
+    "Best Epoch",
+
+    "MAE",
+    "RMSE",
+    "R2",
+    "Score",
+    "",
+
+    "MAE",
+    "RMSE",
+    "R2",
+    "Score",
+    "",
+
+    "MAE",
+    "RMSE",
+    "R2",
+    "Score",
+
+    "Training Wall Seconds",
+    "Test Forward Seconds",
+    "Mean Sample Latency ms",
+    "Samples Per Second",
+    "Peak GPU Allocated MB",
+
+    "Runtime Environment",
+    "Python Executable",
+    "Result Directory",
 ]
 
 _METRIC_ALIASES: dict[str, tuple[str, ...]] = {
@@ -423,17 +495,26 @@ def collect_model_run_summary(record: Mapping[str, Any]) -> ModelRunSummary:
     }
     for horizon in PAPER_HORIZONS:
         metrics = metrics_by_horizon.get(horizon, {})
-        for metric_name in ("MAE", "RMSE", "R2", "MAPE", "SMAPE"):
-            comparison[f"H{horizon}_{metric_name}"] = _metric_value(metrics, metric_name)
-        comparison[f"H{horizon}_Official_Score"] = _metric_value(metrics, "Official_Score")
+
+        for metric_name in ("MAE", "RMSE", "R2"):
+            comparison[f"H{horizon}_{metric_name}"] = _metric_value(
+                metrics,
+                metric_name,
+            )
+
+        comparison[f"H{horizon}_Official_Score"] = _metric_value(
+            metrics,
+            "Official_Score",
+        )
     notes: list[str] = []
-    for metric_name in ("R2", "MAPE"):
-        if any(
+
+    if any(
             horizon in metric_files
-            and not _finite_metric(comparison[f"H{horizon}_{metric_name}"])
+            and not _finite_metric(comparison[f"H{horizon}_R2"])
             for horizon in PAPER_HORIZONS
-        ):
-            notes.append(f"{metric_name}_UNDEFINED")
+    ):
+        notes.append("R2_UNDEFINED")
+
     comparison["metric_note"] = ";".join(notes)
 
     summary_row = {
@@ -494,9 +575,9 @@ def _comparison_value(field: str, value: Any) -> str:
         except (TypeError, ValueError):
             return ""
     if field in {
-        "H3_MAE", "H3_RMSE", "H3_R2", "H3_Official_Score", "H3_MAPE", "H3_SMAPE",
-        "H6_MAE", "H6_RMSE", "H6_R2", "H6_Official_Score", "H6_MAPE", "H6_SMAPE",
-        "H10_MAE", "H10_RMSE", "H10_R2", "H10_Official_Score", "H10_MAPE", "H10_SMAPE",
+        "H3_MAE", "H3_RMSE", "H3_R2", "H3_Official_Score",
+        "H6_MAE", "H6_RMSE", "H6_R2", "H6_Official_Score",
+        "H10_MAE", "H10_RMSE", "H10_R2", "H10_Official_Score",
         "training_wall_seconds", "test_model_forward_seconds", "mean_sample_latency_ms",
         "samples_per_second", "peak_gpu_allocated_mb",
     }:
@@ -518,7 +599,12 @@ def _write_model_comparisons(run_root: Path, rows: list[dict[str, Any]]) -> None
     writer.writerow(_PAPER_GROUP_HEADER)
     writer.writerow(_PAPER_FIELD_HEADER)
     for row in flattened:
-        writer.writerow([row[field] for field in _PAPER_COMPARISON_FIELDS])
+        writer.writerow(
+            [
+                "" if field is None else row[field]
+                for field in _PAPER_COMPARISON_FIELDS
+            ]
+        )
     write_text_atomic(run_root / "model_comparison.csv", buffer.getvalue())
 
 
