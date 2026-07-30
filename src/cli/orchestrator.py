@@ -1269,7 +1269,6 @@ def run_isolated_checks(
         }
         for item in results:
             write_validation_status(run_root / f"{item['model']}.json", item)
-        write_status(run_root / "status.json", result)
         _write_csv(
             run_root / "summary.csv",
             ["model", "status", "classification", "phase", "exit_code", "error_message"],
@@ -1383,7 +1382,6 @@ def run_isolated_checks(
         "run_id": run_name,
         "results": results,
     }
-    write_status(run_root / "status.json", result)
     _write_csv(
         run_root / "summary.csv",
         ["model", "profile", "status", "classification", "phase", "batch_size", "batch_size_source", "input_shape", "output_shape", "parameter_count", "exit_code", "wall_seconds"],

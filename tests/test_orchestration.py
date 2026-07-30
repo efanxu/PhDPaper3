@@ -150,7 +150,7 @@ def test_isolated_check_persists_model_json_status_and_summary(monkeypatch, tmp_
     root = tmp_path / "results" / "_checks" / "persisted-check"
     assert result["passed"] is True
     assert json.loads((root / "node_shared_lstm.json").read_text(encoding="utf-8"))["status"] == PASS
-    assert (root / "status.json").is_file()
+    assert not (root / "status.json").exists()
     assert (root / "summary.csv").is_file()
 
 
