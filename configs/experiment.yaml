@@ -34,7 +34,7 @@ resources:
   graph:
     type: physical_knn
     location_file: sdwpf_turb_location_elevation.csv
-    k: 4
+    k: 5
     symmetrize: true
     self_loops: false
     weighting: binary

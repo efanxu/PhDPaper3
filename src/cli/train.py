@@ -158,6 +158,11 @@ _CHECKPOINT_CONFIG_PATHS: tuple[tuple[str, ...], ...] = (
     ("data", "eval_horizons"),
     ("data", "target_column"),
     ("data", "mask_column"),
+    ("resources", "graph", "type"),
+    ("resources", "graph", "k"),
+    ("resources", "graph", "symmetrize"),
+    ("resources", "graph", "self_loops"),
+    ("resources", "graph", "weighting"),
     ("split", "method"),
     ("split", "train_ratio"),
     ("split", "val_ratio"),
@@ -175,6 +180,15 @@ _CHECKPOINT_CONFIG_PATHS: tuple[tuple[str, ...], ...] = (
     ("training", "scheduler"),
     ("training", "amp"),
     ("training", "seed"),
+)
+_GRAPH_CHECKPOINT_CONFIG_PATHS = frozenset(
+    {
+        ("resources", "graph", "type"),
+        ("resources", "graph", "k"),
+        ("resources", "graph", "symmetrize"),
+        ("resources", "graph", "self_loops"),
+        ("resources", "graph", "weighting"),
+    }
 )
 
 
@@ -206,6 +220,8 @@ def _check_checkpoint_compatibility(
     if not isinstance(saved_config, Mapping):
         raise ValueError(f"checkpoint {checkpoint_path} has no saved resolved experiment config; refusing compatibility-unsafe resume")
     for path in _CHECKPOINT_CONFIG_PATHS:
+        if model_name != "stcn" and path in _GRAPH_CHECKPOINT_CONFIG_PATHS:
+            continue
         if not for_resume and path in {
             ("training", "train_batch_size"),
             ("training", "val_batch_size"),

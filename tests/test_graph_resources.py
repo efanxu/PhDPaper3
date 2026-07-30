@@ -14,6 +14,7 @@ from resources.graph import (
     dense_adjacency_to_edges,
     validate_edge_tensors,
 )
+from runtime.config import load_experiment_config
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -84,3 +85,8 @@ def test_graph_builder_uses_no_target_and_non_graph_model_needs_no_location_file
     model = build_model("node_shared_lstm", {"hidden_dim": 8, "num_layers": 1, "dropout": 0.0}, info)
     output = model(ModelInput(x=torch.randn(1, 12, 4, 3)))
     assert tuple(output.shape) == (1, 4, 3)
+
+
+def test_default_public_physical_graph_configuration_uses_k5() -> None:
+    config = load_experiment_config(ROOT / "configs" / "experiment.yaml")
+    assert config.resources["graph"]["k"] == 5
