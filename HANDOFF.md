@@ -82,3 +82,21 @@ CLI 改变时修改 `command_schema.py` 并运行生成器；普通模型参数�
 先读取本文件和 `MODEL_INTEGRATION_INDEX.md`，检查 `git status`，再按索引读取
 配置、共享路径、调度器和相关测试。修改前确认没有触及模型、数据流程、训练
 协议、损失函数、评估公式、公共 `k=5` 图或汇总 CSV 契约。
+
+## 10. RA-DS-PFD Crossformer 当前任务
+
+- P0 状态：`PASS`。
+- P0 快照：`docs/handovers/ra_ds_pfd/phase_00_audit.md`；阶段索引：
+  `docs/handovers/ra_ds_pfd/PHASE_INDEX.md`。
+- P0 核心结论：当前 Adapter 只包住完整 upstream forward，不能直接插入；本机
+  upstream 的 Scale0/Scale1、`S0=12`、`S1=6`、Decoder 多尺度列表、当前公共图的
+  `source=edge_index[0]`、`target=edge_index[1]`、target-group softmax 和
+  logits-only bias 语义已由代码与动态 trace 冻结。当前 public physical graph 的
+  formal `E=760`；旧 union artifact 的 `E=1536` 仅为参考。
+- 当前阻塞：P0 无阻塞。P2 仍需在实现前确定向后兼容的 shared relation-resource
+  边界；这不是 P1 的工作范围。
+- 下一阶段：只进入 P1 local canonical Backbone、model adapter、YAML 和测试；不得
+  顺手实现 PFD0、56 候选或 Selector。
+- P1 进入门禁：保留 P0 快照并确认其 commit/push 证据；先通过
+  `spatial_disabled=true` 的 canonical token/decoder 对齐、forward/backward finite、
+  checkpoint reload 和现有模型回归测试。
