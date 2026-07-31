@@ -94,10 +94,17 @@ CLI 改变时修改 `command_schema.py` 并运行生成器；普通模型参数�
   以维持四份 Markdown 和单一当前状态来源的维护规则。
 - 当前无 P0 技术阻塞。P2 开始前仍需解决向后兼容的 relation resource 边界；
   P4-A 开始前仍需解决 Entmax 依赖。这两项都不阻塞 P1。
-- 下一阶段只允许实施 P1：local canonical Crossformer Backbone、Adapter、模型 YAML
-  和对应测试；不得提前实现 PFD0、TrueUnion、56 候选或 Selector。
-- P1 首要门禁：`spatial_disabled=true` 时与当前 upstream canonical 路径完成数值
-  对齐，并通过 forward/backward finite、checkpoint reload、奇数 segment merge
-  和现有模型回归测试。
-- P1 对 `seg_len=12`、`win_size=2` 承诺 canonical equivalence；其他取值首版应
-  fail closed，不得默认为与当前 upstream 等价。
+- P1 状态：`PASS_WITH_NOTES`。已新增受版本控制的 local canonical Backbone、Node
+  Shared Adapter、模型 YAML 和 P1 测试；实现只复用真实 upstream canonical 子模块，
+  并在 Scale0/Scale1 的 Cross-Time 后、Cross-Dimension 前执行严格 identity。
+- P1 canonical equivalence 已通过 strict/bijective state transfer；小形状与当前 formal
+  双尺度 CPU 检查的 full-channel 和最终功率输出最大绝对差均为 `0`（`atol=1e-6`、
+  `rtol=1e-6`）。奇数 merge 检查使用 `lookback=60`、Scale0 `5` 段、Scale1 `3` 段，
+  padding/数值与 upstream 一致；shared checkpoint reload、forward/backward finite
+  和现有 Crossformer/isolation 回归均通过。
+- P1 `spatial_disabled=false` fail closed；未实现 PFD0、TrueUnion、56 candidates、
+  Selector、Entmax、图读取或邻居 hidden-state 传播。
+- 本轮未执行 Smoke、FORMAL_DEFAULT_SHAPE、Repeatability 或正式 Full 训练；这些仍属
+  后续公共验收，不因 P1 identity 阶段而宣称完成。
+- 下一阶段只允许实施 P2 的 relation resource 边界；进入 P2 前仍需先解决其向后兼容
+  设计，不得在 P1 提前加入 relation bias、传播或 selector。
