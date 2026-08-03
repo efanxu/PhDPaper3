@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from .train import run_model
+from .orchestrator import run_evaluate_model
 from runtime.paths import project_root_from_config, resolve_output_root
 
 
@@ -36,7 +36,7 @@ def evaluate_checkpoint(
         evaluation_run_id = f"{run_id}__evaluate"
     if evaluation_run_id is None:
         evaluation_run_id = "evaluate"
-    return run_model(
+    return run_evaluate_model(
         model_name=model_name,
         config_path=config_file,
         model_config_path=model_config_path,
