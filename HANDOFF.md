@@ -82,3 +82,24 @@ CLI 改变时修改 `command_schema.py` 并运行生成器；普通模型参数�
 先读取本文件和 `MODEL_INTEGRATION_INDEX.md`，检查 `git status`，再按索引读取
 配置、共享路径、调度器和相关测试。修改前确认没有触及模型、数据流程、训练
 协议、损失函数、评估公式、公共 `k=5` 图或汇总 CSV 契约。
+
+## 10. baseline-models 当前共享策略
+
+`baseline-models` 是长期基准模型分支，只接入和维护基准模型；不得将该分支整体
+合入 `main`。已采用 `controlled_nonstrict` reproducibility：全局 strict CUDA
+algorithms 已关闭，固定 Python/NumPy/PyTorch/CUDA seed、DataLoader generator 和
+数据顺序保留，`cudnn.deterministic=true`、`cudnn.benchmark=false` 保留，TF32 已
+关闭。父调度器在 worker 启动前注入 `PYTHONHASHSEED` 和
+`CUBLAS_WORKSPACE_CONFIG=:4096:8`。
+
+Repeatability 现在对 resolved/model config、初始权重、数据 split、batch/update
+数量、epoch、环境、DataLoader 顺序、prediction key 和 horizon 集合执行 exact
+检查；loss、validation/test metrics 和 predictions 使用报告中的固定 atol/rtol。
+Run B 按模型名称反转顺序，结果仍按模型名称比较。
+
+当前基准模型接入状态仍为 NodeSharedLSTM、Crossformer 和 STCN；正式 Full 训练与
+正式 GPU 显存验收尚未运行。当前主机为 NVIDIA GeForce RTX 4070 Ti SUPER、CUDA
+12.4；链接工作树缺少外部 `Time-Series-Library` 源码，因此完整 pytest 的
+Crossformer 相关 4 项暂标记为未运行环境阻塞，其余共享测试通过。尚未完成项是
+在对应 `env_tslib`/`env_tsl` 和真实数据上按固定序列完成基准模型的 GPU 验收；不
+将此分支用于 RA-DS-PFD 开发。
