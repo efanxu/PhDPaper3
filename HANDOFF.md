@@ -150,18 +150,39 @@ CLI 改变时修改 `command_schema.py` 并运行生成器；普通模型参数�
 
 ## 11. 共享 controlled-nonstrict 修复与当前 P2 状态
 
-`main` 是自定义模型长期分支，继续保留并推进 RA-DS-PFD；共享修复已通过
-`bd64db6` 与 `76ac9ac` 合入。全局 `torch.use_deterministic_algorithms(True)` 已
-关闭；固定种子、DataLoader 顺序、`cudnn.deterministic=true` 和
-`cudnn.benchmark=false` 保留，TF32 已关闭。父调度器在 worker 启动前注入
-`PYTHONHASHSEED` 与 `CUBLAS_WORKSPACE_CONFIG=:4096:8`。
+`main` 是自定义模型长期分支，继续保留并推进 RA-DS-PFD。共享修复链为
+`bd64db6`、`76ac9ac`，以及后续的隔离 evaluate-only worker 和 AMP-safe
+Repeatability 补丁；均已同步到 `baseline-models`。全局
+`torch.use_deterministic_algorithms(True)` 已关闭；固定 Python/NumPy/PyTorch/CUDA
+seed、DataLoader generator 和数据顺序保留，`cudnn.deterministic=true`、
+`cudnn.benchmark=false` 保留，TF32 已关闭。父调度器在每个 worker 启动前注入
+`PYTHONHASHSEED=<resolved training.seed>` 与 `CUBLAS_WORKSPACE_CONFIG=:4096:8`；
+evaluate-only 复用同一 worker 路径，不在父进程直接初始化 seed。
 
-共享修复同时应用于 STCN：已确认根因是全局 strict CUDA scatter/reduction 路径的
-显存压力，正式路径改为 controlled non-strict；不要为此降低 batch 或静默切换设备。
-STCN 的正式 B=32 GPU 峰值仍需在对应环境和真实数据上记录，不能用短 shape 结果替代。
+当前 AMP float16 的 Repeatability 固定默认值为 prediction `atol/rtol=5e-3`、
+metric `atol/rtol=2e-4`，仍可由 CLI 显式覆盖，容差写入报告。完整三模型默认双跑已
+通过：Run A 为 `NodeSharedLSTM, Crossformer, STCN`，Run B 为反序；前两者为
+`EXACT`，STCN 为 `NUMERICAL`，不同 worker PID、exact 字段、预测、validation/test
+metrics 均通过。
 
-RA-DS-PFD P2 仍需单独完成 non-strict 显存诊断与最小修复；`spatial_disabled=true`
-不属于 P2，必须使用 enabled P2 配置才能形成显存结论。不要把短 shape PASS 冒充
-P2 Full；当前 P2 Full/20 updates/真实 134 节点 relation artifact 验收尚未完成。
-该 P2 专项只进入 `main`，不得将 `baseline-models` 整体合入 `main`，也不得把
-RA-DS-PFD 代码带入 `baseline-models`。
+共享验收已在本机完成：主工作树完整 pytest `177 passed, 3 skipped`（3 个 skip 是
+`env_tslib` 中正式 `tsl` 只在 `env_tsl` 可用），`env_tsl` 的 STCN 回归 `3 passed`，
+command reference check 通过；NodeSharedLSTM/Crossformer/STCN 的真实数据 preflight、
+`B=32,L=144,N=134,C=16` `FORMAL_DEFAULT_SHAPE`、B=32 Smoke 均通过。STCN 使用
+CUDA AMP float16，formal shape 峰值为 `5479.02 MiB allocated / 7086 MiB reserved`，
+Smoke（含 1 optimizer update）峰值为 `4568.45 / 5118 MiB`，未出现 strict 路径的
+20+ GiB 显存问题；不得降低 batch 或静默切换设备。
+
+RA-DS-PFD P2 分支只增加了 controlled-nonstrict finite 回归测试，没有在缺少正式资源
+时制造 checkpoint/chunk 修复。公共 YAML 仍为 `spatial_disabled=true` 的 P1/legacy
+路径；启用 P2 的真实小夹具 `N=3,E=4`、`pfd_mode=pfd0`、`d_model=64`、`B=32`、
+AMP float16、edge chunk 128 在两个独立进程中完成 forward/backward/optimizer step，
+output/loss/gradient finite，状态哈希一致，峰值 `92.48 / 116 MiB`；P2 focused
+测试为 `8 passed`。这只是 enabled P2 smoke 证据，不是 Full。
+
+当前工作区没有正式 134 节点 enabled P2 relation NPZ（要求的 `N=134,L=144,C=16,
+H=10` 真实 artifact），因此 P2 正式 GPU、20 updates、Full 和正式 P2 Repeatability
+标记为 `NOT RUN`，不得把 3 节点夹具或历史临时审计资源冒充正式验收。没有 OOM 证据，
+因此未实现 activation checkpointing，也未改变 edge chunk、模型结构、batch、loss 或
+训练协议。该 P2 专项只进入 `main`，不得将 `baseline-models` 整体合入 `main`，也不得
+把 RA-DS-PFD 代码带入 `baseline-models`。
