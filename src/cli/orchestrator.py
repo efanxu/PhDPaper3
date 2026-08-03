@@ -866,6 +866,191 @@ def _run_worker(
     return exit_code, "".join(output)[-2000:], int(process.pid)
 
 
+def _load_evaluation_metrics(result_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Read the evaluator's existing aggregate validation/test artifacts."""
+
+    run_info = _read_json_mapping(result_dir / "run_info.json")
+    validation = _read_json_mapping(result_dir / "metrics_validation.json")
+    test = {
+        "by_horizon": {
+            str(horizon): _read_json_mapping(path)
+            for horizon, path in sorted(_test_metric_files(result_dir).items())
+        },
+        "monitor": run_info.get("test_monitor"),
+    }
+    return validation, test
+
+
+def run_evaluate_model(
+    *,
+    model_name: str,
+    config_path: str | Path,
+    model_config_path: str | Path | None,
+    checkpoint: str | Path | None,
+    run_id: str | None,
+    device: str,
+    output_root: str | Path | None,
+    cli_overrides: Mapping[str, Any] | None = None,
+    command_argv: list[str] | None = None,
+    split: str = "both",
+) -> dict[str, Any]:
+    """Evaluate one checkpoint in the same isolated worker path as training."""
+
+    config_file = Path(config_path).resolve()
+    project_root = project_root_from_config(config_file)
+    results_root = resolve_output_root(project_root, output_root)
+    evaluation_run_id = run_id
+    if checkpoint is None:
+        if run_id is None:
+            raise ValueError("evaluate requires --checkpoint or --run-id")
+        source = results_root / model_name / run_id / "best.pt"
+        if not source.is_file():
+            raise FileNotFoundError(f"no checkpoint found for --run-id {run_id}: {source}")
+        checkpoint = source
+        evaluation_run_id = f"{run_id}__evaluate"
+    checkpoint_path = Path(checkpoint).resolve()
+    if not checkpoint_path.is_file():
+        raise FileNotFoundError(f"checkpoint does not exist: {checkpoint_path}")
+    if evaluation_run_id is None:
+        evaluation_run_id = "evaluate"
+
+    model_configs = _validate_model_configs([model_name], config_file, model_config_path)
+    resolved_seed = _resolved_training_seed(
+        config_file,
+        cli_overrides,
+        project_root=project_root,
+    )
+    model_environments, preflight_results = _prepare_batch_environments_with_seed(
+        models=[model_name],
+        model_configs=model_configs,
+        project_root=project_root,
+        device=device,
+        config_path=config_file,
+        resolved_seed=resolved_seed,
+    )
+    effective_id = effective_run_id(evaluation_run_id, None)
+    run_root = results_root / "_runs" / effective_id
+    if run_root.exists() and any(run_root.iterdir()):
+        raise ValueError(
+            f"scheduler run directory already contains files: {run_root}; choose a new evaluation run id"
+        )
+    result_dir = run_directory(project_root, results_root, model_name, effective_id)
+    if result_dir.exists() and any(result_dir.iterdir()):
+        existing_names = {path.name for path in result_dir.iterdir()}
+        if existing_names != {"validation_status.json"}:
+            raise ValueError(f"result directory already contains files: {result_dir}")
+
+    run_root.mkdir(parents=True, exist_ok=True)
+    logs_root = project_root / "logs" / effective_id
+    resolved_environment = model_environments[model_name]
+    preflight_result = preflight_results[resolved_environment.environment_id]
+    runtime_fields = _runtime_record_fields(resolved_environment, preflight_result)
+    request = {
+        "operation": "evaluate",
+        "run_id": effective_id,
+        "config_path": str(config_file),
+        "device": device,
+        "output_root": str(results_root),
+        "evaluation_split": split,
+        "cli_overrides": dict(cli_overrides or {}),
+        "command_argv": list(command_argv or []),
+        "models": {
+            model_name: {
+                "model_config_path": str(model_configs[model_name]),
+                "resume_checkpoint": str(checkpoint_path),
+                "environment": {
+                    **runtime_fields,
+                    "source_roots": [str(path) for path in resolved_environment.source_roots],
+                    "required_imports": list(resolved_environment.required_imports),
+                },
+            }
+        },
+    }
+    request_path = run_root / "request.json"
+    write_json(request_path, request)
+
+    record = _new_record(
+        model_name,
+        result_dir,
+        logs_root / f"{model_name}.log",
+        runtime_fields=runtime_fields,
+    )
+    record["operation"] = "evaluate"
+    record["phases"]["preflight"] = finished_phase(phase="preflight")
+    started = time.perf_counter()
+    exit_code, output_tail, worker_pid = _run_worker(
+        project_root=project_root,
+        request_path=request_path,
+        model=model_name,
+        log_path=Path(record["log_path"]),
+        resolved_environment=resolved_environment,
+        resolved_seed=resolved_seed,
+    )
+    elapsed = time.perf_counter() - started
+    worker_info = _read_json_mapping(result_dir / "run_info.json")
+    record.update(
+        {
+            "operation": "evaluate",
+            "pid": worker_pid,
+            "exit_code": exit_code,
+            "ended_at": utc_now(),
+            "wall_seconds": elapsed,
+        }
+    )
+    if exit_code == 0 and worker_info.get("status") == PASS:
+        record.update(
+            {
+                "status": PASS,
+                "classification": None,
+                "phase": "overall",
+                "error": None,
+            }
+        )
+    else:
+        details = failure_details(
+            message=output_tail or "evaluate worker did not complete successfully",
+            phase="evaluate",
+            exit_code=exit_code,
+            worker_status_present=bool(worker_info),
+        )
+        record.update(
+            {
+                "status": FAILED,
+                "classification": details["classification"],
+                "phase": "overall",
+                "error": details["error"],
+                "error_summary": details["error"]["message"],
+            }
+        )
+    _copy_worker_run_phases(record)
+    record["phases"]["overall"] = finished_phase(
+        classification=record.get("classification"),
+        phase="complete" if record["status"] == PASS else "evaluate",
+        artifact=str(result_dir) if record["status"] == PASS else None,
+        wall_seconds=elapsed,
+        error_summary=record.get("error_summary"),
+        error=record.get("error"),
+    )
+    _save_status(run_root, effective_id, "evaluate", [record])
+    _write_summaries(run_root, [record])
+    validation, test = _load_evaluation_metrics(result_dir)
+    return {
+        "schema_version": 2,
+        "passed": record["status"] == PASS,
+        "run_id": effective_id,
+        "run_root": str(run_root),
+        "operation": "evaluate",
+        "status": record["status"],
+        "classification": record.get("classification"),
+        "error": record.get("error"),
+        "models": [record],
+        "output_dir": str(result_dir),
+        "validation": validation,
+        "test": test,
+        "selected_split": split,
+    }
+
+
 def _validation_profile_for_training(*, smoke: bool) -> str:
     """Training always validates the exact resolved shape before its worker."""
 

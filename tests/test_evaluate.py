@@ -16,11 +16,11 @@ def test_run_id_finds_best_checkpoint_and_writes_evaluate_id(monkeypatch, tmp_pa
     source.write_bytes(b"checkpoint")
     calls = []
 
-    def fake_run_model(**kwargs):
+    def fake_run_evaluate_model(**kwargs):
         calls.append(kwargs)
         return {"output_dir": str(kwargs["output_root"])}
 
-    monkeypatch.setattr(evaluate, "run_model", fake_run_model)
+    monkeypatch.setattr(evaluate, "run_evaluate_model", fake_run_evaluate_model)
     result = evaluate.evaluate_checkpoint(
         model_name="node_shared_lstm",
         config_path=config,
@@ -57,11 +57,11 @@ def test_explicit_checkpoint_remains_supported(monkeypatch, tmp_path: Path) -> N
     checkpoint.write_bytes(b"checkpoint")
     captured = {}
 
-    def fake_run_model(**kwargs):
+    def fake_run_evaluate_model(**kwargs):
         captured.update(kwargs)
         return {"output_dir": "evaluation"}
 
-    monkeypatch.setattr(evaluate, "run_model", fake_run_model)
+    monkeypatch.setattr(evaluate, "run_evaluate_model", fake_run_evaluate_model)
     evaluate.evaluate_checkpoint(
         model_name="node_shared_lstm",
         config_path=tmp_path / "configs" / "experiment.yaml",
