@@ -40,7 +40,7 @@ def evaluate_checkpoint(
         model_name=model_name,
         config_path=config_file,
         model_config_path=model_config_path,
-        resume=checkpoint,
+        checkpoint=checkpoint,
         evaluate_only=True,
         run_id=evaluation_run_id,
         device=device,
