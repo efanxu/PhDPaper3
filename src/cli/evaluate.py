@@ -41,7 +41,6 @@ def evaluate_checkpoint(
         config_path=config_file,
         model_config_path=model_config_path,
         checkpoint=checkpoint,
-        evaluate_only=True,
         run_id=evaluation_run_id,
         device=device,
         output_root=output_root,
