@@ -92,6 +92,12 @@ runs `RESOLVED_SHAPE` before the training worker. Smoke validates the resolved
 command batch; `check --full-shape` with no public shape override validates the
 YAML-default formal batch. Report batch-1 and default-batch results separately.
 
+All commands use `runtime.reproducibility_mode: controlled_nonstrict`: seeds and
+DataLoader generators remain fixed, cuDNN algorithm selection remains fixed,
+and global deterministic CUDA algorithms are disabled. Repeatability keeps
+structural fields exact and compares floating-point losses, metrics and
+predictions with the recorded absolute/relative tolerances.
+
 Environment preflight does not validate the real data node order. Data
 preflight, resolved/formal shape checks and Smoke validate node IDs against
 the public graph resources. Persisted states classify configuration, resource,
