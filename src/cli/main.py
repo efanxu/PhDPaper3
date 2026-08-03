@@ -75,7 +75,7 @@ def _dispatch(args, raw_argv: list[str]) -> int:
         )
         selected = result["validation"] if args.split == "validation" else result["test"]
         _print_json({"output_dir": result["output_dir"], "split": args.split, "metrics": selected if args.split != "both" else {"validation": result["validation"], "test": result["test"]}})
-        return 0
+        return 0 if result.get("passed", True) else 1
 
     if args.command == "check":
         from .orchestrator import run_isolated_checks

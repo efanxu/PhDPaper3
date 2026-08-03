@@ -72,6 +72,32 @@ def main(argv: list[str] | None = None) -> int:
                 }
             )
             return 0
+        if operation == "evaluate":
+            from .train import run_model
+
+            result = run_model(
+                model_name=model_name,
+                config_path=request["config_path"],
+                model_config_path=model_request["model_config_path"],
+                run_id=request["run_id"],
+                device=request["device"],
+                output_root=request["output_root"],
+                resume=model_request.get("resume_checkpoint"),
+                evaluate_only=True,
+                runtime_environment=model_request.get("environment"),
+                cli_overrides=request.get("cli_overrides", {}),
+                command_argv=request.get("command_argv", []),
+                command_name="evaluate",
+                evaluation_split=request.get("evaluation_split", "both"),
+            )
+            _print(
+                {
+                    "output_dir": result["output_dir"],
+                    "validation": result.get("validation"),
+                    "test": result.get("test"),
+                }
+            )
+            return 0
         if operation == "check":
             from .check import run_check
 
