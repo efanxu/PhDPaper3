@@ -91,6 +91,8 @@ algorithms 已关闭，固定 Python/NumPy/PyTorch/CUDA seed、DataLoader genera
 数据顺序保留，`cudnn.deterministic=true`、`cudnn.benchmark=false` 保留，TF32 已
 关闭。父调度器在 worker 启动前注入 `PYTHONHASHSEED` 和
 `CUBLAS_WORKSPACE_CONFIG=:4096:8`。
+evaluate-only 也复用同一现有 worker 调度路径，启动前注入相同环境变量，避免父
+进程直接执行 seed 初始化。
 
 Repeatability 现在对 resolved/model config、初始权重、数据 split、batch/update
 数量、epoch、环境、DataLoader 顺序、prediction key 和 horizon 集合执行 exact
