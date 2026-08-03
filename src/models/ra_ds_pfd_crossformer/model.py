@@ -1,7 +1,8 @@
-"""Node-shared RA-DS-PFD P1 adapter around the local canonical backbone."""
+"""Node-shared RA-DS-PFD adapter around the local canonical backbone."""
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from math import isfinite
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,9 @@ import torch
 from models.base import DataInfoView, ForecastModel, ModelInput
 
 from .backbone import CanonicalBackbone, CanonicalTrace
+from .pfd0 import PFD0Propagation
+from .relation_resource import RelationResource, load_relation_resource
+from .relation_spatial import RelationBiasProvider, RelationSpatialInsertion
 
 
 _CONFIG_FIELDS = {
@@ -23,8 +27,28 @@ _CONFIG_FIELDS = {
     "seg_len",
     "win_size",
     "spatial_disabled",
+    "pfd_mode",
+    "spatial_heads",
+    "spatial_d_ff",
+    "relation_dim",
+    "spatial_dropout",
+    "gamma_init",
+    "relation_resource",
+    "spatial_edge_chunk_size",
+}
+_CANONICAL_CONFIG_FIELDS = {
+    "d_model",
+    "n_heads",
+    "d_ff",
+    "e_layers",
+    "dropout",
+    "factor",
+    "seg_len",
+    "win_size",
+    "spatial_disabled",
 }
 _POSITIVE_INTEGER_FIELDS = {"d_model", "n_heads", "d_ff", "e_layers", "factor", "seg_len", "win_size"}
+_P2_POSITIVE_INTEGER_FIELDS = {"spatial_heads", "spatial_d_ff", "relation_dim"}
 
 
 class RADSPFDCrossformer(ForecastModel):
@@ -40,6 +64,8 @@ class RADSPFDCrossformer(ForecastModel):
         input_power_index: int,
         model_config: dict[str, Any],
         source_root: Path,
+        wspd_index: int | None = None,
+        relation_resource: RelationResource | None = None,
     ) -> None:
         super().__init__()
         self.num_nodes = int(num_nodes)
@@ -49,12 +75,64 @@ class RADSPFDCrossformer(ForecastModel):
         self.input_power_index = int(input_power_index)
         self.model_config = dict(model_config)
         self.source_root = Path(source_root).resolve()
+        self.spatial_disabled = bool(model_config["spatial_disabled"])
+        self.wspd_index = None if wspd_index is None else int(wspd_index)
+        self.relation_resource = relation_resource
+
+        if self.spatial_disabled:
+            # These are deliberately None rather than empty modules/buffers:
+            # the legacy P1 state_dict remains exactly upstream-canonical.
+            self.pfd0: PFD0Propagation | None = None
+            self.relation_bias_provider: RelationBiasProvider | None = None
+            spatial_modules = None
+        else:
+            if self.wspd_index is None:
+                raise ValueError("enabled PFD0 requires Wspd resolved from DataInfoView.feature_columns")
+            if relation_resource is None:
+                raise ValueError("enabled relation spatial path requires a validated relation resource")
+            d_model = int(model_config["d_model"])
+            self.relation_bias_provider = RelationBiasProvider(
+                edge_index=relation_resource.edge_index,
+                edge_static_features=relation_resource.edge_static_features,
+                num_nodes=self.num_nodes,
+                spatial_heads=int(model_config["spatial_heads"]),
+                spatial_d_ff=int(model_config["spatial_d_ff"]),
+                relation_dim=int(model_config["relation_dim"]),
+            )
+            self.pfd0 = PFD0Propagation(
+                lookback=self.lookback,
+                seg_len=int(model_config["seg_len"]),
+                win_size=int(model_config["win_size"]),
+                d_model=d_model,
+                dropout=float(model_config["spatial_dropout"]),
+                wspd_index=self.wspd_index,
+            )
+            spatial_modules = (
+                RelationSpatialInsertion(
+                    d_model=d_model,
+                    spatial_heads=int(model_config["spatial_heads"]),
+                    spatial_dropout=float(model_config["spatial_dropout"]),
+                    gamma_init=float(model_config["gamma_init"]),
+                    bias_provider=self.relation_bias_provider,
+                    edge_chunk_size=model_config.get("spatial_edge_chunk_size", 128),
+                ),
+                RelationSpatialInsertion(
+                    d_model=d_model,
+                    spatial_heads=int(model_config["spatial_heads"]),
+                    spatial_dropout=float(model_config["spatial_dropout"]),
+                    gamma_init=float(model_config["gamma_init"]),
+                    bias_provider=self.relation_bias_provider,
+                    edge_chunk_size=model_config.get("spatial_edge_chunk_size", 128),
+                ),
+            )
         self.backbone = CanonicalBackbone(
             source_root=self.source_root,
             enc_in=self.input_dim,
             seq_len=self.lookback,
             pred_len=self.horizon,
             model_config=self.model_config,
+            num_nodes=self.num_nodes,
+            spatial_modules=spatial_modules,
         )
 
     def _node_history(self, inputs: ModelInput) -> tuple[torch.Tensor, int, int]:
@@ -87,7 +165,13 @@ class RADSPFDCrossformer(ForecastModel):
 
     def forward(self, inputs: ModelInput) -> torch.Tensor:
         node_history, batch, nodes = self._node_history(inputs)
-        full_output = self.backbone(node_history)
+        if self.pfd0 is None:
+            full_output = self.backbone(node_history)
+        else:
+            full_output = self.backbone(
+                node_history,
+                propagation_tokens=self.pfd0(inputs.x),
+            )
         expected = (batch * nodes, self.horizon, self.input_dim)
         if tuple(full_output.shape) != expected:
             raise ValueError(
@@ -100,10 +184,15 @@ class RADSPFDCrossformer(ForecastModel):
         return self.validate_output(output, batch=batch, nodes=nodes, horizon=self.horizon)
 
     def forward_canonical_trace(self, inputs: ModelInput) -> CanonicalTrace:
-        """Return flattened node-wise canonical stages for focused unit tests."""
+        """Return canonical stages, using local ``[B,N,C,S,D]`` in P2 mode."""
 
         node_history, _, _ = self._node_history(inputs)
-        trace = self.backbone.forward_backbone(node_history, return_trace=True)
+        propagation_tokens = self.pfd0(inputs.x) if self.pfd0 is not None else None
+        trace = self.backbone.forward_backbone(
+            node_history,
+            return_trace=True,
+            propagation_tokens=propagation_tokens,
+        )
         assert isinstance(trace, CanonicalTrace)
         return trace
 
@@ -127,7 +216,7 @@ def _validate_config(model_config: dict[str, Any]) -> None:
     if not isinstance(model_config, dict):
         raise TypeError("RA-DS-PFD Crossformer model config must be a mapping")
     unknown = sorted(set(model_config) - _CONFIG_FIELDS)
-    missing = sorted(_CONFIG_FIELDS - set(model_config))
+    missing = sorted(_CANONICAL_CONFIG_FIELDS - set(model_config))
     if unknown:
         raise ValueError(f"RA-DS-PFD Crossformer model config has unknown field: {unknown[0]}")
     if missing:
@@ -146,18 +235,64 @@ def _validate_config(model_config: dict[str, Any]) -> None:
     if not 0.0 <= float(dropout) < 1.0:
         raise ValueError("RA-DS-PFD Crossformer dropout must be in [0, 1)")
     if model_config["seg_len"] != 12:
-        raise ValueError("RA-DS-PFD Crossformer P1 only supports seg_len=12")
+        raise ValueError("RA-DS-PFD Crossformer canonical path only supports seg_len=12")
     if model_config["win_size"] != 2:
         raise ValueError("RA-DS-PFD Crossformer P1 only supports win_size=2")
     if model_config["e_layers"] != 2:
         raise ValueError("RA-DS-PFD Crossformer P1 only supports e_layers=2")
     if not isinstance(model_config["spatial_disabled"], bool):
         raise ValueError("RA-DS-PFD Crossformer spatial_disabled must be a boolean")
-    if not model_config["spatial_disabled"]:
-        raise ValueError(
-            "RA-DS-PFD Crossformer P1 spatial_disabled=false is fail-closed: "
-            "spatial implementation is not available"
-        )
+    if "pfd_mode" in model_config and model_config["pfd_mode"] != "pfd0":
+        raise ValueError("RA-DS-PFD Crossformer only supports pfd_mode=pfd0 in P2")
+    if model_config["spatial_disabled"]:
+        return
+
+    required_p2 = {
+        "pfd_mode",
+        "spatial_heads",
+        "spatial_d_ff",
+        "relation_dim",
+        "spatial_dropout",
+        "gamma_init",
+        "relation_resource",
+    }
+    missing_p2 = sorted(required_p2 - set(model_config))
+    if missing_p2:
+        raise ValueError(f"RA-DS-PFD Crossformer P2 config is missing field: {missing_p2[0]}")
+    if model_config["pfd_mode"] != "pfd0":
+        raise ValueError("RA-DS-PFD Crossformer only supports pfd_mode=pfd0 in P2")
+    for name in sorted(_P2_POSITIVE_INTEGER_FIELDS):
+        value = model_config[name]
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            raise ValueError(f"RA-DS-PFD Crossformer {name} must be a positive integer")
+    if model_config["d_model"] % model_config["spatial_heads"]:
+        raise ValueError("RA-DS-PFD Crossformer d_model must be divisible by spatial_heads")
+    spatial_dropout = model_config["spatial_dropout"]
+    if (
+        isinstance(spatial_dropout, bool)
+        or not isinstance(spatial_dropout, (int, float))
+        or not isfinite(float(spatial_dropout))
+    ):
+        raise ValueError("RA-DS-PFD Crossformer spatial_dropout must be a finite number")
+    if not 0.0 <= float(spatial_dropout) < 1.0:
+        raise ValueError("RA-DS-PFD Crossformer spatial_dropout must be in [0, 1)")
+    gamma_init = model_config["gamma_init"]
+    if (
+        isinstance(gamma_init, bool)
+        or not isinstance(gamma_init, (int, float))
+        or not isfinite(float(gamma_init))
+    ):
+        raise ValueError("RA-DS-PFD Crossformer gamma_init must be a finite number")
+    if abs(float(gamma_init) - 0.1) > 1e-12:
+        raise ValueError("RA-DS-PFD Crossformer P2 requires gamma_init=0.1")
+    if "spatial_edge_chunk_size" in model_config:
+        chunk_size = model_config["spatial_edge_chunk_size"]
+        if chunk_size is not None and (
+            not isinstance(chunk_size, int) or isinstance(chunk_size, bool) or chunk_size < 1
+        ):
+            raise ValueError("RA-DS-PFD Crossformer spatial_edge_chunk_size must be positive or null")
+    if not isinstance(model_config["relation_resource"], Mapping):
+        raise ValueError("RA-DS-PFD Crossformer relation_resource must be a mapping")
 
 
 def _validate_data_info(data_info: DataInfoView) -> None:
@@ -188,6 +323,21 @@ def build_model(model_config: dict[str, Any], data_info: DataInfoView) -> RADSPF
         raise FileNotFoundError(
             f"RA-DS-PFD Crossformer requires Time-Series-Library source root: {source_root}"
         )
+    relation_resource = None
+    wspd_index = None
+    if not model_config["spatial_disabled"]:
+        if len(data_info.node_ids) != data_info.num_nodes:
+            raise ValueError("enabled RA-DS-PFD relation spatial requires public data node_ids")
+        if len(set(data_info.node_ids)) != len(data_info.node_ids):
+            raise ValueError("enabled RA-DS-PFD relation spatial requires unique public node_ids")
+        if "Wspd" not in data_info.feature_columns:
+            raise ValueError("enabled PFD0 requires a Wspd feature column")
+        wspd_index = data_info.feature_columns.index("Wspd")
+        relation_resource = load_relation_resource(
+            model_config["relation_resource"],
+            project_root=project_root,
+            node_ids=data_info.node_ids,
+        )
     return RADSPFDCrossformer(
         num_nodes=data_info.num_nodes,
         input_dim=data_info.num_features,
@@ -196,4 +346,6 @@ def build_model(model_config: dict[str, Any], data_info: DataInfoView) -> RADSPF
         input_power_index=data_info.input_power_index,
         model_config=model_config,
         source_root=source_root,
+        wspd_index=wspd_index,
+        relation_resource=relation_resource,
     )

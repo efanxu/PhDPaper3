@@ -156,7 +156,7 @@ def test_config_rejects_unknown_missing_invalid_and_unsupported_values() -> None
 
 
 def test_spatial_enabled_false_fails_closed_and_input_power_metadata_is_strict() -> None:
-    with pytest.raises(ValueError, match="spatial_disabled=false"):
+    with pytest.raises(ValueError, match="P2 config is missing"):
         build_model("ra_ds_pfd_crossformer", {**CONFIG, "spatial_disabled": False}, _info())
     mismatched = _info(input_power_index=2)
     with pytest.raises(ValueError, match="input_power_index"):

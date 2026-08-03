@@ -92,8 +92,7 @@ CLI 改变时修改 `command_schema.py` 并运行生成器；普通模型参数�
   shape 显存风险的审计。
 - P0 详细审计曾随完成提交进入 Git 历史；当前工作树不长期保留阶段快照或阶段索引，
   以维持四份 Markdown 和单一当前状态来源的维护规则。
-- 当前无 P0 技术阻塞。P2 开始前仍需解决向后兼容的 relation resource 边界；
-  P4-A 开始前仍需解决 Entmax 依赖。这两项都不阻塞 P1。
+- 当前无 P0 技术阻塞。P4-A 开始前仍需解决 Entmax 依赖；P2 不引入 Entmax。
 - P1 状态：`PASS_WITH_NOTES`。已新增受版本控制的 local canonical Backbone、Node
   Shared Adapter、模型 YAML 和 P1 测试；实现只复用真实 upstream canonical 子模块，
   并在 Scale0/Scale1 的 Cross-Time 后、Cross-Dimension 前执行严格 identity。
@@ -102,9 +101,49 @@ CLI 改变时修改 `command_schema.py` 并运行生成器；普通模型参数�
   `rtol=1e-6`）。奇数 merge 检查使用 `lookback=60`、Scale0 `5` 段、Scale1 `3` 段，
   padding/数值与 upstream 一致；shared checkpoint reload、forward/backward finite
   和现有 Crossformer/isolation 回归均通过。
-- P1 `spatial_disabled=false` fail closed；未实现 PFD0、TrueUnion、56 candidates、
-  Selector、Entmax、图读取或邻居 hidden-state 传播。
-- 本轮未执行 Smoke、FORMAL_DEFAULT_SHAPE、Repeatability 或正式 Full 训练；这些仍属
-  后续公共验收，不因 P1 identity 阶段而宣称完成。
-- 下一阶段只允许实施 P2 的 relation resource 边界；进入 P2 前仍需先解决其向后兼容
-  设计，不得在 P1 提前加入 relation bias、传播或 selector。
+- P2 状态：`PASS_WITH_NOTES`。P2 代码、focused tests、完整 pytest、P1 canonical
+  回归以及 NodeSharedLSTM/Crossformer/STCN 回归均已通过；正式训练仍未执行。
+- Relation Resource 是模型局部的只读 NPZ 契约，不改公共 `GraphResource`。文件必须是
+  项目相对路径并通过完整 SHA256；`schema_version=1`；只允许
+  `node_ids`, `edge_index`, `edge_static_features`, `edge_feature_names` 四类数据字段，
+  使用 `allow_pickle=False`；节点顺序、`[2,E] int64` source/target、无重复/自环、
+  `(target,source)` 稳定排序、target 非零入度、`[E,13] float32` finite 和精确字段名
+  都在模型构造时 fail closed 校验。公共图仍保持 `adjacency[source,target]`、
+  `edge_index[0]=source`、`edge_index[1]=target`、`k=5`。
+- 13 个 static edge feature 名称固定为：
+  `semantic_similarity`, `semantic_overlap_ratio`, `distance_kernel_weight`,
+  `normalized_distance`, `relative_x`, `relative_y`, `delta_elevation`,
+  `terrain_slope`, `terrain_slope_angle`, `is_semantic_edge`, `is_distance_edge`,
+  `is_both_edge`, `has_elevation`。TrueUnion 的 semantic∪distance 去重和最终排序由
+  预构建 artifact 提供，模型不读取 parquet、target、mask、未来数据或功率序列。
+- PFD0 只解析 `DataInfoView.feature_columns` 中的 `Wspd`。`level[t]` 是当前输入窗口
+  的 Wspd level；`diff1[0]=0`，`diff1[t]=level[t]-level[t-1]`。编码使用旧原型的
+  左侧 zero padding，Scale1 奇数段复制最后 segment；formal `S0=12,S1=6`。
+  Value 只来自这两个候选，禁止传播功率、target/mask、邻居完整 hidden state 或
+  turbine embedding。
+- Relation spatial 使用 target 自身 `[B,N,C,S,D]` Cross-Time token 生成 Query，
+  source 的 PFD0 token 生成 Key/Value；按 `edge_index[1]` target 入边 softmax，
+  `edge_index[0]` source gather 后 scatter 到 target，不建立 dense `N×N` attention。
+  StaticEdgeMLP 和 OrderedRelationBias 只加 logits；两个 scale 各调用一次，分别执行
+  `T + gamma * Dropout(Wo(M))`，两个独立 gamma 初始值均为 `0.1`，无 variable gate。
+- `spatial_disabled=true` 仍接受旧 P1 配置，完全不读取 relation artifact、不创建 PFD0
+  或 P2 persistent buffer，且 state_dict/canonical 数值路径保持 P1 严格等价。P2 只接受
+  `pfd_mode=pfd0`；P1 checkpoint 与 P2 配置的 model-config identity 不匹配时由现有
+  checkpoint compatibility 拒绝 Resume。当前正式 YAML 保持 legacy disabled 状态，
+  因为 134 节点正式 relation artifact 不应作为仓库 fixture 或私有数据提交；P2 opt-in
+  配置和 3 节点合成 fixture 已被测试。
+- 测试证据：focused `57 passed, 3 skipped`（env_tslib 中正式 tsl 缺失的既有 skip）；
+  完整 `170 passed, 3 skipped`；env_tsl 单独 STCN 回归 `3 passed`；命令 reference
+  检查通过，受跟踪 Markdown 仍为四份。P1 public resolved batch-1、formal default
+  shape 和 preflight 均 PASS；这些命令读取的是 legacy disabled YAML，不宣称为 P2
+  relation formal PASS。
+- 额外使用 P0 审计目录中 E=1536、train-only、无 future target 的旧 TrueUnion 数据，
+  临时转换为上述 NPZ 后执行了 formal `B=32,L=144,N=134,C=16,H=10` P2 forward/backward，
+  output/gradients finite；临时 artifact SHA256 为
+  `EA13022FA2B32947BD421E56AB7115DE2C5CCB35F3F9165E2CE6BCCBE7D919D8`，已从工作区删除，
+  未提交。该结果不等同于正式训练或把临时 artifact 作为公共资源发布。
+- P2 明确未实现：7 个额外安全气象变量、56 candidates、CausalPropagationFeatureBank、
+  learned_change12、PFD1、Entmax、Top-k、Straight-Through、PFD2–PFD5 Selector、
+  source dynamic context、候选稀疏选择和正式 Full 训练。
+- 下一阶段只允许：`P3：7 个安全气象变量、56 个稳定因果候选、
+  CausalPropagationFeatureBank、learned_change12 和 PFD1 Dense Candidate Propagation`。

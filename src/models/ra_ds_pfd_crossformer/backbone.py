@@ -1,4 +1,4 @@
-"""Local canonical Crossformer stages with explicit P1 insertion points.
+"""Local canonical Crossformer stages with explicit spatial insertion points.
 
 The modules are constructed from the read-only upstream implementation in
 ``Time-Series-Library/models/Crossformer.py`` and its imported layer files.
@@ -66,13 +66,21 @@ class CanonicalBackbone(nn.Module):
         seq_len: int,
         pred_len: int,
         model_config: Mapping[str, Any],
+        num_nodes: int | None = None,
+        spatial_modules: tuple[nn.Module, nn.Module] | None = None,
     ) -> None:
         super().__init__()
-        if model_config.get("spatial_disabled") is not True:
-            raise ValueError(
-                "RA-DS-PFD Crossformer P1 requires spatial_disabled=true; "
-                "spatial implementation is not available"
-            )
+        self.spatial_enabled = model_config.get("spatial_disabled") is False
+        if self.spatial_enabled:
+            if num_nodes is None or int(num_nodes) < 1:
+                raise ValueError("enabled relation spatial backbone requires positive num_nodes")
+            if spatial_modules is None or len(spatial_modules) != 2:
+                raise ValueError("enabled relation spatial backbone requires two spatial modules")
+            self.num_nodes = int(num_nodes)
+        else:
+            self.num_nodes = None
+            if spatial_modules is not None:
+                raise ValueError("spatial modules must not be created when spatial_disabled=true")
 
         self.enc_in = int(enc_in)
         self.seq_len = int(seq_len)
@@ -139,10 +147,16 @@ class CanonicalBackbone(nn.Module):
             ]
         )
 
-        # These modules have no state and intentionally do not alter the
-        # upstream state-dict key set.
-        self.scale0_spatial_insertion = IdentitySpatialInsertion(scale_id=0)
-        self.scale1_spatial_insertion = IdentitySpatialInsertion(scale_id=1)
+        # Disabled P1 modules have no state and intentionally do not alter the
+        # upstream state-dict key set.  P2 replaces these two insertion points
+        # with the model-local relation spatial modules.
+        if self.spatial_enabled:
+            assert spatial_modules is not None
+            self.scale0_spatial_insertion = spatial_modules[0]
+            self.scale1_spatial_insertion = spatial_modules[1]
+        else:
+            self.scale0_spatial_insertion = IdentitySpatialInsertion(scale_id=0)
+            self.scale1_spatial_insertion = IdentitySpatialInsertion(scale_id=1)
 
         self.dec_pos_embedding = nn.Parameter(
             torch.randn(1, self.enc_in, self.pad_out_len // self.seg_len, self.d_model)
@@ -183,13 +197,16 @@ class CanonicalBackbone(nn.Module):
         layer: nn.Module,
         value: torch.Tensor,
         spatial_insertion: nn.Module,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        *,
+        num_nodes: int | None = None,
+        propagation_tokens: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Run the upstream TSA layer while exposing its two canonical stages."""
 
         # This is the upstream TwoStageAttentionLayer.forward sequence from
         # Time-Series-Library/layers/SelfAttention_Family.py.  No operation is
         # changed; the identity call is the only inserted operation.
-        batch = value.shape[0]
+        batch_nodes = value.shape[0]
         time_in = rearrange(value, "b ts_d seg_num d_model -> (b ts_d) seg_num d_model")
         time_enc, _ = layer.time_attention(
             time_in,
@@ -205,17 +222,32 @@ class CanonicalBackbone(nn.Module):
         dim_in = layer.norm2(dim_in)
         cross_time = dim_in
 
-        spatial_value = spatial_insertion(cross_time)
+        if propagation_tokens is None:
+            spatial_value = spatial_insertion(cross_time)
+        else:
+            if num_nodes is None or batch_nodes % num_nodes:
+                raise ValueError("relation spatial token batch is not divisible by num_nodes")
+            local_batch = batch_nodes // num_nodes
+            channels = value.shape[1]
+            cross_time_local = cross_time.reshape(
+                local_batch, num_nodes, channels, cross_time.shape[1], cross_time.shape[2]
+            )
+            spatial_local = spatial_insertion(cross_time_local, propagation_tokens)
+            if not isinstance(spatial_local, torch.Tensor) or tuple(spatial_local.shape) != tuple(
+                cross_time_local.shape
+            ):
+                raise ValueError("relation spatial insertion must preserve [B,N,C,S,D]")
+            spatial_value = spatial_local.reshape_as(cross_time)
 
         dim_send = rearrange(
             spatial_value,
             "(b ts_d) seg_num d_model -> (b seg_num) ts_d d_model",
-            b=batch,
+            b=batch_nodes,
         )
         batch_router = repeat(
             layer.router,
             "seg_num factor d_model -> (repeat seg_num) factor d_model",
-            repeat=batch,
+            repeat=batch_nodes,
         )
         dim_buffer, _ = layer.dim_sender(
             batch_router,
@@ -240,15 +272,32 @@ class CanonicalBackbone(nn.Module):
         final_out = rearrange(
             dim_enc,
             "(b seg_num) ts_d d_model -> b ts_d seg_num d_model",
-            b=batch,
+            b=batch_nodes,
         )
-        return cross_time, spatial_value, final_out
+        if propagation_tokens is None:
+            cross_time_trace = cross_time
+            spatial_trace = spatial_value
+            final_trace = final_out
+        else:
+            if num_nodes is None or batch_nodes % num_nodes:
+                raise ValueError("relation spatial token batch is not divisible by num_nodes")
+            local_batch = batch_nodes // num_nodes
+            channels = value.shape[1]
+            cross_time_trace = cross_time.reshape(
+                local_batch, num_nodes, channels, cross_time.shape[1], cross_time.shape[2]
+            )
+            spatial_trace = spatial_value.reshape_as(cross_time_trace)
+            final_trace = final_out.reshape(
+                local_batch, num_nodes, channels, final_out.shape[2], final_out.shape[3]
+            )
+        return cross_time_trace, spatial_trace, final_out, final_trace
 
     def forward_backbone(
         self,
         value: torch.Tensor,
         *,
         return_trace: bool = False,
+        propagation_tokens: tuple[torch.Tensor, torch.Tensor] | None = None,
     ) -> torch.Tensor | CanonicalTrace:
         if value.ndim != 3:
             raise ValueError("canonical Crossformer expects (batch_nodes, lookback, features)")
@@ -260,6 +309,13 @@ class CanonicalBackbone(nn.Module):
             )
         if not torch.isfinite(value).all():
             raise FloatingPointError("canonical Crossformer input contains NaN or Inf")
+        if self.spatial_enabled:
+            if propagation_tokens is None or len(propagation_tokens) != 2:
+                raise ValueError("enabled relation spatial backbone requires Scale0 and Scale1 PFD0 tokens")
+            if self.num_nodes is None or value.shape[0] % self.num_nodes:
+                raise ValueError("canonical relation spatial input batch is not divisible by num_nodes")
+        elif propagation_tokens is not None:
+            raise ValueError("P1 spatial_disabled=true must not receive propagation tokens")
 
         embedded, n_vars = self.enc_value_embedding(value.permute(0, 2, 1))
         if n_vars != self.enc_in:
@@ -274,36 +330,67 @@ class CanonicalBackbone(nn.Module):
         pre_norm = self.pre_norm(embedded_with_position)
 
         scale0_layer = self.encoder.encode_blocks[0].encode_layers[0]
-        scale0_cross_time, scale0_spatial, scale0_cross_dimension = (
+        scale0_cross_time, scale0_spatial, scale0_cross_dimension, scale0_cross_dimension_trace = (
             self._forward_two_stage_with_spatial(
                 scale0_layer,
                 pre_norm,
                 self.scale0_spatial_insertion,
+                num_nodes=self.num_nodes,
+                propagation_tokens=propagation_tokens[0] if propagation_tokens is not None else None,
             )
         )
 
         scale1_block = self.encoder.encode_blocks[1]
         scale1_merged = scale1_block.merge_layer(scale0_cross_dimension)
+        scale1_merged_trace = (
+            scale1_merged.reshape(
+                value.shape[0] // self.num_nodes,
+                self.num_nodes,
+                scale1_merged.shape[1],
+                scale1_merged.shape[2],
+                scale1_merged.shape[3],
+            )
+            if propagation_tokens is not None and self.num_nodes is not None
+            else scale1_merged
+        )
         scale1_layer = scale1_block.encode_layers[0]
-        scale1_cross_time, scale1_spatial, scale1_cross_dimension = (
+        scale1_cross_time, scale1_spatial, scale1_cross_dimension, scale1_cross_dimension_trace = (
             self._forward_two_stage_with_spatial(
                 scale1_layer,
                 scale1_merged,
                 self.scale1_spatial_insertion,
+                num_nodes=self.num_nodes,
+                propagation_tokens=propagation_tokens[1] if propagation_tokens is not None else None,
             )
         )
 
-        decoder_tokens = (
+        decoder_tokens_for_decoder = (
             pre_norm,
             scale0_cross_dimension,
             scale1_cross_dimension,
+        )
+        pre_norm_trace = (
+            pre_norm.reshape(
+                value.shape[0] // self.num_nodes,
+                self.num_nodes,
+                pre_norm.shape[1],
+                pre_norm.shape[2],
+                pre_norm.shape[3],
+            )
+            if propagation_tokens is not None and self.num_nodes is not None
+            else pre_norm
+        )
+        decoder_tokens_trace = (
+            pre_norm_trace,
+            scale0_cross_dimension_trace,
+            scale1_cross_dimension_trace,
         )
         decoder_input = repeat(
             self.dec_pos_embedding,
             "b ts_d l d -> (repeat b) ts_d l d",
             repeat=pre_norm.shape[0],
         )
-        decoder_output = self.decoder(decoder_input, list(decoder_tokens))
+        decoder_output = self.decoder(decoder_input, list(decoder_tokens_for_decoder))
         output = decoder_output[:, -self.pred_len :, :]
         if not torch.isfinite(output).all():
             raise FloatingPointError("canonical Crossformer output contains NaN or Inf")
@@ -312,22 +399,37 @@ class CanonicalBackbone(nn.Module):
             return output
         return CanonicalTrace(
             segment_embedding=segment_embedding,
-            embedded_with_position=embedded_with_position,
-            pre_norm=pre_norm,
+            embedded_with_position=(
+                embedded_with_position.reshape(
+                    value.shape[0] // self.num_nodes,
+                    self.num_nodes,
+                    embedded_with_position.shape[1],
+                    embedded_with_position.shape[2],
+                    embedded_with_position.shape[3],
+                )
+                if propagation_tokens is not None and self.num_nodes is not None
+                else embedded_with_position
+            ),
+            pre_norm=pre_norm_trace,
             scale0_cross_time=scale0_cross_time,
             scale0_spatial=scale0_spatial,
-            scale0_cross_dimension=scale0_cross_dimension,
-            scale1_merged=scale1_merged,
+            scale0_cross_dimension=scale0_cross_dimension_trace,
+            scale1_merged=scale1_merged_trace,
             scale1_cross_time=scale1_cross_time,
             scale1_spatial=scale1_spatial,
-            scale1_cross_dimension=scale1_cross_dimension,
-            decoder_tokens=decoder_tokens,
+            scale1_cross_dimension=scale1_cross_dimension_trace,
+            decoder_tokens=decoder_tokens_trace,
             decoder_output=decoder_output,
             output=output,
         )
 
-    def forward(self, value: torch.Tensor) -> torch.Tensor:
-        result = self.forward_backbone(value)
+    def forward(
+        self,
+        value: torch.Tensor,
+        *,
+        propagation_tokens: tuple[torch.Tensor, torch.Tensor] | None = None,
+    ) -> torch.Tensor:
+        result = self.forward_backbone(value, propagation_tokens=propagation_tokens)
         assert isinstance(result, torch.Tensor)
         return result
 
