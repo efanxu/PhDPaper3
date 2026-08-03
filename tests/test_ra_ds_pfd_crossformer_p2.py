@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 import torch
 
+from engine.reproducibility import set_seed
 from models.base import DataInfoView, ModelInput
 from models.loader import build_model
 from models.ra_ds_pfd_crossformer.pfd0 import build_wspd_level_diff1
@@ -294,6 +295,28 @@ def test_p2_calls_each_scale_once_uses_local_tokens_and_has_gate_free_gradients(
     parameter_names = set(dict(model.named_parameters()))
     assert not any("gate_mlp" in name for name in parameter_names)
     assert "VariableConditionedResidualInjection" not in repr(model)
+
+
+def test_p2_controlled_nonstrict_forward_backward_is_finite(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PYTHONHASHSEED", "2026")
+    monkeypatch.setenv("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    details = set_seed(2026, reproducibility_mode="controlled_nonstrict")
+    assert details["global_deterministic_algorithms"] is False
+    assert details["cudnn_deterministic"] is True
+    assert details["cudnn_benchmark"] is False
+
+    model = _build().train()
+    output = model(ModelInput(x=torch.randn(2, 24, 3, 5)))
+    loss = output.square().mean()
+    loss.backward()
+
+    assert torch.isfinite(output).all()
+    assert torch.isfinite(loss)
+    assert all(
+        parameter.grad is not None and torch.isfinite(parameter.grad).all()
+        for parameter in model.parameters()
+        if parameter.requires_grad
+    )
 
 
 def test_legacy_spatial_disabled_config_has_no_p2_parameters_or_resource_read() -> None:
