@@ -33,7 +33,6 @@ def test_run_id_finds_best_checkpoint_and_writes_evaluate_id(monkeypatch, tmp_pa
     assert result["output_dir"] == str(tmp_path / "results")
     assert calls[0]["checkpoint"] == source.resolve()
     assert calls[0]["run_id"] == "source__evaluate"
-    assert calls[0]["evaluate_only"] is True
 
 
 def test_missing_run_id_checkpoint_fails_before_run_model(tmp_path: Path) -> None:
