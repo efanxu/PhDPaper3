@@ -37,7 +37,12 @@ def git_commit(project_root: Path) -> str | None:
     return value or None
 
 
-def collect_environment(project_root: Path) -> dict[str, Any]:
+def collect_environment(
+    project_root: Path,
+    *,
+    reproducibility_mode: str | None = None,
+    seed_details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     cuda = torch.cuda.is_available()
     gpu_name = torch.cuda.get_device_name(0) if cuda else None
     environment = {
@@ -63,13 +68,18 @@ def collect_environment(project_root: Path) -> dict[str, Any]:
         },
         "git_commit": git_commit(project_root),
         "determinism": {
+            "reproducibility_mode": reproducibility_mode,
             "python_hash_seed": os.environ.get("PYTHONHASHSEED"),
+            "global_deterministic_algorithms": torch.are_deterministic_algorithms_enabled(),
             "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(),
             "cudnn_benchmark": torch.backends.cudnn.benchmark,
             "cudnn_deterministic": torch.backends.cudnn.deterministic,
+            "cuda_matmul_allow_tf32": torch.backends.cuda.matmul.allow_tf32,
+            "cudnn_allow_tf32": torch.backends.cudnn.allow_tf32,
             "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG"),
         },
     }
+    environment["reproducibility"] = dict(seed_details or environment["determinism"])
     encoded = json.dumps(environment, ensure_ascii=False, sort_keys=True, default=str).encode()
     import hashlib
 

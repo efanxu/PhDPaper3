@@ -66,7 +66,7 @@ def test_repeatability_dispatches_complete_model_batches_and_compares_all_horizo
         run_id="batch",
         output_root=tmp_path / "results",
     )
-    assert calls == [(["a", "b"], "batch__repeat_a"), (["a", "b"], "batch__repeat_b")]
+    assert calls == [(["a", "b"], "batch__repeat_a"), (["b", "a"], "batch__repeat_b")]
     assert result["passed"] is True
     assert all(item["checks"]["test_horizon_set"] for item in result["models"])
     assert all(item["checks"]["different_worker_pid"] for item in result["models"])

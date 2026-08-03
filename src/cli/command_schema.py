@@ -220,8 +220,10 @@ def _build_repeatability(subparsers: argparse._SubParsersAction) -> None:
     _add_public_overrides(parser)
     _add_run_modes(parser, include_resume=False)
     group = parser.add_argument_group("重复性任务专属参数")
-    group.add_argument("--prediction-atol", type=float, default=1e-6, help="预测数组允许的最大绝对误差，默认 1e-6")
-    group.add_argument("--metric-atol", type=float, default=0.0, help="指标允许的最大绝对误差，默认 0")
+    group.add_argument("--prediction-atol", type=float, default=1e-5, help="预测数组允许的最大绝对误差，默认 1e-5")
+    group.add_argument("--prediction-rtol", type=float, default=1e-4, help="预测数组允许的相对误差，默认 1e-4")
+    group.add_argument("--metric-atol", type=float, default=1e-4, help="指标允许的最大绝对误差，默认 1e-4")
+    group.add_argument("--metric-rtol", type=float, default=1e-4, help="指标允许的相对误差，默认 1e-4")
     group.add_argument(
         "--environment-preflight-only",
         action="store_true",

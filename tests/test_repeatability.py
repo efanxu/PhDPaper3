@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, TensorDataset
@@ -9,7 +11,9 @@ from engine.reproducibility import set_seed, state_dict_hash
 
 
 def _one_step_run() -> tuple[str, float, np.ndarray]:
-    set_seed(2026, deterministic=True)
+    os.environ["PYTHONHASHSEED"] = "2026"
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+    set_seed(2026, reproducibility_mode="controlled_nonstrict")
     model = torch.nn.Linear(3, 1)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001, foreach=False, fused=False)
     x = torch.arange(18, dtype=torch.float32).reshape(6, 3)

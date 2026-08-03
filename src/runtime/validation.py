@@ -146,7 +146,12 @@ def run_shape_validation(
         model_config = load_model_config(model_file)
         selected_device = _choose_device(device)
         payload["device"] = str(selected_device)
-        set_seed(int(config.training["seed"]), deterministic=bool(config.runtime["deterministic"]))
+        seed_details = set_seed(
+            int(config.training["seed"]),
+            reproducibility_mode=str(config.runtime["reproducibility_mode"]),
+        )
+        payload["reproducibility_mode"] = seed_details["reproducibility_mode"]
+        payload["details"]["reproducibility"] = seed_details
         phase = "data"
         _, loaded_data_info = load_data(config, project_root=root)
         data_info = DataInfoView.from_object(loaded_data_info)

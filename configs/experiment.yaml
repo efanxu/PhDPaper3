@@ -101,6 +101,6 @@ evaluation:
 
 runtime:
   num_workers: 0
-  deterministic: true
+  reproducibility_mode: controlled_nonstrict
   save_predictions: true
   pin_memory: false

@@ -11,31 +11,62 @@ import numpy as np
 import torch
 
 
-def set_seed(seed: int, *, deterministic: bool = True) -> dict[str, Any]:
-    """Seed Python, NumPy, PyTorch, CUDA and deterministic cuDNN behavior."""
+CONTROLLED_NONSTRICT = "controlled_nonstrict"
+CUBLAS_WORKSPACE_CONFIG = ":4096:8"
+
+
+def _validate_worker_environment(seed: int) -> None:
+    expected_seed = str(seed)
+    actual_seed = os.environ.get("PYTHONHASHSEED")
+    if actual_seed != expected_seed:
+        raise RuntimeError(
+            "worker PYTHONHASHSEED does not match resolved training.seed: "
+            f"expected {expected_seed!r}, got {actual_seed!r}"
+        )
+    actual_cublas = os.environ.get("CUBLAS_WORKSPACE_CONFIG")
+    if actual_cublas != CUBLAS_WORKSPACE_CONFIG:
+        raise RuntimeError(
+            "worker CUBLAS_WORKSPACE_CONFIG must be "
+            f"{CUBLAS_WORKSPACE_CONFIG!r}, got {actual_cublas!r}"
+        )
+
+
+def set_seed(seed: int, *, reproducibility_mode: str) -> dict[str, Any]:
+    """Apply the project's controlled non-strict reproducibility policy.
+
+    The parent scheduler owns process-start environment variables.  A worker
+    therefore validates and records them here instead of trying to change a
+    Python hash seed after interpreter startup.
+    """
 
     if seed < 0:
         raise ValueError("seed must be non-negative")
-    os.environ["PYTHONHASHSEED"] = str(seed)
-    # This is required by deterministic CUDA matrix multiplication on supported
-    # versions and is harmless on CPU-only runs.
-    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    if reproducibility_mode != CONTROLLED_NONSTRICT:
+        raise ValueError(
+            "reproducibility_mode must be controlled_nonstrict"
+        )
+    _validate_worker_environment(seed)
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
-        torch.backends.cudnn.benchmark = False
-        torch.backends.cudnn.deterministic = bool(deterministic)
-    torch.use_deterministic_algorithms(bool(deterministic))
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+    torch.use_deterministic_algorithms(False)
     return {
         "seed": int(seed),
-        "python_hash_seed": os.environ["PYTHONHASHSEED"],
-        "deterministic": bool(deterministic),
+        "reproducibility_mode": reproducibility_mode,
+        "global_deterministic_algorithms": bool(torch.are_deterministic_algorithms_enabled()),
         "cuda_available": bool(torch.cuda.is_available()),
         "cudnn_benchmark": bool(torch.backends.cudnn.benchmark),
         "cudnn_deterministic": bool(torch.backends.cudnn.deterministic),
+        "cuda_matmul_allow_tf32": bool(torch.backends.cuda.matmul.allow_tf32),
+        "cudnn_allow_tf32": bool(torch.backends.cudnn.allow_tf32),
+        "python_hash_seed": os.environ.get("PYTHONHASHSEED"),
         "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG"),
     }
 

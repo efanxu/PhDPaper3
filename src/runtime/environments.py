@@ -422,8 +422,9 @@ def build_worker_environment(
     *,
     project_root: str | Path,
     base_environment: Mapping[str, str] | None = None,
+    resolved_seed: int | None = None,
 ) -> dict[str, str]:
-    """Build a worker environment with project ``src`` ahead of source roots."""
+    """Build a worker environment with resolved reproducibility variables."""
 
     if not isinstance(resolved_environment, ResolvedEnvironment):
         raise TypeError("build_worker_environment requires ResolvedEnvironment")
@@ -443,6 +444,11 @@ def build_worker_environment(
             unique.append(value)
     values["PYTHONPATH"] = os.pathsep.join(unique)
     values["PHDPAPER3_RUNTIME_ENVIRONMENT"] = resolved_environment.environment_id
+    values["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+    if resolved_seed is not None:
+        if not isinstance(resolved_seed, int) or isinstance(resolved_seed, bool) or resolved_seed < 0:
+            raise ValueError("resolved_seed must be a non-negative integer")
+        values["PYTHONHASHSEED"] = str(resolved_seed)
     return values
 
 
@@ -579,6 +585,7 @@ def preflight_environment(
     device: str = "auto",
     model_name: str | None = None,
     model_config_path: str | Path | None = None,
+    resolved_seed: int | None = None,
     timeout_seconds: int = 120,
 ) -> dict[str, Any]:
     """Check one environment by launching its target Python exactly once."""
@@ -606,7 +613,11 @@ def preflight_environment(
     # Model validation belongs to ``preflight_model``. Keeping this operation
     # environment-only means a pure TSL worker never depends on TSLib source.
     del model_config_path
-    worker_environment = build_worker_environment(resolved_environment, project_root=root)
+    worker_environment = build_worker_environment(
+        resolved_environment,
+        project_root=root,
+        resolved_seed=resolved_seed,
+    )
     required = list(dict.fromkeys((*resolved_environment.required_imports, "torch")))
     try:
         completed = subprocess.run(
@@ -662,6 +673,7 @@ def preflight_model(
     model_name: str,
     config_path: str | Path,
     model_config_path: str | Path,
+    resolved_seed: int | None = None,
     timeout_seconds: int = 120,
 ) -> dict[str, Any]:
     """Validate one model module and small construction in its own runtime."""
@@ -675,7 +687,11 @@ def preflight_model(
             kind="python",
             message=f"target Python does not exist: {executable}",
         )
-    worker_environment = build_worker_environment(resolved_environment, project_root=root)
+    worker_environment = build_worker_environment(
+        resolved_environment,
+        project_root=root,
+        resolved_seed=resolved_seed,
+    )
     try:
         completed = subprocess.run(
             [
