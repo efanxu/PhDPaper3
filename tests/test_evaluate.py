@@ -31,7 +31,7 @@ def test_run_id_finds_best_checkpoint_and_writes_evaluate_id(monkeypatch, tmp_pa
         output_root=tmp_path / "results",
     )
     assert result["output_dir"] == str(tmp_path / "results")
-    assert calls[0]["resume"] == source.resolve()
+    assert calls[0]["checkpoint"] == source.resolve()
     assert calls[0]["run_id"] == "source__evaluate"
     assert calls[0]["evaluate_only"] is True
 
@@ -71,5 +71,5 @@ def test_explicit_checkpoint_remains_supported(monkeypatch, tmp_path: Path) -> N
         device="cpu",
         output_root=tmp_path / "results",
     )
-    assert captured["resume"] == checkpoint.resolve()
+    assert captured["checkpoint"] == checkpoint.resolve()
     assert captured["run_id"] == "evaluate"
