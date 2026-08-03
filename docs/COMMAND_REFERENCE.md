@@ -200,10 +200,10 @@ python scripts\run.py preflight `
 | `--amp, --no-amp` | 公共实验覆盖（默认来自 configs/experiment.yaml） | 否 | bool | 未提供：继承 configs/experiment.yaml | `training.amp` | 是 | 显式启用或禁用 training.amp（使用 --amp/--no-amp）；未提供时采用 configs/experiment.yaml；显式提供时仅覆盖本次运行。 |
 | `--overwrite` | 运行模式 | 否 | flag | 未提供时关闭 | `—` | 否 | 先归档旧结果，再使用原 ID 重新运行 |
 | `--id-suffix` | 运行模式 | 否 | str | 无 | `—` | 否 | 追加安全后缀，例如 rerun1；生成 <run-id>__rerun1 |
-| `--prediction-atol` | 重复性任务专属参数 | 否 | float | 1e-05 | `—` | 否 | 预测数组允许的最大绝对误差，默认 1e-5 |
-| `--prediction-rtol` | 重复性任务专属参数 | 否 | float | 0.0001 | `—` | 否 | 预测数组允许的相对误差，默认 1e-4 |
-| `--metric-atol` | 重复性任务专属参数 | 否 | float | 0.0001 | `—` | 否 | 指标允许的最大绝对误差，默认 1e-4 |
-| `--metric-rtol` | 重复性任务专属参数 | 否 | float | 0.0001 | `—` | 否 | 指标允许的相对误差，默认 1e-4 |
+| `--prediction-atol` | 重复性任务专属参数 | 否 | float | 0.005 | `—` | 否 | AMP float16 预测数组允许的最大绝对误差，默认 5e-3 |
+| `--prediction-rtol` | 重复性任务专属参数 | 否 | float | 0.005 | `—` | 否 | AMP float16 预测数组允许的相对误差，默认 5e-3 |
+| `--metric-atol` | 重复性任务专属参数 | 否 | float | 0.0002 | `—` | 否 | 指标允许的最大绝对误差，默认 2e-4 |
+| `--metric-rtol` | 重复性任务专属参数 | 否 | float | 0.0002 | `—` | 否 | 指标允许的相对误差，默认 2e-4 |
 | `--environment-preflight-only` | 重复性任务专属参数 | 否 | flag | 未提供时关闭 | `—` | 否 | 只预检本批次所需运行环境，不启动重复性 worker |
 
 ### 示例
