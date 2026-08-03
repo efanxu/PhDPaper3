@@ -46,6 +46,5 @@ def evaluate_checkpoint(
         output_root=output_root,
         cli_overrides=cli_overrides,
         command_argv=command_argv,
-        command_name="evaluate",
-        evaluation_split=split,
+        split=split,
     )
