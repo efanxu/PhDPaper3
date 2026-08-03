@@ -147,3 +147,21 @@ CLI 改变时修改 `command_schema.py` 并运行生成器；普通模型参数�
   source dynamic context、候选稀疏选择和正式 Full 训练。
 - 下一阶段只允许：`P3：7 个安全气象变量、56 个稳定因果候选、
   CausalPropagationFeatureBank、learned_change12 和 PFD1 Dense Candidate Propagation`。
+
+## 11. 共享 controlled-nonstrict 修复与当前 P2 状态
+
+`main` 是自定义模型长期分支，继续保留并推进 RA-DS-PFD；共享修复已通过
+`bd64db6` 与 `76ac9ac` 合入。全局 `torch.use_deterministic_algorithms(True)` 已
+关闭；固定种子、DataLoader 顺序、`cudnn.deterministic=true` 和
+`cudnn.benchmark=false` 保留，TF32 已关闭。父调度器在 worker 启动前注入
+`PYTHONHASHSEED` 与 `CUBLAS_WORKSPACE_CONFIG=:4096:8`。
+
+共享修复同时应用于 STCN：已确认根因是全局 strict CUDA scatter/reduction 路径的
+显存压力，正式路径改为 controlled non-strict；不要为此降低 batch 或静默切换设备。
+STCN 的正式 B=32 GPU 峰值仍需在对应环境和真实数据上记录，不能用短 shape 结果替代。
+
+RA-DS-PFD P2 仍需单独完成 non-strict 显存诊断与最小修复；`spatial_disabled=true`
+不属于 P2，必须使用 enabled P2 配置才能形成显存结论。不要把短 shape PASS 冒充
+P2 Full；当前 P2 Full/20 updates/真实 134 节点 relation artifact 验收尚未完成。
+该 P2 专项只进入 `main`，不得将 `baseline-models` 整体合入 `main`，也不得把
+RA-DS-PFD 代码带入 `baseline-models`。
