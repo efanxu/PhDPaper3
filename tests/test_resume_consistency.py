@@ -105,20 +105,22 @@ def _assert_nested_equal(left, right) -> None:
         assert left == right
 
 
-def test_epoch_resume_matches_continuous_cpu_training(tmp_path: Path) -> None:
+def test_epoch_resume_matches_continuous_cpu_training(tmp_path: Path, monkeypatch) -> None:
     config = _config()
     seed = 991
-    set_seed(seed, deterministic=True)
+    monkeypatch.setenv("PYTHONHASHSEED", str(seed))
+    monkeypatch.setenv("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    set_seed(seed, reproducibility_mode="controlled_nonstrict")
     continuous_loaders = _loaders(seed)
     continuous_model = _TinyModel()
     continuous_trainer, continuous_result = _run(config, tmp_path / "continuous", continuous_loaders, epochs=4, model=continuous_model)
 
-    set_seed(seed, deterministic=True)
+    set_seed(seed, reproducibility_mode="controlled_nonstrict")
     interrupted_loaders = _loaders(seed)
     interrupted_model = _TinyModel()
     _run(config, tmp_path / "resumed", interrupted_loaders, epochs=2, model=interrupted_model)
 
-    set_seed(seed, deterministic=True)
+    set_seed(seed, reproducibility_mode="controlled_nonstrict")
     resumed_loaders = _loaders(seed)
     resumed_model = _TinyModel()
     resumed_trainer = Trainer(

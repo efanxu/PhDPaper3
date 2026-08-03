@@ -31,6 +31,7 @@ class TrainResult:
     epoch_seconds: list[float]
     update_seconds: list[float]
     stale_count: int
+    train_batch_order: list[list[int]]
 
 
 class Trainer:
@@ -81,6 +82,7 @@ class Trainer:
         self.last_step_loss: float | None = None
         self.epoch_seconds: list[float] = []
         self.update_seconds: list[float] = []
+        self.train_batch_order: list[list[int]] = []
 
     def _autocast(self):
         if not self.amp_enabled:
@@ -95,6 +97,9 @@ class Trainer:
     def _update(self, batches: list[ForecastBatch]) -> float:
         if not batches:
             raise ValueError("optimizer update requires at least one micro-batch")
+        self.train_batch_order.extend(
+            [[int(value) for value in batch.starts.tolist()] for batch in batches]
+        )
         update_started = time.perf_counter()
         self.model.train()
         self.optimizer.zero_grad(set_to_none=True)
@@ -191,6 +196,7 @@ class Trainer:
                 "last_step_loss": self.last_step_loss,
                 "epoch_seconds": self.epoch_seconds,
                 "update_seconds": self.update_seconds,
+                "train_batch_order": self.train_batch_order,
             },
         }
 
@@ -255,6 +261,10 @@ class Trainer:
         self.last_step_loss = state.get("last_step_loss")
         self.epoch_seconds = [float(value) for value in state.get("epoch_seconds", [])]
         self.update_seconds = [float(value) for value in state.get("update_seconds", [])]
+        self.train_batch_order = [
+            [int(value) for value in batch]
+            for batch in state.get("train_batch_order", [])
+        ]
         initial_hash = str(state.get("initial_state_hash") or state_dict_hash(self.model.state_dict()))
         extra = dict(checkpoint_extra or {})
         extra["initial_state_hash"] = initial_hash
@@ -340,4 +350,5 @@ class Trainer:
             epoch_seconds=self.epoch_seconds,
             update_seconds=self.update_seconds,
             stale_count=stale,
+            train_batch_order=self.train_batch_order,
         )

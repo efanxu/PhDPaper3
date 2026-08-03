@@ -16,6 +16,7 @@ from io import StringIO
 
 import yaml
 
+from runtime.config import apply_cli_overrides, load_experiment_config
 from runtime.environments import (
     ResolvedEnvironment,
     build_worker_environment,
@@ -87,6 +88,7 @@ def preflight_batch_environments(
     model_environments: Mapping[str, ResolvedEnvironment],
     project_root: Path,
     device: str,
+    resolved_seed: int | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Preflight each distinct environment in a model batch exactly once."""
 
@@ -101,6 +103,7 @@ def preflight_batch_environments(
             device=device,
             model_name=model,
             model_config_path=model_configs[model],
+            resolved_seed=resolved_seed,
         )
     return preflight_results
 
@@ -112,8 +115,15 @@ def prepare_batch_environments(
     project_root: Path,
     device: str,
     config_path: Path | None = None,
+    resolved_seed: int | None = None,
 ) -> tuple[dict[str, ResolvedEnvironment], dict[str, dict[str, Any]]]:
     """Resolve every model and preflight each distinct environment once."""
+
+    if resolved_seed is None:
+        public_config = load_experiment_config(
+            config_path or project_root / "configs" / "experiment.yaml"
+        )
+        resolved_seed = int(public_config.training["seed"])
 
     model_environments: dict[str, ResolvedEnvironment] = {}
     for model in models:
@@ -127,6 +137,7 @@ def prepare_batch_environments(
         model_environments=model_environments,
         project_root=project_root,
         device=device,
+        resolved_seed=resolved_seed,
     )
     for model in models:
         model_result = preflight_model(
@@ -135,6 +146,7 @@ def prepare_batch_environments(
             model_name=model,
             config_path=config_path or project_root / "configs" / "experiment.yaml",
             model_config_path=model_configs[model],
+            resolved_seed=resolved_seed,
         )
         preflight_results[model_environments[model].environment_id].setdefault(
             "model_preflights", {}
@@ -149,6 +161,7 @@ def _prepare_batch_environments(
     project_root: Path,
     device: str,
     config_path: Path | None = None,
+    resolved_seed: int | None = None,
 ) -> tuple[dict[str, ResolvedEnvironment], dict[str, dict[str, Any]]]:
     """Backward-compatible seam for tests and callers of the old private name."""
 
@@ -158,7 +171,54 @@ def _prepare_batch_environments(
         project_root=project_root,
         device=device,
         config_path=config_path,
+        resolved_seed=resolved_seed,
     )
+
+
+def _resolved_training_seed(
+    config_path: Path,
+    cli_overrides: Mapping[str, Any] | None,
+    *,
+    project_root: Path,
+) -> int:
+    """Resolve the public seed before any worker process is started."""
+
+    base = load_experiment_config(config_path)
+    resolved = apply_cli_overrides(
+        base,
+        cli_overrides or {},
+        project_root=project_root,
+    )
+    return int(resolved.training["seed"])
+
+
+def _prepare_batch_environments_with_seed(
+    *,
+    models: list[str],
+    model_configs: Mapping[str, Path],
+    project_root: Path,
+    device: str,
+    config_path: Path,
+    resolved_seed: int,
+) -> tuple[dict[str, ResolvedEnvironment], dict[str, dict[str, Any]]]:
+    """Call the environment seam while tolerating old test doubles."""
+
+    arguments = {
+        "models": models,
+        "model_configs": model_configs,
+        "project_root": project_root,
+        "device": device,
+        "config_path": config_path,
+    }
+    try:
+        return _prepare_batch_environments(
+            **arguments,
+            resolved_seed=resolved_seed,
+        )
+    except TypeError as exc:
+        if "resolved_seed" not in str(exc):
+            raise
+        return _prepare_batch_environments(**arguments)
 
 
 def _runtime_record_fields(
@@ -772,6 +832,7 @@ def _run_worker(
     model: str,
     log_path: Path,
     resolved_environment: ResolvedEnvironment,
+    resolved_seed: int | None = None,
 ) -> tuple[int, str, int]:
     command = build_model_worker_command(
         project_root=project_root,
@@ -789,7 +850,11 @@ def _run_worker(
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
-            env=build_worker_environment(resolved_environment, project_root=project_root),
+            env=build_worker_environment(
+                resolved_environment,
+                project_root=project_root,
+                resolved_seed=resolved_seed,
+            ),
         )
         assert process.stdout is not None
         for line in process.stdout:
@@ -897,6 +962,11 @@ def run_training_models(
     config_file = Path(config_path).resolve()
     project_root = project_root_from_config(config_file)
     model_configs = _validate_model_configs(models, config_file, model_config_path)
+    resolved_seed = _resolved_training_seed(
+        config_file,
+        cli_overrides,
+        project_root=project_root,
+    )
     effective_id = effective_run_id(run_id, id_suffix)
     root = resolve_output_root(project_root, output_root)
     run_root = root / "_runs" / effective_id
@@ -913,12 +983,13 @@ def run_training_models(
             environment_context = cached
     if environment_context is None:
         try:
-            environment_context = _prepare_batch_environments(
+            environment_context = _prepare_batch_environments_with_seed(
                 models=models,
                 model_configs=model_configs,
                 project_root=project_root,
                 device=device,
                 config_path=config_file,
+                resolved_seed=resolved_seed,
             )
         except BaseException as exc:
             details = failure_details(exc, phase="environment")
@@ -1199,6 +1270,7 @@ def run_training_models(
             model=model,
             log_path=logs_root / f"{model}.resolved_shape.log",
             resolved_environment=model_environments[model],
+            resolved_seed=resolved_seed,
         )
         record["resolved_shape_pid"] = shape_pid
         shape_seconds = time.perf_counter() - shape_started
@@ -1291,6 +1363,7 @@ def run_training_models(
             model=model,
             log_path=Path(record["log_path"]),
             resolved_environment=model_environments[model],
+            resolved_seed=resolved_seed,
         )
         record["pid"] = pid
         record["exit_code"] = int(exit_code)
@@ -1439,13 +1512,19 @@ def run_isolated_checks(
     if operation == "check" and run_root.exists() and any(run_root.iterdir()):
         raise ValueError(f"check run directory already contains files: {run_root}; choose a new --run-id")
     model_configs = _validate_model_configs(models, config_file, model_config_path)
+    resolved_seed = _resolved_training_seed(
+        config_file,
+        cli_overrides,
+        project_root=project_root,
+    )
     try:
-        model_environments, preflight_results = _prepare_batch_environments(
+        model_environments, preflight_results = _prepare_batch_environments_with_seed(
             models=models,
             model_configs=model_configs,
             project_root=project_root,
             device=device,
             config_path=config_file,
+            resolved_seed=resolved_seed,
         )
     except BaseException as exc:
         details = failure_details(exc, phase="environment")
@@ -1554,6 +1633,7 @@ def run_isolated_checks(
             model=model,
             log_path=log_path,
             resolved_environment=model_environments[model],
+            resolved_seed=resolved_seed,
         )
         wall_seconds = time.perf_counter() - started
         runtime_fields = _runtime_record_fields(

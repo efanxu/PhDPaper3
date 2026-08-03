@@ -182,6 +182,7 @@ _CHECKPOINT_CONFIG_PATHS: tuple[tuple[str, ...], ...] = (
     ("training", "scheduler"),
     ("training", "amp"),
     ("training", "seed"),
+    ("runtime", "reproducibility_mode"),
 )
 _GRAPH_CHECKPOINT_CONFIG_PATHS = frozenset(
     {
@@ -221,7 +222,28 @@ def _check_checkpoint_compatibility(
     )
     if not isinstance(saved_config, Mapping):
         raise ValueError(f"checkpoint {checkpoint_path} has no saved resolved experiment config; refusing compatibility-unsafe resume")
+    reproducibility_path = ("runtime", "reproducibility_mode")
+    saved_reproducibility_mode = _at_path(saved_config, reproducibility_path)
+    current_reproducibility_mode = _at_path(config.values, reproducibility_path)
+    if for_resume:
+        if saved_reproducibility_mode is None:
+            raise ValueError(
+                f"checkpoint {checkpoint_path} is missing runtime.reproducibility_mode; "
+                "old checkpoints cannot be resumed; create a new checkpoint with "
+                "runtime.reproducibility_mode=controlled_nonstrict"
+            )
+        if saved_reproducibility_mode != current_reproducibility_mode:
+            raise ValueError(
+                f"checkpoint {checkpoint_path} is incompatible at "
+                "runtime.reproducibility_mode: "
+                f"saved={saved_reproducibility_mode!r}, "
+                f"current={current_reproducibility_mode!r}"
+            )
     for path in _CHECKPOINT_CONFIG_PATHS:
+        if path == reproducibility_path:
+            # Evaluate-only accepts old or differently configured checkpoints;
+            # it never restores training RNG state.
+            continue
         if model_name != "stcn" and path in _GRAPH_CHECKPOINT_CONFIG_PATHS:
             continue
         if not for_resume and path in {
@@ -244,7 +266,7 @@ def _check_checkpoint_compatibility(
     if dict(saved_model_config) != dict(model_config):
         raise ValueError(f"checkpoint {checkpoint_path} is incompatible with the current model config")
     runtime_state = manifest.get("runtime_state")
-    if runtime_state is not None and ("rng" not in runtime_state or "dataloader_generators" not in runtime_state):
+    if for_resume and runtime_state is not None and ("rng" not in runtime_state or "dataloader_generators" not in runtime_state):
         raise ValueError(f"checkpoint {checkpoint_path} does not contain complete resume RNG/DataLoader state")
 
 
@@ -296,6 +318,11 @@ def _performance(
     trainable_parameter_count: int,
 ) -> dict[str, Any]:
     allocated_mb, reserved_mb = _memory_mb(device)
+    total_mb = (
+        float(torch.cuda.get_device_properties(device).total_memory) / (1024.0 * 1024.0)
+        if device.type == "cuda"
+        else None
+    )
     best_path = output_dir / "best.pt"
     checkpoint_size_mb = float(best_path.stat().st_size) / (1024.0 * 1024.0) if best_path.is_file() else None
     epoch_seconds = train_result.epoch_seconds if train_result else []
@@ -323,6 +350,7 @@ def _performance(
         "test": test.performance,
         "peak_gpu_allocated_mb": allocated_mb,
         "peak_gpu_reserved_mb": reserved_mb,
+        "gpu_total_mb": total_mb,
         "total_wall_seconds": float(time.perf_counter() - started),
         "device": str(device),
         "gpu": environment.get("gpu"),
@@ -397,8 +425,26 @@ def _run_model_impl(
         if not runtime_metadata.get("runtime_environment"):
             raise ValueError("runtime_environment metadata must include runtime_environment")
     checkpoint_file = _checkpoint_path(resume) if resume is not None else None
+    legacy_reproducibility_mode_unknown = False
     if checkpoint_file is not None:
-        _check_checkpoint_compatibility(read_checkpoint_manifest(checkpoint_file), config, model_config, checkpoint_file, model_name=model_name, for_resume=not evaluate_only)
+        checkpoint_for_compatibility = read_checkpoint_manifest(checkpoint_file)
+        saved_config = (
+            checkpoint_for_compatibility.get("resolved_config")
+            or checkpoint_for_compatibility.get("resolved_config_identity")
+            or checkpoint_for_compatibility.get("experiment_config")
+        )
+        legacy_reproducibility_mode_unknown = (
+            isinstance(saved_config, Mapping)
+            and _at_path(saved_config, ("runtime", "reproducibility_mode")) is None
+        )
+        _check_checkpoint_compatibility(
+            checkpoint_for_compatibility,
+            config,
+            model_config,
+            checkpoint_file,
+            model_name=model_name,
+            for_resume=not evaluate_only,
+        )
     run_name = run_id or datetime.now().strftime("run-%Y%m%d-%H%M%S")
     output_dir = run_directory(project_root, output_root, model_name, run_name)
     if output_dir.exists() and any(output_dir.iterdir()) and (resume is None or evaluate_only):
@@ -412,8 +458,15 @@ def _run_model_impl(
     selected_device = _choose_device(device)
     if selected_device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(selected_device)
-    seed_details = set_seed(int(config.training["seed"]), deterministic=bool(config.runtime["deterministic"]))
-    environment = collect_environment(project_root)
+    seed_details = set_seed(
+        int(config.training["seed"]),
+        reproducibility_mode=str(config.runtime["reproducibility_mode"]),
+    )
+    environment = collect_environment(
+        project_root,
+        reproducibility_mode=str(config.runtime["reproducibility_mode"]),
+        seed_details=seed_details,
+    )
     environment.update(runtime_metadata)
     environment["runtime_environment"] = runtime_metadata["runtime_environment"]
     environment["conda_env"] = runtime_metadata.get("conda_env")
@@ -430,6 +483,7 @@ def _run_model_impl(
         "command": command_name,
         "runtime_environment": runtime_metadata["runtime_environment"],
         "python_executable": runtime_metadata.get("python_executable"),
+        "reproducibility": seed_details,
     })
     if smoke:
         resolved["resolved"]["smoke"] = {
@@ -503,7 +557,20 @@ def _run_model_impl(
     arrays, data_info, splits, windows, normalization, loaders = _prepare(config, project_root)
     data_prepare_seconds = time.perf_counter() - data_started
     normalization.save(output_dir / "normalization.npz")
-    resolved["resolved"].update({"data_info": data_info.as_dict(), "split_boundaries": splits.as_dict(arrays.timestamps), "window_index": windows.as_dict(), "normalization": normalization.as_dict()})
+    resolved["resolved"].update(
+        {
+            "data_info": data_info.as_dict(),
+            "split_boundaries": splits.as_dict(arrays.timestamps),
+            "window_index": windows.as_dict(),
+            "window_starts": {
+                "train": [int(value) for value in windows.train],
+                "train_valid": [int(value) for value in windows.train_valid],
+                "validation": [int(value) for value in windows.validation],
+                "test": [int(value) for value in windows.test],
+            },
+            "normalization": normalization.as_dict(),
+        }
+    )
     write_yaml(output_dir / "resolved_config.yaml", resolved)
     model_started = time.perf_counter()
     model = build_model(model_name, model_config, data_info)
@@ -520,6 +587,8 @@ def _run_model_impl(
         "parameter_count": parameter_count,
         "trainable_parameter_count": trainable_parameter_count,
         "seed": int(config.training["seed"]),
+        "reproducibility_mode": str(config.runtime["reproducibility_mode"]),
+        "seed_details": seed_details,
         "cli_overrides": cli_overrides_as_nested(effective_overrides),
     }
     train_result: TrainResult | None = None
@@ -659,9 +728,34 @@ def _run_model_impl(
         "evaluate_only": bool(evaluate_only),
         "evaluation_split": evaluation_split,
         "cli_overrides": cli_overrides_as_nested(effective_overrides),
-        "runtime_overrides": {"smoke": bool(smoke), "smoke_epochs": int(smoke_epochs or 1) if smoke else None, "smoke_max_train_updates": int(smoke_max_train_updates or 2) if smoke else None, "smoke_max_eval_batches": int(smoke_max_eval_batches or 2) if smoke else None},
+        "reproducibility_mode": str(config.runtime["reproducibility_mode"]),
         "seed_details": seed_details,
+        "details": {
+            "legacy_reproducibility_mode_unknown": bool(
+                legacy_reproducibility_mode_unknown
+            ),
+            "reproducibility": seed_details,
+        },
+        "runtime_overrides": {"smoke": bool(smoke), "smoke_epochs": int(smoke_epochs or 1) if smoke else None, "smoke_max_train_updates": int(smoke_max_train_updates or 2) if smoke else None, "smoke_max_eval_batches": int(smoke_max_eval_batches or 2) if smoke else None},
         "initial_weight_hash": train_result.initial_state_hash if train_result else None,
+        "train_batch_order": train_result.train_batch_order if train_result else None,
+        "train_batch_count": (
+            len(train_result.train_batch_order) if train_result else 0
+        ),
+        "train_update_count": (
+            sum(int(row["train_updates"]) for row in train_result.history)
+            if train_result
+            else 0
+        ),
+        "data_split": {
+            "split_boundaries": splits.as_dict(arrays.timestamps),
+            "window_starts": {
+                "train": [int(value) for value in windows.train],
+                "train_valid": [int(value) for value in windows.train_valid],
+                "validation": [int(value) for value in windows.validation],
+                "test": [int(value) for value in windows.test],
+            },
+        },
         "first_step_loss": train_result.first_step_loss if train_result else None,
         "checkpoint_manifest": public_checkpoint_manifest,
         "validation_monitor": validation.metrics["monitor"],

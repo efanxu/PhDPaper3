@@ -127,7 +127,7 @@ _EVALUATION_KEYS = {
     "checkpoint_selection",
 }
 _CHECKPOINT_KEYS = {"split", "horizon", "metric", "mode"}
-_RUNTIME_KEYS = {"num_workers", "deterministic", "save_predictions", "pin_memory"}
+_RUNTIME_KEYS = {"num_workers", "reproducibility_mode", "save_predictions", "pin_memory"}
 _RESOURCES_KEYS = {"graph"}
 _GRAPH_KEYS = {"type", "location_file", "k", "symmetrize", "self_loops", "weighting"}
 
@@ -160,6 +160,8 @@ _MODEL_FORBIDDEN_KEYS = {
     "test_ratio",
     "early_stopping",
     "seed",
+    "deterministic",
+    "reproducibility_mode",
     "optimizer",
     "learning_rate",
 }
@@ -384,9 +386,20 @@ def _validate_experiment(values: dict[str, Any]) -> None:
         raise ConfigError("checkpoint_selection.mode must be min or max")
 
     runtime = values["runtime"]
+    if not isinstance(runtime, dict):
+        raise ConfigError("runtime must be a mapping")
+    if "deterministic" in runtime:
+        raise ConfigError(
+            "runtime.deterministic is no longer supported; use "
+            "runtime.reproducibility_mode=controlled_nonstrict"
+        )
     _keys(runtime, _RUNTIME_KEYS, _RUNTIME_KEYS, "runtime")
     _integer(runtime["num_workers"], "runtime.num_workers", minimum=0)
-    for name in ("deterministic", "save_predictions", "pin_memory"):
+    if runtime["reproducibility_mode"] != "controlled_nonstrict":
+        raise ConfigError(
+            "runtime.reproducibility_mode must be controlled_nonstrict"
+        )
+    for name in ("save_predictions", "pin_memory"):
         _boolean(runtime[name], f"runtime.{name}")
 
 

@@ -19,6 +19,7 @@ from runtime.config import (
     load_model_config,
     resolved_config_values,
 )
+from engine.reproducibility import set_seed
 from runtime.paths import project_root_from_config
 
 
@@ -41,6 +42,10 @@ def run_preflight(
     )
     model_path = Path(model_config_path).resolve() if model_config_path else root / "configs" / "models" / f"{model_name}.yaml"
     model_config = load_model_config(model_path)
+    seed_details = set_seed(
+        int(config.training["seed"]),
+        reproducibility_mode=str(config.runtime["reproducibility_mode"]),
+    )
     if device == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but is unavailable")
     selected_device = "cuda" if device == "auto" and torch.cuda.is_available() else ("cpu" if device == "auto" else device)
@@ -52,6 +57,8 @@ def run_preflight(
         "device": selected_device,
         "cli_overrides": cli_overrides_as_nested(cli_overrides),
         "resolved_config": resolved_config_values(config, project_root=root),
+        "reproducibility_mode": seed_details["reproducibility_mode"],
+        "seed_details": seed_details,
     }
     if check_data:
         arrays, info = load_data(config, project_root=root)
