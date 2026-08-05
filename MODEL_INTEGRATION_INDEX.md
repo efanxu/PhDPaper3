@@ -142,6 +142,33 @@ The model YAML is structure-only. Public data, split, loss, optimizer, batch
 and evaluation semantics come from `configs/experiment.yaml` and explicit
 command-line overrides.
 
+## Minimal validation principle
+
+Validation must be proportional to a concrete correctness or recovery risk.
+Keep checks that prevent silent shape, dtype, node-order, edge-direction,
+configuration, non-finite-value, checkpoint-compatibility or data-boundary
+errors.
+
+Do not add hashes, certificates, manifests, registries, duplicated identity
+fields or fail-closed machinery unless there is a documented external trust
+boundary, a concrete failure that the check prevents, and an actual consumer
+that uses the result. Metadata that is already stored in readable form must
+not receive an additional hash only for appearance of rigor.
+
+Prefer simple versioned filenames, explicit schemas, direct structural
+validation and ordinary tests. Reproducibility evidence may retain compact
+state identities such as model `state_dict_hash` when they are actively used
+to compare training states, but such identities must not be generalized into
+a project-wide certificate system.
+
+Before adding a new validation layer, confirm all three points:
+
+1. the exact failure it prevents;
+2. why existing structure or tests cannot detect that failure;
+3. where the validation result is consumed.
+
+If any point cannot be answered, do not add the validation layer.
+
 ## Documentation impact rules
 
 Reading this index never modifies Markdown.  Adding an ordinary model

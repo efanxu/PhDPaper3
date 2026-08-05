@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import importlib
-import json
 import os
 import platform
 from pathlib import Path
@@ -80,8 +79,4 @@ def collect_environment(
         },
     }
     environment["reproducibility"] = dict(seed_details or environment["determinism"])
-    encoded = json.dumps(environment, ensure_ascii=False, sort_keys=True, default=str).encode()
-    import hashlib
-
-    environment["environment_hash"] = hashlib.sha256(encoded).hexdigest()
     return environment

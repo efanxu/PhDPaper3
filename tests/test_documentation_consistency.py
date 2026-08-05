@@ -76,6 +76,15 @@ def test_environment_contract_and_model_parameter_documentation_rules() -> None:
         assert model_parameter not in public_documents
 
 
+def test_model_index_documents_minimal_validation_principle() -> None:
+    index = (ROOT / "MODEL_INTEGRATION_INDEX.md").read_text(encoding="utf-8")
+    assert "## Minimal validation principle" in index
+    assert "certificates" in index
+    assert "manifests" in index
+    assert "readiness protocols" in index
+    assert "state_dict_hash" in index
+
+
 def test_command_reference_is_generated_from_current_parser() -> None:
     result = subprocess.run(
         [
