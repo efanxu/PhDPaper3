@@ -9,9 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-import hashlib
 from pathlib import Path
-import re
 from typing import Any
 
 import numpy as np
@@ -44,13 +42,12 @@ _ARTIFACT_KEYS = frozenset(
         "edge_feature_names",
     }
 )
-_CONFIG_KEYS = frozenset({"file", "schema_version", "sha256"})
-_SHA256 = re.compile(r"^[0-9a-fA-F]{64}$")
+_CONFIG_KEYS = frozenset({"file"})
 
 
 @dataclass(frozen=True)
 class RelationResource:
-    """Validated relation tensors and their immutable artifact identity."""
+    """Validated relation tensors and their source artifact path."""
 
     schema_version: int
     node_ids: tuple[int, ...]
@@ -58,7 +55,6 @@ class RelationResource:
     edge_static_features: torch.Tensor
     edge_feature_names: tuple[str, ...]
     path: Path
-    sha256: str
 
     @property
     def static_edge_features(self) -> torch.Tensor:
@@ -70,25 +66,6 @@ class RelationResource:
     def edge_count(self) -> int:
         return int(self.edge_index.shape[1])
 
-    def identity(self, configured_file: str) -> dict[str, Any]:
-        """Return the configuration identity saved in model checkpoints."""
-
-        return {
-            "file": configured_file,
-            "schema_version": self.schema_version,
-            "sha256": self.sha256,
-        }
-
-
-def sha256_file(path: str | Path) -> str:
-    """Compute the complete SHA256 digest of one artifact."""
-
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
 
 def _scalar_int(value: Any, *, name: str) -> int:
     array = np.asarray(value)
@@ -97,7 +74,7 @@ def _scalar_int(value: Any, *, name: str) -> int:
     return int(array.item())
 
 
-def _validate_resource_config(resource_config: Mapping[str, Any]) -> tuple[str, int, str]:
+def _validate_resource_config(resource_config: Mapping[str, Any]) -> str:
     if not isinstance(resource_config, Mapping):
         raise ValueError("relation_resource must be a mapping")
     unknown = sorted(set(resource_config) - _CONFIG_KEYS)
@@ -112,18 +89,7 @@ def _validate_resource_config(resource_config: Mapping[str, Any]) -> tuple[str, 
     relative = Path(configured_file)
     if relative.is_absolute() or any(part == ".." for part in relative.parts):
         raise ValueError("relation_resource.file must be a project-relative path within the project root")
-    schema_version = resource_config["schema_version"]
-    if isinstance(schema_version, bool) or not isinstance(schema_version, int):
-        raise ValueError("relation_resource.schema_version must be an integer")
-    if schema_version != RELATION_RESOURCE_SCHEMA_VERSION:
-        raise ValueError(
-            "unsupported relation_resource.schema_version: "
-            f"{schema_version}; expected {RELATION_RESOURCE_SCHEMA_VERSION}"
-        )
-    configured_sha256 = resource_config["sha256"]
-    if not isinstance(configured_sha256, str) or not _SHA256.fullmatch(configured_sha256):
-        raise ValueError("relation_resource.sha256 must be a complete 64-character SHA256")
-    return configured_file, schema_version, configured_sha256.lower()
+    return configured_file
 
 
 def _resolve_resource_path(configured_file: str, project_root: str | Path) -> Path:
@@ -217,22 +183,15 @@ def load_relation_resource(
     project_root: str | Path,
     node_ids: Iterable[int],
 ) -> RelationResource:
-    """Verify and load a project-relative relation artifact with fail-closed checks."""
+    """Load and structurally validate a project-relative relation artifact."""
 
-    configured_file, _configured_schema, configured_sha256 = _validate_resource_config(resource_config)
+    configured_file = _validate_resource_config(resource_config)
     expected_node_ids = tuple(int(value) for value in node_ids)
     if not expected_node_ids:
         raise ValueError("relation resource validation requires public data node_ids")
     path = _resolve_resource_path(configured_file, project_root)
     if not path.is_file():
         raise FileNotFoundError(f"relation resource file does not exist: {path}")
-    actual_sha256 = sha256_file(path)
-    if actual_sha256 != configured_sha256:
-        raise ValueError(
-            f"relation resource SHA256 mismatch for {path}: "
-            f"configured={configured_sha256}, actual={actual_sha256}"
-        )
-
     try:
         with np.load(path, allow_pickle=False) as archive:
             arrays = {name: archive[name] for name in archive.files}
@@ -249,7 +208,6 @@ def load_relation_resource(
         edge_static_features=torch.from_numpy(edge_static_features.copy()).float(),
         edge_feature_names=names,
         path=path,
-        sha256=actual_sha256,
     )
 
 
@@ -258,5 +216,4 @@ __all__ = [
     "STATIC_EDGE_FEATURE_NAMES",
     "RelationResource",
     "load_relation_resource",
-    "sha256_file",
 ]

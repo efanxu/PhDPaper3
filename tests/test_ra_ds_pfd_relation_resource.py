@@ -11,7 +11,6 @@ from models.ra_ds_pfd_crossformer.relation_resource import (
     RELATION_RESOURCE_SCHEMA_VERSION,
     STATIC_EDGE_FEATURE_NAMES,
     load_relation_resource,
-    sha256_file,
 )
 
 
@@ -22,8 +21,6 @@ FIXTURE = ROOT / "tests" / "fixtures" / "ra_ds_pfd_relation_small.npz"
 def _config(path: Path = FIXTURE, *, project_root: Path = ROOT) -> dict[str, object]:
     return {
         "file": str(path.relative_to(project_root)).replace("\\", "/"),
-        "schema_version": RELATION_RESOURCE_SCHEMA_VERSION,
-        "sha256": sha256_file(path),
     }
 
 
@@ -40,9 +37,14 @@ def _write_variant(tmp_path: Path, **updates: object) -> Path:
     return path
 
 
-def test_fixture_has_strict_trueunion_resource_schema() -> None:
+def test_file_only_config_loads_versioned_fixture() -> None:
     resource = load_relation_resource(_config(), project_root=ROOT, node_ids=(1, 2, 3))
     assert resource.schema_version == RELATION_RESOURCE_SCHEMA_VERSION
+    assert resource.path == FIXTURE.resolve()
+
+
+def test_fixture_has_strict_trueunion_resource_schema() -> None:
+    resource = load_relation_resource(_config(), project_root=ROOT, node_ids=(1, 2, 3))
     assert resource.node_ids == (1, 2, 3)
     assert resource.edge_index.dtype == torch.int64
     assert tuple(resource.edge_index.shape) == (2, 4)
@@ -55,11 +57,15 @@ def test_fixture_has_strict_trueunion_resource_schema() -> None:
     assert not bool((resource.edge_index[0] == resource.edge_index[1]).any())
 
 
-def test_relation_resource_rejects_hash_and_node_order_mismatch() -> None:
-    wrong_hash = _config()
-    wrong_hash["sha256"] = "0" * 64
-    with pytest.raises(ValueError, match="SHA256 mismatch"):
-        load_relation_resource(wrong_hash, project_root=ROOT, node_ids=(1, 2, 3))
+@pytest.mark.parametrize("field", ["schema_version", "sha256"])
+def test_relation_resource_rejects_legacy_config_fields(field: str) -> None:
+    legacy = _config()
+    legacy[field] = 1 if field == "schema_version" else "legacy-value"
+    with pytest.raises(ValueError, match=rf"unknown field: {field}"):
+        load_relation_resource(legacy, project_root=ROOT, node_ids=(1, 2, 3))
+
+
+def test_relation_resource_rejects_node_order_mismatch() -> None:
     with pytest.raises(ValueError, match="node_ids"):
         load_relation_resource(_config(), project_root=ROOT, node_ids=(2, 1, 3))
 

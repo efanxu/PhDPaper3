@@ -103,13 +103,16 @@ CLI 改变时修改 `command_schema.py` 并运行生成器；普通模型参数�
   和现有 Crossformer/isolation 回归均通过。
 - P2 状态：`PASS_WITH_NOTES`。P2 代码、focused tests、完整 pytest、P1 canonical
   回归以及 NodeSharedLSTM/Crossformer/STCN 回归均已通过；正式训练仍未执行。
-- Relation Resource 是模型局部的只读 NPZ 契约，不改公共 `GraphResource`。文件必须是
-  项目相对路径并通过完整 SHA256；`schema_version=1`；只允许
+- Relation Resource 是模型局部的只读 NPZ 契约，不改公共 `GraphResource`。文件使用
+  项目相对路径和版本化文件名；artifact 内部 `schema_version=1`；只允许
   `node_ids`, `edge_index`, `edge_static_features`, `edge_feature_names` 四类数据字段，
   使用 `allow_pickle=False`；节点顺序、`[2,E] int64` source/target、无重复/自环、
   `(target,source)` 稳定排序、target 非零入度、`[E,13] float32` finite 和精确字段名
   都在模型构造时 fail closed 校验。公共图仍保持 `adjacency[source,target]`、
   `edge_index[0]=source`、`edge_index[1]=target`、`k=5`。
+- The P2 relation resource now follows the project-wide minimal-validation
+  principle in `MODEL_INTEGRATION_INDEX.md`: structural correctness checks remain,
+  while unused file-hash and certificate-style identity machinery is removed.
 - 13 个 static edge feature 名称固定为：
   `semantic_similarity`, `semantic_overlap_ratio`, `distance_kernel_weight`,
   `normalized_distance`, `relative_x`, `relative_y`, `delta_elevation`,
@@ -139,9 +142,8 @@ CLI 改变时修改 `command_schema.py` 并运行生成器；普通模型参数�
   relation formal PASS。
 - 额外使用 P0 审计目录中 E=1536、train-only、无 future target 的旧 TrueUnion 数据，
   临时转换为上述 NPZ 后执行了 formal `B=32,L=144,N=134,C=16,H=10` P2 forward/backward，
-  output/gradients finite；临时 artifact SHA256 为
-  `EA13022FA2B32947BD421E56AB7115DE2C5CCB35F3F9165E2CE6BCCBE7D919D8`，已从工作区删除，
-  未提交。该结果不等同于正式训练或把临时 artifact 作为公共资源发布。
+  output/gradients finite；临时 artifact 已从工作区删除，未提交。该结果不等同于
+  正式训练或把临时 artifact 作为公共资源发布。
 - P2 明确未实现：7 个额外安全气象变量、56 candidates、CausalPropagationFeatureBank、
   learned_change12、PFD1、Entmax、Top-k、Straight-Through、PFD2–PFD5 Selector、
   source dynamic context、候选稀疏选择和正式 Full 训练。

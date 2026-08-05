@@ -3,7 +3,6 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
-import numpy as np
 import pytest
 import torch
 
@@ -11,7 +10,6 @@ from engine.reproducibility import set_seed
 from models.base import DataInfoView, ModelInput
 from models.loader import build_model
 from models.ra_ds_pfd_crossformer.pfd0 import build_wspd_level_diff1
-from models.ra_ds_pfd_crossformer.relation_resource import sha256_file
 from models.ra_ds_pfd_crossformer.relation_spatial import (
     RelationSpatialAttention,
     ordered_relation_pair_representation,
@@ -19,7 +17,6 @@ from models.ra_ds_pfd_crossformer.relation_spatial import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RESOURCE_PATH = ROOT / "tests" / "fixtures" / "ra_ds_pfd_relation_small.npz"
 
 
 def _info() -> DataInfoView:
@@ -57,8 +54,6 @@ def _config() -> dict[str, object]:
         "spatial_edge_chunk_size": 2,
         "relation_resource": {
             "file": "tests/fixtures/ra_ds_pfd_relation_small.npz",
-            "schema_version": 1,
-            "sha256": sha256_file(RESOURCE_PATH),
         },
     }
 
@@ -333,8 +328,6 @@ def test_legacy_spatial_disabled_config_has_no_p2_parameters_or_resource_read() 
         "pfd_mode": "pfd0",
         "relation_resource": {
             "file": "does/not/exist.npz",
-            "schema_version": 1,
-            "sha256": "0" * 64,
         },
     }
     model = build_model("ra_ds_pfd_crossformer", legacy, _info())
