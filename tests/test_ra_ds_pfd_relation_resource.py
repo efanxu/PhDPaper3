@@ -15,7 +15,7 @@ from models.ra_ds_pfd_crossformer.relation_resource import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
-FIXTURE = ROOT / "tests" / "fixtures" / "ra_ds_pfd_relation_small.npz"
+FIXTURE = ROOT / "tests" / "fixtures" / "ra_ds_pfd_relation_small_v1.npz"
 
 
 def _config(path: Path = FIXTURE, *, project_root: Path = ROOT) -> dict[str, object]:

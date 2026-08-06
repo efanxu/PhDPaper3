@@ -113,6 +113,12 @@ CLI 改变时修改 `command_schema.py` 并运行生成器；普通模型参数�
 - The P2 relation resource now follows the project-wide minimal-validation
   principle in `MODEL_INTEGRATION_INDEX.md`: structural correctness checks remain,
   while unused file-hash and certificate-style identity machinery is removed.
+- 2026-08-05 minimal-validation simplification acceptance：公共环境哈希删除、
+  P2 Relation Resource file-only 配置及结构校验修改完成；focused tests
+  `45 passed`，完整 pytest `181 passed, 3 skipped`，command reference、
+  P1 CUDA preflight 和 P2 opt-in fixture build/forward 均通过。本文档其他位置的
+  `57 passed, 3 skipped`、`170 passed, 3 skipped`、`177 passed, 3 skipped`
+  和 `8 passed` 均为各自阶段的历史验收证据，不代表当前完整测试总数。
 - 13 个 static edge feature 名称固定为：
   `semantic_similarity`, `semantic_overlap_ratio`, `distance_kernel_weight`,
   `normalized_distance`, `relative_x`, `relative_y`, `delta_elevation`,

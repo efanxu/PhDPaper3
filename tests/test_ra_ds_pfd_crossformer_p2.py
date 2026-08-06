@@ -53,7 +53,7 @@ def _config() -> dict[str, object]:
         "gamma_init": 0.1,
         "spatial_edge_chunk_size": 2,
         "relation_resource": {
-            "file": "tests/fixtures/ra_ds_pfd_relation_small.npz",
+            "file": "tests/fixtures/ra_ds_pfd_relation_small_v1.npz",
         },
     }
 
