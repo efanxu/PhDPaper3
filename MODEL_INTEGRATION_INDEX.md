@@ -154,6 +154,15 @@ dropped or reweighted. Every optimizer update still covers every node, and
 masked loss uses global absolute-error sum, squared-error sum, and valid-target
 count across all sample accumulation batches and node chunks.
 
+The only runtime value source for `runtime.node_shared_chunk_size` is
+`configs/experiment.yaml`; production code has no independent fallback, and the
+resolved value must be passed into `build_execution_plan()`. Resume compatibility
+compares the chunk only when the current plan uses `node_shared_microbatch`;
+`full_nodes` and `full_spatiotemporal` checkpoints remain compatible when only the
+chunk value changes. `FORMAL_DEFAULT_SHAPE` uses the resolved training AMP
+autocast policy. If the target GPU is occupied, formal GPU validation remains
+pending and is not a reason to lower the configured chunk.
+
 `NodeSharedForecastModel` models without PyTorch batch-dependent normalization
 use the shared node micro-batch executor. Native `_BatchNorm` modules force
 full-node execution and must not be changed to LayerNorm; a formal full-shape

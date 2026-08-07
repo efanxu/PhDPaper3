@@ -223,3 +223,18 @@ rescue。上述公共改动不改变当前 RA-DS-PFD/P2 的模型代码、relati
 - 本任务未实现 P3/P4；未运行 R0–R7 Full、多 seed 对照或正式训练。
 - `P2_COMPARISON_FOUNDATION = PASS_WITH_NOTES`；`OLD_RESOURCE_SAFE_TO_DELETE = NO`
   （未能证明的旧目录仍需用户自行保留/处置）。
+
+## 13. Shared NodeShared software closeout（2026-08-07）
+
+公共 NodeShared software closeout complete：`runtime.node_shared_chunk_size` 的
+唯一运行值来源是 `configs/experiment.yaml`，production code 不提供独立
+fallback；Resume compatibility 只约束当前 `ExecutionPlan` 实际使用
+`node_shared_microbatch` 的模型，`full_nodes`/`full_spatiotemporal`（包括
+RA-DS-PFD）不因 chunk 值变化失效。Formal shape validation 已改为 resolved
+AMP semantics，且未改变 RA-DS-PFD/P2 的模型、relation resource 或状态。
+
+本次 target GPU 当前被其他任务占用，因此 LSTM/Crossformer/STCN/RA-DS-PFD
+GPU gate 均为 `NOT EXECUTED — target GPU currently occupied`；real CUDA/cuDNN
+LSTM recurrent-dropout two-pass replay 仍 pending。`node_shared_chunk_size` 保持
+`32`，未下调到 `16` 或 `8`。P0/P1/P2、relation resource 和 P2 comparison
+foundation 状态继续以本 HANDOFF 前文为准。
