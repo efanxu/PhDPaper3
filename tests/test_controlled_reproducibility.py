@@ -10,13 +10,29 @@ import yaml
 
 from cli.repeatability import _values_close
 from cli.train import _check_checkpoint_compatibility
+from engine.model_execution import build_execution_plan
 from runtime.config import ConfigError, load_experiment_config, load_model_config
 from runtime.environments import ResolvedEnvironment, build_worker_environment
 from engine.reproducibility import set_seed
+from models.base import ModelInput, NodeSharedForecastModel
 
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "configs" / "experiment.yaml"
+
+
+class _CheckpointNodeSharedToy(NodeSharedForecastModel):
+    def forward_node_chunk(
+        self, inputs: ModelInput, node_start: int, node_end: int
+    ) -> torch.Tensor:
+        values = inputs.x[:, :, node_start:node_end, :].mean(dim=(1, 3))
+        return values.unsqueeze(-1).expand(-1, node_end - node_start, 2)
+
+
+def _checkpoint_plan():
+    return build_execution_plan(
+        _CheckpointNodeSharedToy(), total_nodes=134, node_shared_chunk_size=32
+    )
 
 
 def test_controlled_nonstrict_is_the_only_public_mode_and_legacy_field_fails(tmp_path: Path) -> None:
@@ -105,6 +121,7 @@ def test_resume_requires_saved_reproducibility_mode_but_evaluate_only_accepts_le
             model_config,
             ROOT / "legacy.pt",
             model_name="lstm",
+            execution_plan=_checkpoint_plan(),
             for_resume=True,
         )
     _check_checkpoint_compatibility(
@@ -113,6 +130,7 @@ def test_resume_requires_saved_reproducibility_mode_but_evaluate_only_accepts_le
         model_config,
         ROOT / "legacy.pt",
         model_name="lstm",
+        execution_plan=_checkpoint_plan(),
         for_resume=False,
     )
 

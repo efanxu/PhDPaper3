@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader, Dataset
 from data.dataset import ForecastBatch
 from data.normalization import NormalizationStats
 from engine.checkpoint import load_checkpoint
+from engine.model_execution import build_execution_plan
 from engine.reproducibility import set_seed
 from engine.trainer import Trainer
 from models.base import DataInfoView, ForecastModel, ModelInput
@@ -66,6 +67,14 @@ def _loaders(seed: int):
     )
 
 
+def _execution_plan(model: ForecastModel, config: ExperimentConfig):
+    return build_execution_plan(
+        model,
+        total_nodes=int(config.data["num_nodes"]),
+        node_shared_chunk_size=int(config.runtime["node_shared_chunk_size"]),
+    )
+
+
 def _run(config: ExperimentConfig, output: Path, loaders, *, epochs: int, model: _TinyModel, resume_state=None, start_epoch: int = 1):
     normalization = NormalizationStats(torch.zeros(1), torch.ones(1), 0.0, 1.0)
     trainer = Trainer(
@@ -76,6 +85,7 @@ def _run(config: ExperimentConfig, output: Path, loaders, *, epochs: int, model:
         normalization=normalization,
         output_dir=output,
         dataloader_generators={"train": loaders[0].generator, "validation": loaders[1].generator, "test": loaders[2].generator},
+        execution_plan=_execution_plan(model, config),
     )
     result = trainer.fit(
         loaders[0],
@@ -131,6 +141,7 @@ def test_epoch_resume_matches_continuous_cpu_training(tmp_path: Path, monkeypatc
         normalization=NormalizationStats(torch.zeros(1), torch.ones(1), 0.0, 1.0),
         output_dir=tmp_path / "resumed",
         dataloader_generators={"train": resumed_loaders[0].generator, "validation": resumed_loaders[1].generator, "test": resumed_loaders[2].generator},
+        execution_plan=_execution_plan(resumed_model, config),
     )
     manifest = load_checkpoint(
         tmp_path / "resumed" / "last.pt",

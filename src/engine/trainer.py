@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from contextlib import nullcontext
 from dataclasses import dataclass
 import time
 from typing import Any, Iterable, Mapping
@@ -17,9 +16,9 @@ from .checkpoint import save_checkpoint
 from .evaluator import evaluate
 from .model_execution import (
     ExecutionPlan,
-    build_execution_plan,
     execute_training_backward,
 )
+from .precision import PrecisionPolicy, resolve_precision_policy
 from .reproducibility import capture_rng_state, state_dict_hash
 
 
@@ -50,7 +49,7 @@ class Trainer:
         output_dir,
         dataloader_generators: Mapping[str, torch.Generator] | None = None,
         amp_enabled: bool | None = None,
-        execution_plan: ExecutionPlan | None = None,
+        execution_plan: ExecutionPlan,
     ) -> None:
         self.model = model.to(device)
         self.config = config
@@ -59,14 +58,17 @@ class Trainer:
         self.normalization = normalization
         self.output_dir = output_dir
         self.dataloader_generators = dict(dataloader_generators or {})
-        self.execution_plan = execution_plan or build_execution_plan(
-            self.model,
-            total_nodes=int(config.data["num_nodes"]),
-            node_shared_chunk_size=int(config.runtime["node_shared_chunk_size"]),
-        )
+        self.execution_plan = execution_plan
         training = config.training
-        self.amp_enabled = bool(training["amp"] if amp_enabled is None else amp_enabled)
-        if self.amp_enabled and self.device.type != "cuda":
+        amp_configured = bool(training["amp"] if amp_enabled is None else amp_enabled)
+        self.precision: PrecisionPolicy = resolve_precision_policy(
+            device=self.device,
+            amp_configured=amp_configured,
+            amp_dtype=str(training["amp_dtype"]),
+            amp_cache_enabled=bool(training["amp_cache_enabled"]),
+        )
+        self.amp_enabled = self.precision.amp_effective
+        if self.precision.amp_configured and self.device.type != "cuda":
             raise RuntimeError("AMP training requires CUDA; CPU fallback is forbidden")
         betas = tuple(float(value) for value in training["betas"])
         self.optimizer = torch.optim.Adam(
@@ -95,14 +97,7 @@ class Trainer:
         self.train_batch_order: list[list[int]] = []
 
     def _autocast(self):
-        if not self.amp_enabled:
-            return nullcontext()
-        return torch.autocast(
-            device_type="cuda",
-            dtype=torch.float16,
-            enabled=True,
-            cache_enabled=bool(self.config.training["amp_cache_enabled"]),
-        )
+        return self.precision.autocast()
 
     def _update(self, batches: list[ForecastBatch]) -> float:
         if not batches:
