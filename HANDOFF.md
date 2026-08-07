@@ -110,3 +110,16 @@ BatchNorm 则保留完整节点执行，不改为 LayerNorm。正式 compatible 
 Crossformer 相关 4 项暂标记为未运行环境阻塞，其余共享测试通过。尚未完成项是
 在对应 `env_tslib`/`env_tsl` 和真实数据上按固定序列完成基准模型的 GPU 验收；不
 将此分支用于 RA-DS-PFD 开发。
+
+### NodeShared software closeout
+
+NodeShared software closeout complete：`runtime.node_shared_chunk_size` 的唯一
+运行值来源是 `configs/experiment.yaml`，production code 不提供独立 fallback；
+Resume compatibility 只约束当前 `ExecutionPlan` 实际使用
+`node_shared_microbatch` 的模型，`full_nodes`/`full_spatiotemporal` 不因 chunk
+值变化失效。Formal shape validation 已改为 resolved AMP semantics。
+
+本次 target GPU 当前被其他任务占用，因此 LSTM/Crossformer/STCN GPU gate 均为
+`NOT EXECUTED — target GPU currently occupied`；real CUDA/cuDNN LSTM
+recurrent-dropout two-pass replay 仍 pending。`node_shared_chunk_size` 保持
+`32`，未下调到 `16` 或 `8`。
