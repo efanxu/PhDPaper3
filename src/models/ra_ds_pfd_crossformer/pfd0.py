@@ -7,10 +7,15 @@ sees labels, masks, power columns, or any other feature.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from math import ceil
+from pathlib import Path
+from typing import Any
 
 import torch
 from torch import nn
+
+from integrations.time_series_library import load_time_series_library_model
 
 
 def build_wspd_level_diff1(x: torch.Tensor, wspd_index: int) -> torch.Tensor:
@@ -46,8 +51,8 @@ class PFD0SegmentEmbedding(nn.Module):
         self.dropout = nn.Dropout(float(dropout))
 
     def forward(self, candidates: torch.Tensor) -> torch.Tensor:
-        if candidates.ndim != 4 or candidates.shape[-1] != 2:
-            raise ValueError("PFD0 candidates must have shape (B, L, N, 2)")
+        if candidates.ndim != 4 or candidates.shape[-1] not in (1, 2):
+            raise ValueError("PFD0 candidates must have shape (B, L, N, 1 or 2)")
         batch, length, nodes, candidate_count = candidates.shape
         segment_count = ceil(length / self.seg_len)
         if segment_count != self.max_segments:
@@ -145,9 +150,219 @@ class PFD0Propagation(nn.Module):
         return scale0, scale1
 
 
+class CanonicalCrossTime(nn.Module):
+    """The upstream Crossformer Cross-Time stage without Cross-Dimension."""
+
+    def __init__(
+        self,
+        *,
+        source_root: Path,
+        d_model: int,
+        n_heads: int,
+        d_ff: int,
+        factor: int,
+        dropout: float,
+    ) -> None:
+        super().__init__()
+        upstream = load_time_series_library_model("Crossformer", source_root=source_root)
+        self.time_attention = upstream.AttentionLayer(
+            upstream.FullAttention(
+                False,
+                int(factor),
+                attention_dropout=float(dropout),
+                output_attention=False,
+            ),
+            int(d_model),
+            int(n_heads),
+        )
+        self.dropout = nn.Dropout(float(dropout))
+        self.norm1 = nn.LayerNorm(int(d_model))
+        self.norm2 = nn.LayerNorm(int(d_model))
+        self.MLP1 = nn.Sequential(
+            nn.Linear(int(d_model), int(d_ff)),
+            nn.GELU(),
+            nn.Linear(int(d_ff), int(d_model)),
+        )
+
+    def forward(self, tokens: torch.Tensor) -> torch.Tensor:
+        if tokens.ndim != 4:
+            raise ValueError("canonical propagation Cross-Time expects (B, N, S, D)")
+        batch, nodes, segments, d_model = tokens.shape
+        time_in = tokens.reshape(batch * nodes, segments, d_model)
+        time_enc, _ = self.time_attention(
+            time_in,
+            time_in,
+            time_in,
+            attn_mask=None,
+            tau=None,
+            delta=None,
+        )
+        encoded = time_in + self.dropout(time_enc)
+        encoded = self.norm1(encoded)
+        encoded = encoded + self.dropout(self.MLP1(encoded))
+        encoded = self.norm2(encoded)
+        return encoded.reshape(batch, nodes, segments, d_model)
+
+
+class CrossTimeThenFusionPFD0Propagation(nn.Module):
+    """PFD0 variant that keeps level and diff1 independent through each scale."""
+
+    def __init__(
+        self,
+        *,
+        lookback: int,
+        seg_len: int,
+        win_size: int,
+        d_model: int,
+        n_heads: int,
+        d_ff: int,
+        factor: int,
+        dropout: float,
+        wspd_index: int,
+        source_root: Path,
+    ) -> None:
+        super().__init__()
+        self.lookback = int(lookback)
+        self.seg_len = int(seg_len)
+        self.win_size = int(win_size)
+        self.wspd_index = int(wspd_index)
+        self.scale0_segments = ceil(self.lookback / self.seg_len)
+        self.scale1_segments = ceil(self.scale0_segments / self.win_size)
+        # The candidate embeddings are intentionally separate.  This keeps
+        # the old-concept candidate branches independent until Wind Fusion.
+        self.segment_embeddings = nn.ModuleList(
+            [
+                PFD0SegmentEmbedding(
+                    self.seg_len,
+                    int(d_model),
+                    self.scale0_segments,
+                    float(dropout),
+                )
+                for _ in range(2)
+            ]
+        )
+        self.scale0_cross_time = nn.ModuleList(
+            [
+                CanonicalCrossTime(
+                    source_root=source_root,
+                    d_model=int(d_model),
+                    n_heads=int(n_heads),
+                    d_ff=int(d_ff),
+                    factor=int(factor),
+                    dropout=float(dropout),
+                )
+                for _ in range(2)
+            ]
+        )
+        self.scale1_merging = PFD0SegmentMerging(int(d_model), self.win_size)
+        self.scale1_cross_time = nn.ModuleList(
+            [
+                CanonicalCrossTime(
+                    source_root=source_root,
+                    d_model=int(d_model),
+                    n_heads=int(n_heads),
+                    d_ff=int(d_ff),
+                    factor=int(factor),
+                    dropout=float(dropout),
+                )
+                for _ in range(2)
+            ]
+        )
+        self.wind_fusion = nn.Sequential(
+            nn.Linear(2 * int(d_model), int(d_model)),
+            nn.GELU(),
+            nn.Linear(int(d_model), int(d_model)),
+        )
+        self.scale1_wind_fusion = nn.Sequential(
+            nn.Linear(2 * int(d_model), int(d_model)),
+            nn.GELU(),
+            nn.Linear(int(d_model), int(d_model)),
+        )
+        self.execution_trace: list[str] = []
+
+    def candidate_history(self, x: torch.Tensor) -> torch.Tensor:
+        return build_wspd_level_diff1(x, self.wspd_index)
+
+    def _embed_candidate(self, candidate: torch.Tensor, index: int) -> torch.Tensor:
+        # PFD0SegmentEmbedding keeps candidate axes explicit; squeeze only the
+        # singleton candidate axis after its canonical patching/position path.
+        embedded = self.segment_embeddings[index](candidate.unsqueeze(-1))
+        return embedded.squeeze(2)
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        candidates = self.candidate_history(x)
+        self.execution_trace = []
+        scale0_candidates: list[torch.Tensor] = []
+        for index in range(2):
+            embedded = self._embed_candidate(candidates[..., index], index)
+            self.execution_trace.append(f"scale0_candidate_{index}_embedding")
+            encoded = self.scale0_cross_time[index](embedded)
+            self.execution_trace.append(f"scale0_candidate_{index}_cross_time")
+            scale0_candidates.append(encoded)
+        scale0 = self.wind_fusion(torch.cat(scale0_candidates, dim=-1))
+        self.execution_trace.append("scale0_fusion")
+
+        scale1_candidates: list[torch.Tensor] = []
+        for index, candidate in enumerate(scale0_candidates):
+            merged = self.scale1_merging(candidate)
+            self.execution_trace.append(f"scale1_candidate_{index}_merge")
+            encoded = self.scale1_cross_time[index](merged)
+            self.execution_trace.append(f"scale1_candidate_{index}_cross_time")
+            scale1_candidates.append(encoded)
+        scale1 = self.scale1_wind_fusion(torch.cat(scale1_candidates, dim=-1))
+        self.execution_trace.append("scale1_fusion")
+        if scale0.shape[2] != self.scale0_segments or scale1.shape[2] != self.scale1_segments:
+            raise AssertionError("PFD0 cross-time segment schedule does not match configured scales")
+        return scale0, scale1
+
+
+def build_pfd0_propagation(
+    mode: str,
+    *,
+    lookback: int,
+    seg_len: int,
+    win_size: int,
+    d_model: int,
+    n_heads: int,
+    d_ff: int,
+    factor: int,
+    dropout: float,
+    wspd_index: int,
+    source_root: Path,
+) -> nn.Module:
+    """Construct one of the two explicit PFD0 propagation encoder modes."""
+
+    if mode == "segment_fusion":
+        return PFD0Propagation(
+            lookback=lookback,
+            seg_len=seg_len,
+            win_size=win_size,
+            d_model=d_model,
+            dropout=dropout,
+            wspd_index=wspd_index,
+        )
+    if mode == "cross_time_then_fusion":
+        return CrossTimeThenFusionPFD0Propagation(
+            lookback=lookback,
+            seg_len=seg_len,
+            win_size=win_size,
+            d_model=d_model,
+            n_heads=n_heads,
+            d_ff=d_ff,
+            factor=factor,
+            dropout=dropout,
+            wspd_index=wspd_index,
+            source_root=source_root,
+        )
+    raise ValueError(f"unsupported propagation_encoder_mode: {mode}")
+
+
 __all__ = [
+    "CanonicalCrossTime",
+    "CrossTimeThenFusionPFD0Propagation",
     "PFD0Propagation",
     "PFD0SegmentEmbedding",
     "PFD0SegmentMerging",
+    "build_pfd0_propagation",
     "build_wspd_level_diff1",
 ]

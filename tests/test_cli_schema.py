@@ -107,6 +107,7 @@ def test_old_user_entrypoints_are_removed_and_business_modules_have_no_parser() 
         "_bootstrap.py",
         "run.py",
         "generate_command_reference.py",
+        "build_ra_ds_pfd_relation.py",
     }
 
     cli_dir = ROOT / "src" / "cli"

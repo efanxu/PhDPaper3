@@ -188,9 +188,31 @@ AMP float16、edge chunk 128 在两个独立进程中完成 forward/backward/opt
 output/loss/gradient finite，状态哈希一致，峰值 `92.48 / 116 MiB`；P2 focused
 测试为 `8 passed`。这只是 enabled P2 smoke 证据，不是 Full。
 
-当前工作区没有正式 134 节点 enabled P2 relation NPZ（要求的 `N=134,L=144,C=16,
-H=10` 真实 artifact），因此 P2 正式 GPU、20 updates、Full 和正式 P2 Repeatability
-标记为 `NOT RUN`，不得把 3 节点夹具或历史临时审计资源冒充正式验收。没有 OOM 证据，
-因此未实现 activation checkpointing，也未改变 edge chunk、模型结构、batch、loss 或
-训练协议。该 P2 专项只进入 `main`，不得将 `baseline-models` 整体合入 `main`，也不得
-把 RA-DS-PFD 代码带入 `baseline-models`。
+在本任务开始前工作区没有正式 134 节点 enabled P2 relation NPZ；当时的 P2 正式 GPU、
+20 updates、Full 和正式 P2 Repeatability 因此标记为 `NOT RUN`。该历史状态不代表本次
+comparison foundation 的一次性形状验收。没有 OOM 证据，因此未实现 activation
+checkpointing，也未改变模型训练协议。该 P2 专项只进入 `main`，不得将 `baseline-models`
+整体合入 `main`，也不得把 RA-DS-PFD 代码带入 `baseline-models`。
+
+## 12. P2 comparison foundation（2026-08-06）
+
+- TrueUnion 构建器、旧图转换器和 NPZ 写入入口为
+  `src/models/ra_ds_pfd_crossformer/relation_builder.py` 与
+  `scripts/build_ra_ds_pfd_relation.py`；正式本地派生资源为
+  `dataset/derived/ra_ds_pfd/ra_ds_pfd_trueunion_sdwpf_v1.npz`。
+- 正式重建结果为 `N=134,E=1536`，semantic/distance/both 为 `1340/670/474`；
+  与具有 `node_order_hash` 的旧目录 `unified_relation_c86b63279060c5c7` 的
+  node_ids、edge_index、字段名 exact，静态特征 `atol=rtol=1e-5` allclose。较早的
+  `unified_relation_863fb48bb6389791` 缺少可证明的节点顺序字段，转换按协议拒绝。
+- 四轴允许值为：`spatial_query_mode={per_variable,node_pooled}`、
+  `propagation_encoder_mode={segment_fusion,cross_time_then_fusion}`、
+  `turbine_embedding_mode={relation_only,temporal_and_relation}`、
+  `bias_scaling_mode={direct,learnable_per_scale}`。Current P2 是四轴第一项组合；
+  Old-concept endpoint 是四轴第二项组合。
+- 16 个小形状组合均完成 build/forward/backward；正式 `B=32,L=144,N=134,C=16,
+  horizon=10` 两端点在等价 `edge_chunk=512` 下 output/loss/required gradients finite。
+  Current P2 峰值为 `18230.07/19550.0 MiB allocated/reserved`，Old-concept 为
+  `12246.16/12446.0 MiB`；未运行 epoch/Full 训练。
+- 本任务未实现 P3/P4；未运行 R0–R7 Full、多 seed 对照或正式训练。
+- `P2_COMPARISON_FOUNDATION = PASS_WITH_NOTES`；`OLD_RESOURCE_SAFE_TO_DELETE = NO`
+  （未能证明的旧目录仍需用户自行保留/处置）。

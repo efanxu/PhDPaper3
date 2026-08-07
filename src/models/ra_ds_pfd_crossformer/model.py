@@ -12,9 +12,13 @@ import torch
 from models.base import DataInfoView, ForecastModel, ModelInput
 
 from .backbone import CanonicalBackbone, CanonicalTrace
-from .pfd0 import PFD0Propagation
+from .pfd0 import build_pfd0_propagation
 from .relation_resource import RelationResource, load_relation_resource
-from .relation_spatial import RelationBiasProvider, RelationSpatialInsertion
+from .relation_spatial import (
+    RelationBiasProvider,
+    RelationSpatialInsertion,
+    TurbineIdentityEmbedding,
+)
 
 
 _CONFIG_FIELDS = {
@@ -35,6 +39,11 @@ _CONFIG_FIELDS = {
     "gamma_init",
     "relation_resource",
     "spatial_edge_chunk_size",
+    "spatial_query_mode",
+    "propagation_encoder_mode",
+    "turbine_embedding_mode",
+    "bias_scaling_mode",
+    "base_turbine_dim",
 }
 _CANONICAL_CONFIG_FIELDS = {
     "d_model",
@@ -48,9 +57,11 @@ _CANONICAL_CONFIG_FIELDS = {
     "spatial_disabled",
 }
 _POSITIVE_INTEGER_FIELDS = {"d_model", "n_heads", "d_ff", "e_layers", "factor", "seg_len", "win_size"}
-_P2_POSITIVE_INTEGER_FIELDS = {"spatial_heads", "spatial_d_ff", "relation_dim"}
-
-
+_P2_POSITIVE_INTEGER_FIELDS = {"spatial_heads", "spatial_d_ff", "relation_dim", "base_turbine_dim"}
+_SPATIAL_QUERY_MODES = {"per_variable", "node_pooled"}
+_PROPAGATION_ENCODER_MODES = {"segment_fusion", "cross_time_then_fusion"}
+_TURBINE_EMBEDDING_MODES = {"relation_only", "temporal_and_relation"}
+_BIAS_SCALING_MODES = {"direct", "learnable_per_scale"}
 class RADSPFDCrossformer(ForecastModel):
     """Apply one local canonical Crossformer independently to every node."""
 
@@ -82,8 +93,9 @@ class RADSPFDCrossformer(ForecastModel):
         if self.spatial_disabled:
             # These are deliberately None rather than empty modules/buffers:
             # the legacy P1 state_dict remains exactly upstream-canonical.
-            self.pfd0: PFD0Propagation | None = None
+            self.pfd0 = None
             self.relation_bias_provider: RelationBiasProvider | None = None
+            self.turbine_identity = None
             spatial_modules = None
         else:
             if self.wspd_index is None:
@@ -91,6 +103,19 @@ class RADSPFDCrossformer(ForecastModel):
             if relation_resource is None:
                 raise ValueError("enabled relation spatial path requires a validated relation resource")
             d_model = int(model_config["d_model"])
+            spatial_query_mode = str(model_config["spatial_query_mode"])
+            propagation_encoder_mode = str(model_config["propagation_encoder_mode"])
+            turbine_embedding_mode = str(model_config["turbine_embedding_mode"])
+            bias_scaling_mode = str(model_config["bias_scaling_mode"])
+            if turbine_embedding_mode == "temporal_and_relation":
+                self.turbine_identity = TurbineIdentityEmbedding(
+                    self.num_nodes,
+                    int(model_config.get("base_turbine_dim", 16)),
+                    d_model,
+                    int(model_config["relation_dim"]),
+                )
+            else:
+                self.turbine_identity = None
             self.relation_bias_provider = RelationBiasProvider(
                 edge_index=relation_resource.edge_index,
                 edge_static_features=relation_resource.edge_static_features,
@@ -98,14 +123,22 @@ class RADSPFDCrossformer(ForecastModel):
                 spatial_heads=int(model_config["spatial_heads"]),
                 spatial_d_ff=int(model_config["spatial_d_ff"]),
                 relation_dim=int(model_config["relation_dim"]),
+                turbine_embedding_mode=turbine_embedding_mode,
+                bias_scaling_mode=bias_scaling_mode,
+                turbine_identity=self.turbine_identity,
             )
-            self.pfd0 = PFD0Propagation(
+            self.pfd0 = build_pfd0_propagation(
+                propagation_encoder_mode,
                 lookback=self.lookback,
                 seg_len=int(model_config["seg_len"]),
                 win_size=int(model_config["win_size"]),
                 d_model=d_model,
                 dropout=float(model_config["spatial_dropout"]),
                 wspd_index=self.wspd_index,
+                n_heads=int(model_config["n_heads"]),
+                d_ff=int(model_config["d_ff"]),
+                factor=int(model_config["factor"]),
+                source_root=self.source_root,
             )
             spatial_modules = (
                 RelationSpatialInsertion(
@@ -114,6 +147,8 @@ class RADSPFDCrossformer(ForecastModel):
                     spatial_dropout=float(model_config["spatial_dropout"]),
                     gamma_init=float(model_config["gamma_init"]),
                     bias_provider=self.relation_bias_provider,
+                    scale_id=0,
+                    spatial_query_mode=spatial_query_mode,
                     edge_chunk_size=model_config.get("spatial_edge_chunk_size", 128),
                 ),
                 RelationSpatialInsertion(
@@ -122,6 +157,8 @@ class RADSPFDCrossformer(ForecastModel):
                     spatial_dropout=float(model_config["spatial_dropout"]),
                     gamma_init=float(model_config["gamma_init"]),
                     bias_provider=self.relation_bias_provider,
+                    scale_id=1,
+                    spatial_query_mode=spatial_query_mode,
                     edge_chunk_size=model_config.get("spatial_edge_chunk_size", 128),
                 ),
             )
@@ -133,6 +170,7 @@ class RADSPFDCrossformer(ForecastModel):
             model_config=self.model_config,
             num_nodes=self.num_nodes,
             spatial_modules=spatial_modules,
+            turbine_identity=self.turbine_identity,
         )
 
     def _node_history(self, inputs: ModelInput) -> tuple[torch.Tensor, int, int]:
@@ -245,6 +283,14 @@ def _validate_config(model_config: dict[str, Any]) -> None:
     if "pfd_mode" in model_config and model_config["pfd_mode"] != "pfd0":
         raise ValueError("RA-DS-PFD Crossformer only supports pfd_mode=pfd0 in P2")
     if model_config["spatial_disabled"]:
+        for field, allowed in (
+            ("spatial_query_mode", _SPATIAL_QUERY_MODES),
+            ("propagation_encoder_mode", _PROPAGATION_ENCODER_MODES),
+            ("turbine_embedding_mode", _TURBINE_EMBEDDING_MODES),
+            ("bias_scaling_mode", _BIAS_SCALING_MODES),
+        ):
+            if field in model_config and model_config[field] not in allowed:
+                raise ValueError(f"RA-DS-PFD Crossformer {field} has unknown value")
         return
 
     required_p2 = {
@@ -261,7 +307,25 @@ def _validate_config(model_config: dict[str, Any]) -> None:
         raise ValueError(f"RA-DS-PFD Crossformer P2 config is missing field: {missing_p2[0]}")
     if model_config["pfd_mode"] != "pfd0":
         raise ValueError("RA-DS-PFD Crossformer only supports pfd_mode=pfd0 in P2")
+    mode_fields = {
+        "spatial_query_mode": _SPATIAL_QUERY_MODES,
+        "propagation_encoder_mode": _PROPAGATION_ENCODER_MODES,
+        "turbine_embedding_mode": _TURBINE_EMBEDDING_MODES,
+        "bias_scaling_mode": _BIAS_SCALING_MODES,
+    }
+    provided_modes = set(model_config).intersection(mode_fields)
+    if provided_modes != set(mode_fields):
+        missing_modes = sorted(set(mode_fields) - provided_modes)
+        raise ValueError(
+            "RA-DS-PFD Crossformer P2 config is missing architecture mode field: "
+            f"{missing_modes[0]}"
+        )
+    for field, allowed in mode_fields.items():
+        if field in model_config and model_config[field] not in allowed:
+            raise ValueError(f"RA-DS-PFD Crossformer {field} has unknown value")
     for name in sorted(_P2_POSITIVE_INTEGER_FIELDS):
+        if name == "base_turbine_dim" and name not in model_config:
+            continue
         value = model_config[name]
         if not isinstance(value, int) or isinstance(value, bool) or value < 1:
             raise ValueError(f"RA-DS-PFD Crossformer {name} must be a positive integer")

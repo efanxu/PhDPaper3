@@ -52,6 +52,10 @@ def _config() -> dict[str, object]:
         "spatial_dropout": 0.0,
         "gamma_init": 0.1,
         "spatial_edge_chunk_size": 2,
+        "spatial_query_mode": "per_variable",
+        "propagation_encoder_mode": "segment_fusion",
+        "turbine_embedding_mode": "relation_only",
+        "bias_scaling_mode": "direct",
         "relation_resource": {
             "file": "tests/fixtures/ra_ds_pfd_relation_small_v1.npz",
         },

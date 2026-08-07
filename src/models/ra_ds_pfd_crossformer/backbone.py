@@ -68,6 +68,7 @@ class CanonicalBackbone(nn.Module):
         model_config: Mapping[str, Any],
         num_nodes: int | None = None,
         spatial_modules: tuple[nn.Module, nn.Module] | None = None,
+        turbine_identity: nn.Module | None = None,
     ) -> None:
         super().__init__()
         self.spatial_enabled = model_config.get("spatial_disabled") is False
@@ -77,10 +78,19 @@ class CanonicalBackbone(nn.Module):
             if spatial_modules is None or len(spatial_modules) != 2:
                 raise ValueError("enabled relation spatial backbone requires two spatial modules")
             self.num_nodes = int(num_nodes)
+            turbine_mode = model_config.get("turbine_embedding_mode", "relation_only")
+            if turbine_mode == "temporal_and_relation" and turbine_identity is None:
+                raise ValueError("temporal_and_relation backbone requires turbine identity")
+            if turbine_mode == "relation_only" and turbine_identity is not None:
+                raise ValueError("relation_only backbone must not receive turbine identity")
+            object.__setattr__(self, "_turbine_identity", turbine_identity)
         else:
             self.num_nodes = None
             if spatial_modules is not None:
                 raise ValueError("spatial modules must not be created when spatial_disabled=true")
+            if turbine_identity is not None:
+                raise ValueError("spatial_disabled=true must not receive turbine identity")
+            object.__setattr__(self, "_turbine_identity", None)
 
         self.enc_in = int(enc_in)
         self.seq_len = int(seq_len)
@@ -326,7 +336,29 @@ class CanonicalBackbone(nn.Module):
             "(b d) seg_num d_model -> b d seg_num d_model",
             d=n_vars,
         )
-        embedded_with_position = encoded + self.enc_pos_embedding
+        if self._turbine_identity is None:
+            embedded_with_position = encoded + self.enc_pos_embedding
+        else:
+            if self.num_nodes is None or encoded.shape[0] % self.num_nodes:
+                raise ValueError("turbine temporal embedding requires node-aligned canonical batches")
+            local_batch = encoded.shape[0] // self.num_nodes
+            encoded_local = encoded.reshape(
+                local_batch,
+                self.num_nodes,
+                encoded.shape[1],
+                encoded.shape[2],
+                encoded.shape[3],
+            )
+            temporal_identity = self._turbine_identity.temporal_tokens().to(
+                device=encoded.device,
+                dtype=encoded.dtype,
+            )
+            embedded_with_position_local = (
+                encoded_local
+                + self.enc_pos_embedding.unsqueeze(0)
+                + temporal_identity
+            )
+            embedded_with_position = embedded_with_position_local.reshape_as(encoded)
         pre_norm = self.pre_norm(embedded_with_position)
 
         scale0_layer = self.encoder.encode_blocks[0].encode_layers[0]
