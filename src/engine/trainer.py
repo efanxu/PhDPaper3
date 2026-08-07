@@ -15,7 +15,11 @@ from models.base import ForecastModel
 
 from .checkpoint import save_checkpoint
 from .evaluator import evaluate
-from .losses import ScoreAlignedHybridTerms, resolve_loss, score_aligned_hybrid_terms
+from .model_execution import (
+    ExecutionPlan,
+    build_execution_plan,
+    execute_training_backward,
+)
 from .reproducibility import capture_rng_state, state_dict_hash
 
 
@@ -46,6 +50,7 @@ class Trainer:
         output_dir,
         dataloader_generators: Mapping[str, torch.Generator] | None = None,
         amp_enabled: bool | None = None,
+        execution_plan: ExecutionPlan | None = None,
     ) -> None:
         self.model = model.to(device)
         self.config = config
@@ -54,6 +59,11 @@ class Trainer:
         self.normalization = normalization
         self.output_dir = output_dir
         self.dataloader_generators = dict(dataloader_generators or {})
+        self.execution_plan = execution_plan or build_execution_plan(
+            self.model,
+            total_nodes=int(config.data["num_nodes"]),
+            node_shared_chunk_size=int(config.runtime["node_shared_chunk_size"]),
+        )
         training = config.training
         self.amp_enabled = bool(training["amp"] if amp_enabled is None else amp_enabled)
         if self.amp_enabled and self.device.type != "cuda":
@@ -104,33 +114,22 @@ class Trainer:
         self.model.train()
         self.optimizer.zero_grad(set_to_none=True)
         loss_name = str(self.config.training["loss"])
-        loss_fn = resolve_loss(loss_name)
-        terms: ScoreAlignedHybridTerms | None = None
-        scalar_losses: list[torch.Tensor] = []
-        for batch in batches:
-            device_batch = batch.to(self.device)
-            with self._autocast():
-                prediction = self.model(device_batch.model_input())
-                if loss_name == "masked_score_aligned_hybrid":
-                    current = score_aligned_hybrid_terms(
-                        prediction,
-                        device_batch.target,
-                        device_batch.target_mask,
-                    )
-                    terms = current if terms is None else terms + current
-                else:
-                    scalar_losses.append(loss_fn(prediction, device_batch.target, device_batch.target_mask))
-        if terms is not None:
-            loss = terms.loss()
-        elif scalar_losses:
-            loss = torch.stack(scalar_losses).mean()
-        else:
-            raise ValueError(f"loss registry entry produced no loss: {loss_name}")
+        backward = (
+            (lambda contribution: self.scaler.scale(contribution).backward())
+            if self.scaler is not None
+            else (lambda contribution: contribution.backward())
+        )
+        execution = execute_training_backward(
+            self.model,
+            batches,
+            device=self.device,
+            plan=self.execution_plan,
+            loss_name=loss_name,
+            autocast=self._autocast,
+            backward=backward,
+        )
         if self.scaler is not None:
-            self.scaler.scale(loss).backward()
             self.scaler.unscale_(self.optimizer)
-        else:
-            loss.backward()
         training = self.config.training
         torch.nn.utils.clip_grad_norm_(
             self.model.parameters(),
@@ -144,7 +143,7 @@ class Trainer:
             self.scaler.update()
         else:
             self.optimizer.step()
-        value = float(loss.detach().float().cpu())
+        value = float(execution.loss)
         if self.first_step_loss is None:
             self.first_step_loss = value
         self.last_step_loss = value
@@ -284,6 +283,7 @@ class Trainer:
                 normalization=self.normalization,
                 horizons=horizons,
                 total_nodes=total_nodes,
+                execution_plan=self.execution_plan,
                 physical_clip=bool(self.config.evaluation["physical_clip"]),
                 physical_min_kw=self.config.evaluation["physical_min_kw"],
                 physical_max_kw=self.config.evaluation["physical_max_kw"],

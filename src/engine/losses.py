@@ -47,8 +47,22 @@ def score_aligned_hybrid_terms(
     prediction: torch.Tensor,
     target: torch.Tensor,
     mask: torch.Tensor,
+    *,
+    allow_empty: bool = False,
 ) -> ScoreAlignedHybridTerms:
-    pred, true = _valid(prediction, target, mask)
+    if prediction.shape != target.shape or mask.shape != target.shape:
+        raise ValueError("prediction, target and mask shapes must match")
+    valid = mask.bool()
+    if not bool(valid.any()):
+        if not allow_empty:
+            raise ValueError("loss or metric batch contains no valid targets")
+        zero = prediction.new_zeros((), dtype=torch.float32)
+        return ScoreAlignedHybridTerms(
+            absolute_error_sum=zero,
+            squared_error_sum=zero.clone(),
+            valid_count=0,
+        )
+    pred, true = prediction[valid], target[valid]
     error = pred - true
     return ScoreAlignedHybridTerms(
         absolute_error_sum=error.abs().sum(),

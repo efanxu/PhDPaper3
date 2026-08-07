@@ -9,13 +9,13 @@ from typing import Any
 import torch
 
 from integrations.time_series_library import load_time_series_library_model_class
-from models.base import DataInfoView, ForecastModel, ModelInput
+from models.base import DataInfoView, ModelInput, NodeSharedForecastModel
 
 
 _CONFIG_FIELDS = {"d_model", "n_heads", "d_ff", "e_layers", "dropout", "factor"}
 
 
-class Crossformer(ForecastModel):
+class Crossformer(NodeSharedForecastModel):
     """Apply one upstream Crossformer instance independently to each node."""
 
     def __init__(
@@ -52,30 +52,19 @@ class Crossformer(ForecastModel):
         )
         self.upstream = upstream_model(upstream_config)
 
-    def forward(self, inputs: ModelInput) -> torch.Tensor:
-        if not isinstance(inputs, ModelInput):
-            raise TypeError("Crossformer expects ModelInput")
-        if any(
-            value is not None
-            for value in (
-                inputs.time_features,
-                inputs.node_features,
-                inputs.adjacency,
-                inputs.static_features,
-            )
-        ):
-            raise ValueError("Crossformer accepts history x only")
-        x = inputs.x
-        if x.ndim != 4:
-            raise ValueError("Crossformer expects x with shape (B, L, N, C)")
+    def forward_node_chunk(
+        self,
+        inputs: ModelInput,
+        node_start: int,
+        node_end: int,
+    ) -> torch.Tensor:
+        x = self._node_chunk_x(
+            inputs,
+            node_start,
+            node_end,
+            model_name="Crossformer",
+        )
         batch, steps, nodes, channels = x.shape
-        if (steps, nodes, channels) != (self.lookback, self.num_nodes, self.input_dim):
-            raise ValueError(
-                "unexpected Crossformer input shape: "
-                f"{tuple(x.shape)}; expected (*, {self.lookback}, {self.num_nodes}, {self.input_dim})"
-            )
-        if not torch.isfinite(x).all():
-            raise FloatingPointError("Crossformer input contains NaN or Inf")
         node_history = x.permute(0, 2, 1, 3).reshape(batch * nodes, steps, channels)
         upstream_output = self.upstream(node_history, None, None, None)
         expected = (batch * nodes, self.horizon, self.input_dim)

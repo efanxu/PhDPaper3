@@ -189,8 +189,8 @@ def test_preflight_checks_target_python_imports_and_model_config() -> None:
         resolved,
         project_root=ROOT,
         device="cpu",
-        model_name="node_shared_lstm",
-        model_config_path=ROOT / "configs" / "models" / "node_shared_lstm.yaml",
+        model_name="lstm",
+        model_config_path=ROOT / "configs" / "models" / "lstm.yaml",
     )
     assert result["environment_id"] == "tslib"
     assert result["python_executable"] == sys.executable

@@ -37,6 +37,7 @@ def test_only_the_four_project_markdown_documents_are_tracked() -> None:
 
 def test_documentation_uses_dataset_and_current_entrypoint() -> None:
     documents = "\n".join((ROOT / path).read_text(encoding="utf-8") for path in ALLOWED_MARKDOWN)
+    assert "node_shared_" + "lstm" not in documents
     assert "data/" not in documents.replace("src/data/", "")
     assert "MIGRATION_REPORT.md" not in documents
     assert "run_all_models.py" not in documents
@@ -85,6 +86,14 @@ def test_model_index_documents_minimal_validation_principle() -> None:
     assert "state_dict_hash" in index
 
 
+def test_model_index_documents_universal_node_shared_execution() -> None:
+    index = (ROOT / "MODEL_INTEGRATION_INDEX.md").read_text(encoding="utf-8")
+    assert "## Universal Node-Shared execution" in index
+    assert "runtime.node_shared_chunk_size" in index
+    assert "32/32/32/32/6" in index
+    assert "BatchNorm" in index
+
+
 def test_command_reference_is_generated_from_current_parser() -> None:
     result = subprocess.run(
         [
@@ -119,5 +128,5 @@ def test_gitignore_allows_small_csv_fixtures_but_keeps_runtime_artifacts_ignored
 def test_readme_only_references_existing_example_models() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert "dlinear" not in readme and "patchtst" not in readme
-    for model in ("node_shared_lstm", "crossformer", "stcn"):
+    for model in ("lstm", "crossformer", "stcn"):
         assert (ROOT / "configs" / "models" / f"{model}.yaml").is_file()

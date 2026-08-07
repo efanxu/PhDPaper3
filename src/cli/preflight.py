@@ -11,6 +11,7 @@ import torch
 from data.loader import load_data
 from data.split import chronological_split
 from data.window import build_window_index
+from engine.model_execution import build_execution_plan
 from models.loader import build_model
 from runtime.config import (
     apply_cli_overrides,
@@ -75,6 +76,11 @@ def run_preflight(
             target_mask=arrays.target_mask,
         )
         model = build_model(model_name, model_config, info)
+        result["execution"] = build_execution_plan(
+            model,
+            total_nodes=int(info.num_nodes),
+            node_shared_chunk_size=int(config.runtime["node_shared_chunk_size"]),
+        ).as_dict()
         result["data_info"] = info.as_dict()
         result["window_counts"] = windows.as_dict()["counts"]
         result["parameter_count"] = sum(parameter.numel() for parameter in model.parameters())
@@ -99,5 +105,10 @@ def run_preflight(
             project_root=root,
         )
         model = build_model(model_name, model_config, info)
+        result["execution"] = build_execution_plan(
+            model,
+            total_nodes=int(info.num_nodes),
+            node_shared_chunk_size=int(config.runtime["node_shared_chunk_size"]),
+        ).as_dict()
         result["parameter_count"] = sum(parameter.numel() for parameter in model.parameters())
     return result

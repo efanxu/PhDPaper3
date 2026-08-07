@@ -22,6 +22,7 @@ from data.split import chronological_split
 from data.window import build_window_index
 from engine.checkpoint import load_checkpoint, read_checkpoint_manifest
 from engine.evaluator import EvaluationResult, evaluate
+from engine.model_execution import ExecutionPlan, build_execution_plan
 from engine.reproducibility import set_seed
 from engine.trainer import TrainResult, Trainer
 from models.loader import build_model
@@ -183,6 +184,7 @@ _CHECKPOINT_CONFIG_PATHS: tuple[tuple[str, ...], ...] = (
     ("training", "amp"),
     ("training", "seed"),
     ("runtime", "reproducibility_mode"),
+    ("runtime", "node_shared_chunk_size"),
 )
 _GRAPH_CHECKPOINT_CONFIG_PATHS = frozenset(
     {
@@ -250,6 +252,7 @@ def _check_checkpoint_compatibility(
             ("training", "train_batch_size"),
             ("training", "val_batch_size"),
             ("training", "test_batch_size"),
+            ("runtime", "node_shared_chunk_size"),
         }:
             continue
         saved = _at_path(saved_config, path)
@@ -316,6 +319,7 @@ def _performance(
     best_epoch: int | None,
     parameter_count: int,
     trainable_parameter_count: int,
+    execution_plan: ExecutionPlan,
 ) -> dict[str, Any]:
     allocated_mb, reserved_mb = _memory_mb(device)
     total_mb = (
@@ -369,6 +373,7 @@ def _performance(
             int(data_info.num_features),
         ],
         "forecast_shape": [int(data_info.num_nodes), int(data_info.max_pred_len)],
+        "execution": execution_plan.as_dict(),
     }
 
 
@@ -575,6 +580,13 @@ def _run_model_impl(
     model_started = time.perf_counter()
     model = build_model(model_name, model_config, data_info)
     model_build_seconds = time.perf_counter() - model_started
+    execution_plan = build_execution_plan(
+        model,
+        total_nodes=int(data_info.num_nodes),
+        node_shared_chunk_size=int(config.runtime["node_shared_chunk_size"]),
+    )
+    resolved["resolved"]["execution"] = execution_plan.as_dict()
+    write_yaml(output_dir / "resolved_config.yaml", resolved)
     parameter_count = int(sum(parameter.numel() for parameter in model.parameters()))
     trainable_parameter_count = int(sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad))
     run_phases["preflight"] = finished_phase(phase="preflight")
@@ -590,6 +602,7 @@ def _run_model_impl(
         "reproducibility_mode": str(config.runtime["reproducibility_mode"]),
         "seed_details": seed_details,
         "cli_overrides": cli_overrides_as_nested(effective_overrides),
+        "execution_plan": execution_plan.as_dict(),
     }
     train_result: TrainResult | None = None
     checkpoint_manifest: dict[str, Any] | None = None
@@ -611,7 +624,7 @@ def _run_model_impl(
             wall_seconds=checkpoint_reload_seconds,
         )
     else:
-        trainer = Trainer(model, config, device=selected_device, model_name=model_name, normalization=normalization, output_dir=output_dir, dataloader_generators={"train": loaders.train.generator, "validation": loaders.validation.generator, "test": loaders.test.generator})
+        trainer = Trainer(model, config, device=selected_device, model_name=model_name, normalization=normalization, output_dir=output_dir, dataloader_generators={"train": loaders.train.generator, "validation": loaders.validation.generator, "test": loaders.test.generator}, execution_plan=execution_plan)
         start_epoch = 1
         resume_state: Mapping[str, Any] | None = None
         if checkpoint_file is not None:
@@ -659,7 +672,7 @@ def _run_model_impl(
         )
     run_phases["evaluation"] = running_phase("validation")
     write_progress("validation")
-    validation = evaluate(model, loaders.validation, device=selected_device, normalization=normalization, horizons=tuple(int(value) for value in config.data["eval_horizons"]), total_nodes=int(data_info.num_nodes), physical_clip=bool(config.evaluation["physical_clip"]), physical_min_kw=config.evaluation["physical_min_kw"], physical_max_kw=config.evaluation["physical_max_kw"], max_batches=final_eval_limit)
+    validation = evaluate(model, loaders.validation, device=selected_device, normalization=normalization, horizons=tuple(int(value) for value in config.data["eval_horizons"]), total_nodes=int(data_info.num_nodes), execution_plan=execution_plan, physical_clip=bool(config.evaluation["physical_clip"]), physical_min_kw=config.evaluation["physical_min_kw"], physical_max_kw=config.evaluation["physical_max_kw"], max_batches=final_eval_limit)
     run_phases["evaluation"] = finished_phase(
         profile=SMOKE if smoke else FULL,
         phase="validation_complete",
@@ -667,7 +680,7 @@ def _run_model_impl(
     )
     run_phases["evaluation"] = running_phase("test")
     write_progress("test")
-    test = evaluate(model, loaders.test, device=selected_device, normalization=normalization, horizons=tuple(int(value) for value in config.data["eval_horizons"]), total_nodes=int(data_info.num_nodes), physical_clip=bool(config.evaluation["physical_clip"]), physical_min_kw=config.evaluation["physical_min_kw"], physical_max_kw=config.evaluation["physical_max_kw"], max_batches=final_eval_limit)
+    test = evaluate(model, loaders.test, device=selected_device, normalization=normalization, horizons=tuple(int(value) for value in config.data["eval_horizons"]), total_nodes=int(data_info.num_nodes), execution_plan=execution_plan, physical_clip=bool(config.evaluation["physical_clip"]), physical_min_kw=config.evaluation["physical_min_kw"], physical_max_kw=config.evaluation["physical_max_kw"], max_batches=final_eval_limit)
     run_phases["evaluation"] = finished_phase(
         profile=SMOKE if smoke else FULL,
         phase="test_complete",
@@ -675,7 +688,7 @@ def _run_model_impl(
     )
     _write_evaluation_outputs(output_dir, validation, test, save_predictions=bool(config.runtime["save_predictions"]), split=evaluation_split)
     _write_history(output_dir / "train_history.csv", train_result.history if train_result else [])
-    performance = _performance(output_dir=output_dir, environment=environment, data_prepare_seconds=data_prepare_seconds, model_build_seconds=model_build_seconds, checkpoint_reload_seconds=checkpoint_reload_seconds, started=started, device=selected_device, data_info=data_info, config=config, train_result=train_result, validation=validation, test=test, best_epoch=checkpoint_manifest.get("epoch") if checkpoint_manifest else None, parameter_count=parameter_count, trainable_parameter_count=trainable_parameter_count)
+    performance = _performance(output_dir=output_dir, environment=environment, data_prepare_seconds=data_prepare_seconds, model_build_seconds=model_build_seconds, checkpoint_reload_seconds=checkpoint_reload_seconds, started=started, device=selected_device, data_info=data_info, config=config, train_result=train_result, validation=validation, test=test, best_epoch=checkpoint_manifest.get("epoch") if checkpoint_manifest else None, parameter_count=parameter_count, trainable_parameter_count=trainable_parameter_count, execution_plan=execution_plan)
     write_json(output_dir / "performance.json", performance)
     elapsed = time.perf_counter() - started
     peak_allocated = int(torch.cuda.max_memory_allocated(selected_device)) if selected_device.type == "cuda" else None
@@ -735,6 +748,7 @@ def _run_model_impl(
                 legacy_reproducibility_mode_unknown
             ),
             "reproducibility": seed_details,
+            "execution": execution_plan.as_dict(),
         },
         "runtime_overrides": {"smoke": bool(smoke), "smoke_epochs": int(smoke_epochs or 1) if smoke else None, "smoke_max_train_updates": int(smoke_max_train_updates or 2) if smoke else None, "smoke_max_eval_batches": int(smoke_max_eval_batches or 2) if smoke else None},
         "initial_weight_hash": train_result.initial_state_hash if train_result else None,
@@ -758,6 +772,7 @@ def _run_model_impl(
         },
         "first_step_loss": train_result.first_step_loss if train_result else None,
         "checkpoint_manifest": public_checkpoint_manifest,
+        "execution": execution_plan.as_dict(),
         "validation_monitor": validation.metrics["monitor"],
         "test_monitor": test.metrics["monitor"],
         "final_evaluation_max_batches": final_eval_limit,

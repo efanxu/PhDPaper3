@@ -517,6 +517,7 @@ model_config_path = Path(sys.argv[4]).resolve()
 try:
     from models.base import DataInfoView
     from models.loader import build_model, load_model_module
+    from engine.model_execution import build_execution_plan
     from runtime.config import load_experiment_config, load_model_config
 
     config = load_experiment_config(config_path)
@@ -537,6 +538,11 @@ try:
         project_root=project_root,
     )
     model = build_model(model_name, model_config, info)
+    execution = build_execution_plan(
+        model,
+        total_nodes=int(info.num_nodes),
+        node_shared_chunk_size=int(config.runtime["node_shared_chunk_size"]),
+    ).as_dict()
 except Exception as exc:
     fail("model", str(exc))
 
@@ -544,6 +550,7 @@ print(json.dumps({
     "ok": True,
     "model": model_name,
     "parameter_count": sum(parameter.numel() for parameter in model.parameters()),
+    "execution": execution,
 }))
 '''
 
@@ -730,4 +737,5 @@ def preflight_model(
         "model": model_name,
         "runtime_environment": resolved_environment.environment_id,
         "parameter_count": payload.get("parameter_count"),
+        "execution": payload.get("execution"),
     }

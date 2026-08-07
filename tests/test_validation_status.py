@@ -84,7 +84,7 @@ def test_validation_status_write_is_atomic_and_always_v2(tmp_path: Path) -> None
         path,
         {
             "schema_version": 1,
-            "model": "node_shared_lstm",
+            "model": "lstm",
             "status": PASS,
             "classification": "PASS_RESOLVED_SHAPE",
             "phase": "backward_complete",
@@ -119,7 +119,7 @@ def test_missing_shape_worker_status_becomes_worker_crash(tmp_path: Path) -> Non
 
 def test_train_worker_failure_finalizes_existing_run_info(monkeypatch, tmp_path: Path) -> None:
     config = Path(__file__).resolve().parents[1] / "configs" / "experiment.yaml"
-    output = tmp_path / "results" / "node_shared_lstm" / "failure"
+    output = tmp_path / "results" / "lstm" / "failure"
     output.mkdir(parents=True)
     (output / "run_info.json").write_text(
         json.dumps({"status": "RUNNING", "phase": "forward", "start_time": "start", "phases": {}}),
@@ -133,7 +133,7 @@ def test_train_worker_failure_finalizes_existing_run_info(monkeypatch, tmp_path:
     monkeypatch.setattr(train, "_run_model_impl", fail)
     with pytest.raises(RuntimeError, match="synthetic forward failure"):
         train.run_model(
-            model_name="node_shared_lstm",
+            model_name="lstm",
             config_path=config,
             output_root=tmp_path / "results",
             run_id="failure",
@@ -155,7 +155,7 @@ def test_environment_preflight_failure_is_persisted_at_batch_boundary(monkeypatc
 
     monkeypatch.setattr(orchestrator, "_prepare_batch_environments", fail)
     result = orchestrator.run_training_models(
-        models=["node_shared_lstm"],
+        models=["lstm"],
         config_path=config,
         model_config_path=None,
         run_id="environment-failure",

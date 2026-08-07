@@ -11,7 +11,7 @@ def test_run_id_finds_best_checkpoint_and_writes_evaluate_id(monkeypatch, tmp_pa
     config = tmp_path / "configs" / "experiment.yaml"
     config.parent.mkdir()
     config.write_text("{}\n", encoding="utf-8")
-    source = tmp_path / "results" / "node_shared_lstm" / "source" / "best.pt"
+    source = tmp_path / "results" / "lstm" / "source" / "best.pt"
     source.parent.mkdir(parents=True)
     source.write_bytes(b"checkpoint")
     calls = []
@@ -22,7 +22,7 @@ def test_run_id_finds_best_checkpoint_and_writes_evaluate_id(monkeypatch, tmp_pa
 
     monkeypatch.setattr(evaluate, "run_evaluate_model", fake_run_evaluate_model)
     result = evaluate.evaluate_checkpoint(
-        model_name="node_shared_lstm",
+        model_name="lstm",
         config_path=config,
         model_config_path=None,
         checkpoint=None,
@@ -41,7 +41,7 @@ def test_missing_run_id_checkpoint_fails_before_run_model(tmp_path: Path) -> Non
     config.write_text("{}\n", encoding="utf-8")
     with pytest.raises(FileNotFoundError, match="no checkpoint found"):
         evaluate.evaluate_checkpoint(
-            model_name="node_shared_lstm",
+            model_name="lstm",
             config_path=config,
             model_config_path=None,
             checkpoint=None,
@@ -62,7 +62,7 @@ def test_explicit_checkpoint_remains_supported(monkeypatch, tmp_path: Path) -> N
 
     monkeypatch.setattr(evaluate, "run_evaluate_model", fake_run_evaluate_model)
     evaluate.evaluate_checkpoint(
-        model_name="node_shared_lstm",
+        model_name="lstm",
         config_path=tmp_path / "configs" / "experiment.yaml",
         model_config_path=None,
         checkpoint=checkpoint,

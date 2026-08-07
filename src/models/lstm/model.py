@@ -1,4 +1,4 @@
-"""The old validated NodeSharedLSTM computation graph at the new boundary."""
+"""Validated shared-parameter LSTM adapter."""
 
 from __future__ import annotations
 
@@ -7,10 +7,10 @@ from typing import Any
 import torch
 from torch import nn
 
-from models.base import DataInfoView, ForecastModel, ModelInput
+from models.base import DataInfoView, ModelInput, NodeSharedForecastModel
 
 
-class NodeSharedLSTM(ForecastModel):
+class LSTM(NodeSharedForecastModel):
     def __init__(
         self,
         *,
@@ -39,32 +39,30 @@ class NodeSharedLSTM(ForecastModel):
         )
         self.prediction_head = nn.Linear(self.hidden_dim, self.horizon)
 
-    def forward(self, inputs: ModelInput) -> torch.Tensor:
-        if not isinstance(inputs, ModelInput):
-            raise TypeError("NodeSharedLSTM expects ModelInput")
-        if any(
-            value is not None
-            for value in (
-                inputs.time_features,
-                inputs.node_features,
-                inputs.adjacency,
-                inputs.static_features,
-            )
-        ):
-            raise ValueError("NodeSharedLSTM accepts history x only")
-        x = inputs.x
-        if x.ndim != 4:
-            raise ValueError("expected x with shape (B, L, N, C)")
+    def forward_node_chunk(
+        self,
+        inputs: ModelInput,
+        node_start: int,
+        node_end: int,
+    ) -> torch.Tensor:
+        x = self._node_chunk_x(
+            inputs,
+            node_start,
+            node_end,
+            model_name="LSTM",
+        )
         batch, steps, nodes, channels = x.shape
-        expected = (self.lookback, self.num_nodes, self.input_dim)
-        if (steps, nodes, channels) != expected:
-            raise ValueError(f"unexpected input shape: {tuple(x.shape)}; expected (*, {expected[0]}, {expected[1]}, {expected[2]})")
         node_history = x.permute(0, 2, 1, 3).contiguous().view(
             batch * nodes, steps, channels
         )
         _, (hidden, _) = self.lstm(node_history)
         output = self.prediction_head(hidden[-1]).view(batch, nodes, self.horizon)
-        return self.validate_output(output, batch=batch, nodes=nodes, horizon=self.horizon)
+        return self.validate_output(
+            output,
+            batch=batch,
+            nodes=nodes,
+            horizon=self.horizon,
+        )
 
     def canonical_model_config(self) -> dict[str, Any]:
         return {
@@ -78,15 +76,15 @@ class NodeSharedLSTM(ForecastModel):
         }
 
 
-def build_model(model_config: dict[str, Any], data_info: DataInfoView) -> NodeSharedLSTM:
+def build_model(model_config: dict[str, Any], data_info: DataInfoView) -> LSTM:
     expected = {"hidden_dim", "num_layers", "dropout"}
     unknown = sorted(set(model_config) - expected)
     missing = sorted(expected - set(model_config))
     if unknown:
-        raise ValueError(f"NodeSharedLSTM model config has unknown field: {unknown[0]}")
+        raise ValueError(f"LSTM model config has unknown field: {unknown[0]}")
     if missing:
-        raise ValueError(f"NodeSharedLSTM model config is missing field: {missing[0]}")
-    return NodeSharedLSTM(
+        raise ValueError(f"LSTM model config is missing field: {missing[0]}")
+    return LSTM(
         num_nodes=data_info.num_nodes,
         input_dim=data_info.num_features,
         lookback=data_info.lookback,

@@ -9,7 +9,12 @@ import yaml
 
 from models.base import DataInfoView, ForecastModel
 from models import loader as model_loader
-from runtime.config import ConfigError, load_model_config, load_model_config_document
+from runtime.config import (
+    ConfigError,
+    load_experiment_config,
+    load_model_config,
+    load_model_config_document,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,9 +27,14 @@ def _write_model(tmp_path: Path, value: dict) -> Path:
 
 
 def test_model_yaml_uses_new_shape_and_build_boundary_is_model_only() -> None:
-    document = load_model_config_document(ROOT / "configs" / "models" / "node_shared_lstm.yaml")
+    document = load_model_config_document(ROOT / "configs" / "models" / "lstm.yaml")
     assert document["runtime"] == {"environment": "tslib"}
-    assert load_model_config(ROOT / "configs" / "models" / "node_shared_lstm.yaml") == document["model"]
+    assert load_model_config(ROOT / "configs" / "models" / "lstm.yaml") == document["model"]
+
+
+def test_node_shared_chunk_is_public_runtime_only() -> None:
+    config = load_experiment_config(ROOT / "configs" / "experiment.yaml")
+    assert config.runtime["node_shared_chunk_size"] == 32
 
 
 def test_build_model_receives_only_model_mapping(monkeypatch, tmp_path: Path) -> None:
@@ -94,6 +104,7 @@ def test_arbitrary_nested_model_parameters_are_allowed(tmp_path: Path) -> None:
         {"nested": {"training": {"epochs": 2}}},
         {"items": [{"data": {"lookback": 12}}]},
         {"learning_rate": 0.001},
+        {"node_shared_chunk_size": 16},
     ],
 )
 def test_public_parameters_are_rejected_recursively(tmp_path: Path, leaked: dict) -> None:

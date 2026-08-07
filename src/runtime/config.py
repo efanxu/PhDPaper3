@@ -127,7 +127,13 @@ _EVALUATION_KEYS = {
     "checkpoint_selection",
 }
 _CHECKPOINT_KEYS = {"split", "horizon", "metric", "mode"}
-_RUNTIME_KEYS = {"num_workers", "reproducibility_mode", "save_predictions", "pin_memory"}
+_RUNTIME_KEYS = {
+    "num_workers",
+    "reproducibility_mode",
+    "save_predictions",
+    "pin_memory",
+    "node_shared_chunk_size",
+}
 _RESOURCES_KEYS = {"graph"}
 _GRAPH_KEYS = {"type", "location_file", "k", "symmetrize", "self_loops", "weighting"}
 
@@ -164,6 +170,11 @@ _MODEL_FORBIDDEN_KEYS = {
     "reproducibility_mode",
     "optimizer",
     "learning_rate",
+    "node_shared_chunk_size",
+    "node_chunk_size",
+    "microbatch",
+    "execution_mode",
+    "batchnorm_policy",
 }
 _MODEL_RUNTIME_KEYS = {"environment"}
 _MODEL_ENVIRONMENTS = {"tslib", "tsl"}
@@ -401,6 +412,7 @@ def _validate_experiment(values: dict[str, Any]) -> None:
         )
     for name in ("save_predictions", "pin_memory"):
         _boolean(runtime[name], f"runtime.{name}")
+    _integer(runtime["node_shared_chunk_size"], "runtime.node_shared_chunk_size", minimum=1)
 
 
 def load_experiment_config(path: str | Path = "configs/experiment.yaml") -> ExperimentConfig:

@@ -32,8 +32,8 @@ def test_all_public_help_commands_succeed() -> None:
 
 
 def test_public_override_defaults_are_none() -> None:
-    args = build_parser().parse_args(["train", "--model", "node_shared_lstm"])
-    assert args.model == ["node_shared_lstm"]
+    args = build_parser().parse_args(["train", "--model", "lstm"])
+    assert args.model == ["lstm"]
     assert args.lookback is None
     assert args.batch_size is None
     assert args.eval_batch_size is None
@@ -46,7 +46,7 @@ def test_public_override_defaults_are_none() -> None:
 
 def test_environment_preflight_only_is_train_diagnostic_flag() -> None:
     args = build_parser().parse_args(
-        ["train", "--model", "node_shared_lstm", "--environment-preflight-only"]
+        ["train", "--model", "lstm", "--environment-preflight-only"]
     )
     assert args.environment_preflight_only is True
 
@@ -55,21 +55,21 @@ def test_environment_preflight_only_is_available_for_diagnostic_commands() -> No
     parser = build_parser()
     for command in ("train", "check", "preflight", "repeatability"):
         args = parser.parse_args(
-            [command, "--model", "node_shared_lstm", "--environment-preflight-only"]
+            [command, "--model", "lstm", "--environment-preflight-only"]
         )
         assert args.environment_preflight_only is True
 
 
 def test_model_accepts_one_or_many_and_legacy_batch_is_gone() -> None:
-    args = build_parser().parse_args(["train", "--model", "node_shared_lstm", "dlinear"])
-    assert args.model == ["node_shared_lstm", "dlinear"]
+    args = build_parser().parse_args(["train", "--model", "lstm", "dlinear"])
+    assert args.model == ["lstm", "dlinear"]
     with pytest.raises(SystemExit):
-        build_parser().parse_args(["train", "--model", "node_shared_lstm", "--models", "dlinear"])
+        build_parser().parse_args(["train", "--model", "lstm", "--models", "dlinear"])
 
 
 def test_run_modes_are_mutually_exclusive_and_loss_choices_are_registry_backed() -> None:
     with pytest.raises(SystemExit):
-        build_parser().parse_args(["train", "--model", "node_shared_lstm", "--resume", "--overwrite"])
+        build_parser().parse_args(["train", "--model", "lstm", "--resume", "--overwrite"])
     parser = build_parser()
     subparsers = next(action for action in parser._actions if action.dest == "command")
     train = subparsers.choices["train"]

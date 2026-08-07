@@ -86,7 +86,7 @@ def _checkpoint_manifest(config_values: dict, model_config: dict, *, mode: str |
     else:
         saved["runtime"]["reproducibility_mode"] = mode
     return {
-        "model": "node_shared_lstm",
+        "model": "lstm",
         "epoch": 1,
         "resolved_config": saved,
         "model_config": model_config,
@@ -96,7 +96,7 @@ def _checkpoint_manifest(config_values: dict, model_config: dict, *, mode: str |
 
 def test_resume_requires_saved_reproducibility_mode_but_evaluate_only_accepts_legacy() -> None:
     config = load_experiment_config(CONFIG_PATH)
-    model_config = load_model_config(ROOT / "configs" / "models" / "node_shared_lstm.yaml")
+    model_config = load_model_config(ROOT / "configs" / "models" / "lstm.yaml")
     old = _checkpoint_manifest(config.values, model_config, mode=None)
     with pytest.raises(ValueError, match=r"missing runtime\.reproducibility_mode"):
         _check_checkpoint_compatibility(
@@ -104,7 +104,7 @@ def test_resume_requires_saved_reproducibility_mode_but_evaluate_only_accepts_le
             config,
             model_config,
             ROOT / "legacy.pt",
-            model_name="node_shared_lstm",
+            model_name="lstm",
             for_resume=True,
         )
     _check_checkpoint_compatibility(
@@ -112,7 +112,7 @@ def test_resume_requires_saved_reproducibility_mode_but_evaluate_only_accepts_le
         config,
         model_config,
         ROOT / "legacy.pt",
-        model_name="node_shared_lstm",
+        model_name="lstm",
         for_resume=False,
     )
 

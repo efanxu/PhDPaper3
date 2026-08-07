@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="full-shape GPU smoke requires CUDA")
 def test_formal_full_shape_forward_backward(monkeypatch) -> None:
     config = load_experiment_config(ROOT / "configs" / "experiment.yaml")
-    model_config = load_model_config(ROOT / "configs" / "models" / "node_shared_lstm.yaml")
+    model_config = load_model_config(ROOT / "configs" / "models" / "lstm.yaml")
     monkeypatch.setenv("PYTHONHASHSEED", str(config.training["seed"]))
     monkeypatch.setenv("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     set_seed(
@@ -32,7 +32,7 @@ def test_formal_full_shape_forward_backward(monkeypatch) -> None:
         config.data["lookback"],
         config.data["max_pred_len"],
     )
-    model = build_model("node_shared_lstm", model_config, info).to(device)
+    model = build_model("lstm", model_config, info).to(device)
     batch_size = config.training["train_batch_size"]
     torch.cuda.reset_peak_memory_stats(device)
     x = torch.randn(batch_size, info.lookback, info.num_nodes, info.num_features, device=device)

@@ -17,7 +17,7 @@ def _write_metrics(path: Path, values: dict[str, float]) -> None:
 
 
 def _result_dir(tmp_path: Path) -> Path:
-    result_dir = tmp_path / "node_shared_lstm" / "paper-run"
+    result_dir = tmp_path / "lstm" / "paper-run"
     result_dir.mkdir(parents=True)
     (result_dir / "resolved_config.yaml").write_text(
         yaml.safe_dump({"data": {"eval_horizons": [3, 6, 10]}}),
@@ -82,7 +82,7 @@ def test_model_comparison_writes_paper_and_flat_csv_from_same_ordered_rows(tmp_p
     result_dir = _result_dir(tmp_path)
     records = [
         {
-            "model": "node_shared_lstm",
+            "model": "lstm",
             "status": PASS,
             "result_dir": str(result_dir),
             "runtime_environment": "tslib",
@@ -110,7 +110,7 @@ def test_model_comparison_writes_paper_and_flat_csv_from_same_ordered_rows(tmp_p
         paper_rows = list(csv.reader(handle))
     assert paper_rows[0] == orchestrator._PAPER_GROUP_HEADER
     assert paper_rows[1] == orchestrator._PAPER_FIELD_HEADER
-    assert [row[0] for row in paper_rows[2:]] == ["node_shared_lstm", "crossformer", "stcn"]
+    assert [row[0] for row in paper_rows[2:]] == ["lstm", "crossformer", "stcn"]
     assert paper_rows[2][4:9] == ["1.000", "2.000", "0.000", "0.600", ""]
     assert paper_rows[2][8] == ""
     assert paper_rows[2][13] == ""
@@ -150,7 +150,7 @@ def test_summarize_rebuilds_legacy_csv_from_existing_top_level_metrics(tmp_path:
                 "operation": "train",
                 "models": [
                     {
-                        "model": "node_shared_lstm",
+                        "model": "lstm",
                         "status": PASS,
                         "classification": "PASS_SMOKE",
                         "result_dir": str(result_dir),

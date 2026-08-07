@@ -60,7 +60,7 @@ def test_namespace_records_only_explicit_values() -> None:
         [
             "train",
             "--model",
-            "node_shared_lstm",
+            "lstm",
             "--batch-size",
             "4",
             "--eval-horizons",
@@ -82,7 +82,7 @@ def test_namespace_records_only_explicit_values() -> None:
 
 def test_eval_batch_size_maps_to_validation_and_test_only() -> None:
     args = build_parser().parse_args(
-        ["train", "--model", "node_shared_lstm", "--batch-size", "4", "--eval-batch-size", "7"]
+        ["train", "--model", "lstm", "--batch-size", "4", "--eval-batch-size", "7"]
     )
     resolved = apply_cli_overrides(load_experiment_config(CONFIG_PATH), args)
     assert resolved.training["train_batch_size"] == 4
@@ -92,10 +92,10 @@ def test_eval_batch_size_maps_to_validation_and_test_only() -> None:
 
 
 def test_evaluate_exposes_eval_batch_size_but_not_training_batch_size() -> None:
-    args = build_parser().parse_args(["evaluate", "--model", "node_shared_lstm", "--eval-batch-size", "5"])
+    args = build_parser().parse_args(["evaluate", "--model", "lstm", "--eval-batch-size", "5"])
     assert args.eval_batch_size == 5
     with pytest.raises(SystemExit):
-        build_parser().parse_args(["evaluate", "--model", "node_shared_lstm", "--batch-size", "5"])
+        build_parser().parse_args(["evaluate", "--model", "lstm", "--batch-size", "5"])
 
 
 @pytest.mark.parametrize(
