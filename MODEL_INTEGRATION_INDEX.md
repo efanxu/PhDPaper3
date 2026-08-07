@@ -142,6 +142,29 @@ The model YAML is structure-only. Public data, split, loss, optimizer, batch
 and evaluation semantics come from `configs/experiment.yaml` and explicit
 command-line overrides.
 
+## Universal Node-Shared execution
+
+Temporal models that apply one independent, parameter-shared forecasting
+function per node inherit `models.base.NodeSharedForecastModel`. The public
+sample batch remains the `training.*_batch_size` value; node micro-batching is
+a separate execution detail from the single public `runtime.node_shared_chunk_size`
+setting, currently `32`. A node count need not divide evenly (134 becomes
+`32/32/32/32/6`); the final range is natural, ordered, unpadded, and is never
+dropped or reweighted. Every optimizer update still covers every node, and
+masked loss uses global absolute-error sum, squared-error sum, and valid-target
+count across all sample accumulation batches and node chunks.
+
+`NodeSharedForecastModel` models without PyTorch batch-dependent normalization
+use the shared node micro-batch executor. Native `_BatchNorm` modules force
+full-node execution and must not be changed to LayerNorm; a formal full-shape
+OOM in that case is recorded as OOM. True spatiotemporal models keep
+`[B,L,N,C]` and use full execution. Chunk size is never model-specific and is
+never changed automatically; compatible NodeShared OOM may only cause one
+uniform public-config reduction after a formal target-GPU gate. `check`,
+`train`, validation, `evaluate`, repeatability and Full all use this same
+execution planner. New model adapters implement only their node-range forward;
+they must not add chunk loops, loss accumulation, optimizer or timing paths.
+
 ## Minimal validation principle
 
 Validation must be proportional to a concrete correctness or recovery risk.

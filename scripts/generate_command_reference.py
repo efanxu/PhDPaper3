@@ -20,33 +20,33 @@ OUTPUT_PATH = ROOT / "docs" / "COMMAND_REFERENCE.md"
 _EXAMPLES = {
     "train": """```powershell
 python scripts\\run.py train `
-  --model node_shared_lstm crossformer stcn `
+  --model lstm crossformer stcn `
   --run-id benchmark_seed2026 `
   --device cuda
 ```""",
     "evaluate": """```powershell
 python scripts\\run.py evaluate `
-  --model node_shared_lstm `
-  --run-id node_shared_lstm_eval `
+  --model lstm `
+  --run-id lstm_eval `
   --device cuda `
-  --checkpoint results\\node_shared_lstm\\node_shared_lstm_seed2026\\best.pt
+  --checkpoint results\\lstm\\lstm_seed2026\\best.pt
 ```""",
     "check": """```powershell
 python scripts\\run.py check `
-  --model node_shared_lstm crossformer stcn `
+  --model lstm crossformer stcn `
   --run-id formal_shape_seed2026 `
   --device cuda `
   --full-shape
 ```""",
     "preflight": """```powershell
 python scripts\\run.py preflight `
-  --model node_shared_lstm `
+  --model lstm `
   --device cuda `
   --batch-size 4
 ```""",
     "repeatability": """```powershell
 python scripts\\run.py repeatability `
-  --model node_shared_lstm `
+  --model lstm `
   --run-id repeatability_seed2026 `
   --device cuda `
   --prediction-atol 1e-6

@@ -3,7 +3,7 @@
 ## 1. 项目目标
 
 PhDPaper3 是可复现的 SDWPF 时间序列预测科研实验工程。统一入口是
-`scripts/run.py`，正式模型为 NodeSharedLSTM、Crossformer 和 STCN；训练、
+`scripts/run.py`，正式模型为 LSTM、Crossformer 和 STCN；训练、
 评估、指标和汇总逻辑由共享路径提供。
 
 ## 2. 当前稳定架构
@@ -31,7 +31,7 @@ schema v1。`validation_status.json` 只是 worker 内部临时通信文件，�
   profile 和必要 artifacts。
 - 已有结果可通过 summarize 重新生成汇总；`model_comparison.csv` 是论文/Excel
   两行分组表头版本，`model_comparison_flat.csv` 是程序读取版本。
-- 保留环境调度、Smoke、Full-shape、Repeatability、Crossformer、STCN、NodeSharedLSTM
+- 保留环境调度、Smoke、Full-shape、Repeatability、Crossformer、STCN、LSTM
   和共享数据流程。
 
 ## 4. 当前限制
@@ -102,7 +102,7 @@ CLI 改变时修改 `command_schema.py` 并运行生成器；普通模型参数�
   padding/数值与 upstream 一致；shared checkpoint reload、forward/backward finite
   和现有 Crossformer/isolation 回归均通过。
 - P2 状态：`PASS_WITH_NOTES`。P2 代码、focused tests、完整 pytest、P1 canonical
-  回归以及 NodeSharedLSTM/Crossformer/STCN 回归均已通过；正式训练仍未执行。
+  回归以及 LSTM/Crossformer/STCN 回归均已通过；正式训练仍未执行。
 - Relation Resource 是模型局部的只读 NPZ 契约，不改公共 `GraphResource`。文件使用
   项目相对路径和版本化文件名；artifact 内部 `schema_version=1`；只允许
   `node_ids`, `edge_index`, `edge_static_features`, `edge_feature_names` 四类数据字段，
@@ -169,13 +169,13 @@ evaluate-only 复用同一 worker 路径，不在父进程直接初始化 seed�
 
 当前 AMP float16 的 Repeatability 固定默认值为 prediction `atol/rtol=5e-3`、
 metric `atol/rtol=2e-4`，仍可由 CLI 显式覆盖，容差写入报告。完整三模型默认双跑已
-通过：Run A 为 `NodeSharedLSTM, Crossformer, STCN`，Run B 为反序；前两者为
+通过：Run A 为 `LSTM, Crossformer, STCN`，Run B 为反序；前两者为
 `EXACT`，STCN 为 `NUMERICAL`，不同 worker PID、exact 字段、预测、validation/test
 metrics 均通过。
 
 共享验收已在本机完成：主工作树完整 pytest `177 passed, 3 skipped`（3 个 skip 是
 `env_tslib` 中正式 `tsl` 只在 `env_tsl` 可用），`env_tsl` 的 STCN 回归 `3 passed`，
-command reference check 通过；NodeSharedLSTM/Crossformer/STCN 的真实数据 preflight、
+command reference check 通过；LSTM/Crossformer/STCN 的真实数据 preflight、
 `B=32,L=144,N=134,C=16` `FORMAL_DEFAULT_SHAPE`、B=32 Smoke 均通过。STCN 使用
 CUDA AMP float16，formal shape 峰值为 `5479.02 MiB allocated / 7086 MiB reserved`，
 Smoke（含 1 optimizer update）峰值为 `4568.45 / 5118 MiB`，未出现 strict 路径的
@@ -193,6 +193,13 @@ output/loss/gradient finite，状态哈希一致，峰值 `92.48 / 116 MiB`；P2
 comparison foundation 的一次性形状验收。没有 OOM 证据，因此未实现 activation
 checkpointing，也未改变模型训练协议。该 P2 专项只进入 `main`，不得将 `baseline-models`
 整体合入 `main`，也不得把 RA-DS-PFD 代码带入 `baseline-models`。
+
+本次公共 NodeShared execution 已同步到 main：sample batch 与 node chunk 分离，唯一
+公共 `runtime.node_shared_chunk_size` 默认值为 `32`；LSTM/Crossformer 使用 shared
+node microbatch，134 个节点自然分为 `32/32/32/32/6`，STCN 与 RA-DS-PFD 等空间模型
+保持完整 `[B,L,N,C]` 执行。NodeShared 检测到原生 BatchNorm 时保留 full-node，不改为
+LayerNorm；正式 compatible NodeShared OOM 只能统一下调公共 chunk，禁止 per-model
+rescue。上述公共改动不改变当前 RA-DS-PFD/P2 的模型代码、relation resource 或状态。
 
 ## 12. P2 comparison foundation（2026-08-06）
 
