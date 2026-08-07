@@ -38,7 +38,7 @@ Single model:
 
 ```powershell
 python scripts\run.py train `
-  --model node_shared_lstm `
+  --model lstm `
   --run-id formal_seed2026 `
   --device cuda
 ```
@@ -47,7 +47,7 @@ Multiple models run one after another in independent Python processes:
 
 ```powershell
 python scripts\run.py train `
-  --model node_shared_lstm crossformer stcn `
+  --model lstm crossformer stcn `
   --run-id mixed_models_seed2026 `
   --device cuda `
   --smoke `
@@ -61,7 +61,7 @@ formal-shape check with no public shape overrides:
 
 ```powershell
 python scripts\run.py check `
-  --model node_shared_lstm crossformer stcn `
+  --model lstm crossformer stcn `
   --run-id formal_shape_seed2026 `
   --device cuda `
   --full-shape
@@ -71,7 +71,7 @@ Environment-only validation:
 
 ```powershell
 python scripts\run.py train `
-  --model node_shared_lstm `
+  --model lstm `
   --run-id environment_preflight `
   --device cuda `
   --environment-preflight-only
@@ -80,15 +80,15 @@ python scripts\run.py train `
 Continue, archive-and-replace, or create a new ID explicitly:
 
 ```powershell
-python scripts\run.py train --model node_shared_lstm crossformer --run-id benchmark_seed2026 --resume
-python scripts\run.py train --model node_shared_lstm --run-id formal_seed2026 --overwrite
-python scripts\run.py train --model node_shared_lstm --run-id formal_seed2026 --id-suffix rerun1
+python scripts\run.py train --model lstm crossformer --run-id benchmark_seed2026 --resume
+python scripts\run.py train --model lstm --run-id formal_seed2026 --overwrite
+python scripts\run.py train --model lstm --run-id formal_seed2026 --id-suffix rerun1
 ```
 
 Repeatability uses two independent workers per model:
 
 ```powershell
-python scripts\run.py repeatability --model node_shared_lstm --run-id repeatability_seed2026 --device cuda
+python scripts\run.py repeatability --model lstm --run-id repeatability_seed2026 --device cuda
 ```
 
 Results are stored in `results/<model>/<run_id>/`. Multi-model dispatch
@@ -102,6 +102,10 @@ runs can be summarized without retraining:
 ```text
 python scripts/run.py summarize --run-id <run-id>
 ```
+
+Temporal NodeShared baselines share parameters across turbines. Their public
+sample batch is unchanged; the shared GPU execution layer uses node chunk 32 by
+default.
 
 Stable status locations are:
 
