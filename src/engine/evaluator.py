@@ -16,9 +16,7 @@ from models.base import ForecastModel
 
 from .metrics import compute_metrics
 from .model_execution import (
-    DEFAULT_NODE_SHARED_CHUNK_SIZE,
     ExecutionPlan,
-    build_execution_plan,
     forward_with_execution_plan,
 )
 from runtime.performance import summarize_evaluation
@@ -43,18 +41,12 @@ def evaluate(
     normalization: NormalizationStats,
     horizons: tuple[int, ...],
     total_nodes: int,
-    execution_plan: ExecutionPlan | None = None,
-    node_shared_chunk_size: int = DEFAULT_NODE_SHARED_CHUNK_SIZE,
+    execution_plan: ExecutionPlan,
     physical_clip: bool = False,
     physical_min_kw: float | None = None,
     physical_max_kw: float | None = None,
     max_batches: int | None = None,
 ) -> EvaluationResult:
-    plan = execution_plan or build_execution_plan(
-        model,
-        total_nodes=total_nodes,
-        node_shared_chunk_size=node_shared_chunk_size,
-    )
     model.eval()
     predictions: list[torch.Tensor] = []
     targets: list[torch.Tensor] = []
@@ -83,7 +75,7 @@ def evaluate(
             prediction = forward_with_execution_plan(
                 model,
                 device_batch.model_input(),
-                plan,
+                execution_plan,
             )
             synchronize()
             forward_seconds.append(time.perf_counter() - forward_started)

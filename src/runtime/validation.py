@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from contextlib import nullcontext
 import sys
 import time
 import traceback
@@ -16,6 +15,7 @@ from data.dataset import ForecastBatch
 from data.loader import load_data
 from engine.model_execution import build_execution_plan, execute_training_backward
 from engine.reproducibility import set_seed
+from engine.precision import resolve_precision_policy
 from models.base import DataInfoView, ModelInput
 from models.loader import build_model
 from runtime.config import (
@@ -110,6 +110,7 @@ def run_shape_validation(
     phase = "config"
     selected_device: torch.device | None = None
     model = None
+    precision = None
     x = target = target_mask = output = loss = None
     overrides = dict(cli_overrides or {})
     payload: dict[str, Any] = {
@@ -148,6 +149,13 @@ def run_shape_validation(
         model_config = load_model_config(model_file)
         selected_device = _choose_device(device)
         payload["device"] = str(selected_device)
+        precision = resolve_precision_policy(
+            device=selected_device,
+            amp_configured=bool(config.training["amp"]),
+            amp_dtype=str(config.training["amp_dtype"]),
+            amp_cache_enabled=bool(config.training["amp_cache_enabled"]),
+        )
+        payload["details"]["precision"] = precision.as_dict()
         seed_details = set_seed(
             int(config.training["seed"]),
             reproducibility_mode=str(config.runtime["reproducibility_mode"]),
@@ -195,7 +203,7 @@ def run_shape_validation(
             device=selected_device,
             plan=execution_plan,
             loss_name=str(config.training["loss"]),
-            autocast=lambda: nullcontext(),
+            autocast=precision.autocast,
             backward=lambda contribution: contribution.backward(),
             capture_prediction=True,
         )

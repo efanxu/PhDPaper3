@@ -22,9 +22,6 @@ from .losses import ScoreAlignedHybridTerms, resolve_loss, score_aligned_hybrid_
 from .reproducibility import capture_rng_state, restore_rng_state
 
 
-DEFAULT_NODE_SHARED_CHUNK_SIZE = 32
-
-
 @dataclass(frozen=True)
 class ExecutionPlan:
     """Resolved execution decision for one model and node count."""
@@ -78,7 +75,7 @@ def build_execution_plan(
     model: ForecastModel,
     *,
     total_nodes: int,
-    node_shared_chunk_size: int = DEFAULT_NODE_SHARED_CHUNK_SIZE,
+    node_shared_chunk_size: int,
 ) -> ExecutionPlan:
     """Resolve one execution mode without model-name special cases."""
 

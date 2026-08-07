@@ -184,7 +184,6 @@ _CHECKPOINT_CONFIG_PATHS: tuple[tuple[str, ...], ...] = (
     ("training", "amp"),
     ("training", "seed"),
     ("runtime", "reproducibility_mode"),
-    ("runtime", "node_shared_chunk_size"),
 )
 _GRAPH_CHECKPOINT_CONFIG_PATHS = frozenset(
     {
@@ -206,6 +205,18 @@ def _at_path(value: Mapping[str, Any], path: tuple[str, ...]) -> Any:
     return current
 
 
+def _saved_execution_plan(
+    manifest: Mapping[str, Any], saved_config: Mapping[str, Any]
+) -> Mapping[str, Any] | None:
+    execution = manifest.get("execution_plan")
+    if isinstance(execution, Mapping):
+        return execution
+    resolved = saved_config.get("resolved")
+    if isinstance(resolved, Mapping) and isinstance(resolved.get("execution"), Mapping):
+        return resolved["execution"]
+    return None
+
+
 def _check_checkpoint_compatibility(
     manifest: Mapping[str, Any],
     config: ExperimentConfig,
@@ -213,6 +224,7 @@ def _check_checkpoint_compatibility(
     checkpoint_path: Path,
     *,
     model_name: str,
+    execution_plan: ExecutionPlan,
     for_resume: bool = True,
 ) -> None:
     if manifest.get("model") not in {None, model_name}:
@@ -241,6 +253,29 @@ def _check_checkpoint_compatibility(
                 f"saved={saved_reproducibility_mode!r}, "
                 f"current={current_reproducibility_mode!r}"
             )
+    if for_resume and execution_plan.uses_node_microbatch:
+        saved_execution = _saved_execution_plan(manifest, saved_config)
+        if (
+            saved_execution is None
+            or saved_execution.get("execution_mode") != "node_shared_microbatch"
+        ):
+            raise ValueError(
+                f"checkpoint {checkpoint_path} predates node_shared_microbatch execution; "
+                "it cannot be resumed with the current node_shared_microbatch plan"
+            )
+        saved_chunk = _at_path(saved_config, ("runtime", "node_shared_chunk_size"))
+        if saved_chunk is None:
+            raise ValueError(
+                f"checkpoint {checkpoint_path} predates node_shared_microbatch execution; "
+                "saved runtime.node_shared_chunk_size is missing"
+            )
+        current_chunk = _at_path(config.values, ("runtime", "node_shared_chunk_size"))
+        if saved_chunk != current_chunk:
+            raise ValueError(
+                f"checkpoint {checkpoint_path} is incompatible at "
+                "runtime.node_shared_chunk_size: "
+                f"saved={saved_chunk!r}, current={current_chunk!r}"
+            )
     for path in _CHECKPOINT_CONFIG_PATHS:
         if path == reproducibility_path:
             # Evaluate-only accepts old or differently configured checkpoints;
@@ -252,7 +287,6 @@ def _check_checkpoint_compatibility(
             ("training", "train_batch_size"),
             ("training", "val_batch_size"),
             ("training", "test_batch_size"),
-            ("runtime", "node_shared_chunk_size"),
         }:
             continue
         saved = _at_path(saved_config, path)
@@ -431,6 +465,7 @@ def _run_model_impl(
             raise ValueError("runtime_environment metadata must include runtime_environment")
     checkpoint_file = _checkpoint_path(resume) if resume is not None else None
     legacy_reproducibility_mode_unknown = False
+    checkpoint_for_compatibility: dict[str, Any] | None = None
     if checkpoint_file is not None:
         checkpoint_for_compatibility = read_checkpoint_manifest(checkpoint_file)
         saved_config = (
@@ -441,14 +476,6 @@ def _run_model_impl(
         legacy_reproducibility_mode_unknown = (
             isinstance(saved_config, Mapping)
             and _at_path(saved_config, ("runtime", "reproducibility_mode")) is None
-        )
-        _check_checkpoint_compatibility(
-            checkpoint_for_compatibility,
-            config,
-            model_config,
-            checkpoint_file,
-            model_name=model_name,
-            for_resume=not evaluate_only,
         )
     run_name = run_id or datetime.now().strftime("run-%Y%m%d-%H%M%S")
     output_dir = run_directory(project_root, output_root, model_name, run_name)
@@ -585,6 +612,16 @@ def _run_model_impl(
         total_nodes=int(data_info.num_nodes),
         node_shared_chunk_size=int(config.runtime["node_shared_chunk_size"]),
     )
+    if checkpoint_for_compatibility is not None:
+        _check_checkpoint_compatibility(
+            checkpoint_for_compatibility,
+            config,
+            model_config,
+            checkpoint_file,
+            model_name=model_name,
+            execution_plan=execution_plan,
+            for_resume=not evaluate_only,
+        )
     resolved["resolved"]["execution"] = execution_plan.as_dict()
     write_yaml(output_dir / "resolved_config.yaml", resolved)
     parameter_count = int(sum(parameter.numel() for parameter in model.parameters()))
