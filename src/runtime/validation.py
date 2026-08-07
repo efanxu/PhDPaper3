@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 import sys
 import time
 import traceback
@@ -11,8 +12,9 @@ from typing import Any
 
 import torch
 
+from data.dataset import ForecastBatch
 from data.loader import load_data
-from engine.losses import resolve_loss
+from engine.model_execution import build_execution_plan, execute_training_backward
 from engine.reproducibility import set_seed
 from models.base import DataInfoView, ModelInput
 from models.loader import build_model
@@ -169,13 +171,37 @@ def run_shape_validation(
             torch.cuda.reset_peak_memory_stats(selected_device)
         phase = "model_build"
         model = build_model(model_name, model_config, data_info).to(selected_device)
+        execution_plan = build_execution_plan(
+            model,
+            total_nodes=int(data_info.num_nodes),
+            node_shared_chunk_size=int(config.runtime["node_shared_chunk_size"]),
+        )
+        payload["details"]["execution"] = execution_plan.as_dict()
         payload["parameter_count"] = int(sum(parameter.numel() for parameter in model.parameters()))
         phase = "forward"
         x = torch.randn(batch_size, data_info.lookback, data_info.num_nodes, data_info.num_features, device=selected_device)
         target = torch.randn(batch_size, data_info.num_nodes, data_info.max_pred_len, device=selected_device)
         target_mask = torch.ones_like(target, dtype=torch.bool)
         model.train()
-        output = model(ModelInput(x=x))
+        batch = ForecastBatch(
+            x=x,
+            target=target,
+            target_mask=target_mask,
+            starts=torch.arange(batch_size, dtype=torch.int64),
+        )
+        execution = execute_training_backward(
+            model,
+            [batch],
+            device=selected_device,
+            plan=execution_plan,
+            loss_name=str(config.training["loss"]),
+            autocast=lambda: nullcontext(),
+            backward=lambda contribution: contribution.backward(),
+            capture_prediction=True,
+        )
+        output = execution.prediction
+        if output is None:
+            raise RuntimeError("execution did not return a validation prediction")
         payload["output_shape"] = [int(value) for value in output.shape]
         expected = (batch_size, data_info.num_nodes, data_info.max_pred_len)
         if tuple(output.shape) != expected:
@@ -183,12 +209,10 @@ def run_shape_validation(
         if not bool(torch.isfinite(output).all()):
             raise FloatingPointError("output contains NaN or Inf")
         phase = "loss"
-        loss_fn = resolve_loss(str(config.training["loss"]))
-        loss = loss_fn(output, target, target_mask)
-        if not bool(torch.isfinite(loss)):
+        loss = float(execution.loss)
+        if not torch.isfinite(torch.tensor(loss)):
             raise FloatingPointError("loss contains NaN or Inf")
         phase = "backward"
-        loss.backward()
         gradients = [parameter.grad for parameter in model.parameters() if parameter.requires_grad]
         if not all(gradient is not None for gradient in gradients):
             raise RuntimeError("missing gradient after backward")

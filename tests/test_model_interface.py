@@ -19,8 +19,8 @@ def _info() -> DataInfoView:
     return DataInfoView(num_nodes=4, num_features=3, lookback=12, max_pred_len=3)
 
 
-def test_node_shared_lstm_forward_backward_and_parameter_count() -> None:
-    model = build_model("node_shared_lstm", {"hidden_dim": 8, "num_layers": 1, "dropout": 0.0}, _info())
+def test_lstm_forward_backward_and_parameter_count() -> None:
+    model = build_model("lstm", {"hidden_dim": 8, "num_layers": 1, "dropout": 0.0}, _info())
     x = torch.randn(2, 12, 4, 3)
     output = model(ModelInput(x=x))
     assert tuple(output.shape) == (2, 4, 3)
@@ -32,19 +32,19 @@ def test_node_shared_lstm_forward_backward_and_parameter_count() -> None:
 def test_model_input_does_not_expose_target_or_mask() -> None:
     assert "target" not in ModelInput.__dataclass_fields__
     assert "target_mask" not in ModelInput.__dataclass_fields__
-    model = build_model("node_shared_lstm", {"hidden_dim": 8, "num_layers": 1, "dropout": 0.0}, _info())
+    model = build_model("lstm", {"hidden_dim": 8, "num_layers": 1, "dropout": 0.0}, _info())
     with pytest.raises(TypeError, match="ModelInput"):
         model(torch.randn(1, 12, 4, 3))
 
 
 def test_checkpoint_save_reload_preserves_predictions(tmp_path: Path) -> None:
-    model = build_model("node_shared_lstm", {"hidden_dim": 8, "num_layers": 1, "dropout": 0.0}, _info())
+    model = build_model("lstm", {"hidden_dim": 8, "num_layers": 1, "dropout": 0.0}, _info())
     model.eval()
     x = torch.randn(1, 12, 4, 3)
     with torch.no_grad():
         expected = model(ModelInput(x=x)).clone()
     save_checkpoint(tmp_path / "best.pt", model, manifest={"epoch": 1})
-    reloaded = build_model("node_shared_lstm", {"hidden_dim": 8, "num_layers": 1, "dropout": 0.0}, _info())
+    reloaded = build_model("lstm", {"hidden_dim": 8, "num_layers": 1, "dropout": 0.0}, _info())
     load_checkpoint(tmp_path / "best.pt", reloaded)
     reloaded.eval()
     with torch.no_grad():

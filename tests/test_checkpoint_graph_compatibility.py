@@ -38,13 +38,13 @@ def test_stcn_k4_checkpoint_is_rejected_when_public_graph_k_is_5() -> None:
 
 def test_non_graph_checkpoint_is_not_rejected_only_for_graph_k_change() -> None:
     config = load_experiment_config(ROOT / "configs" / "experiment.yaml")
-    model = load_model_config(ROOT / "configs" / "models" / "node_shared_lstm.yaml")
+    model = load_model_config(ROOT / "configs" / "models" / "lstm.yaml")
     old = deepcopy(config.values)
     old["resources"]["graph"]["k"] = 4
     _check_checkpoint_compatibility(
-        _manifest(old, model, "node_shared_lstm"),
+        _manifest(old, model, "lstm"),
         config,
         model,
         ROOT / "old-k4.pt",
-        model_name="node_shared_lstm",
+        model_name="lstm",
     )

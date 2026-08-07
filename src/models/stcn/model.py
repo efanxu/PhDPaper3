@@ -30,6 +30,8 @@ _CONFIG_FIELDS = {
 class STCN(ForecastModel):
     """Normalize the installed TSL STCN output to ``(B, N, H)``."""
 
+    execution_mode = "full_spatiotemporal"
+
     def __init__(
         self,
         *,

@@ -104,3 +104,86 @@ class ForecastModel(nn.Module):
         if not torch.isfinite(value).all():
             raise FloatingPointError("model output contains NaN or Inf")
         return value
+
+
+class NodeSharedForecastModel(ForecastModel):
+    """Shared-parameter temporal model with an explicit node-chunk seam.
+
+    A NodeShared model applies one temporal forecasting function independently
+    to every node.  The public ``forward`` contract remains the complete
+    ``(B, N, H)`` forecast; the shared execution layer may call
+    ``forward_node_chunk`` with a contiguous node range when the model is safe
+    to micro-batch.  Concrete adapters implement only that one-node-range
+    operation and never own the chunk loop or optimizer logic.
+    """
+
+    execution_mode = "full_nodes"
+
+    def forward(self, inputs: ModelInput) -> torch.Tensor:
+        if not isinstance(inputs, ModelInput):
+            raise TypeError(f"{type(self).__name__} expects ModelInput")
+        if inputs.x.ndim != 4:
+            raise ValueError("NodeSharedForecastModel expects x with shape (B, L, N, C)")
+        return self.forward_node_chunk(inputs, 0, int(inputs.x.shape[2]))
+
+    def forward_node_chunk(
+        self,
+        inputs: ModelInput,
+        node_start: int,
+        node_end: int,
+    ) -> torch.Tensor:
+        """Return ``(B, node_end-node_start, H)`` for one contiguous node range."""
+
+        raise NotImplementedError(
+            f"{type(self).__name__} must implement forward_node_chunk(inputs, node_start, node_end)"
+        )
+
+    def _node_chunk_x(
+        self,
+        inputs: ModelInput,
+        node_start: int,
+        node_end: int,
+        *,
+        model_name: str,
+    ) -> torch.Tensor:
+        """Validate shared temporal input and return one node slice.
+
+        This helper keeps shape and node-range invariants at the model seam;
+        model adapters only contain their original per-node forward call.
+        """
+
+        if not isinstance(inputs, ModelInput):
+            raise TypeError(f"{model_name} expects ModelInput")
+        if any(
+            value is not None
+            for value in (
+                inputs.time_features,
+                inputs.node_features,
+                inputs.adjacency,
+                inputs.static_features,
+            )
+        ):
+            raise ValueError(f"{model_name} accepts history x only")
+        x = inputs.x
+        if x.ndim != 4:
+            raise ValueError(f"{model_name} expects x with shape (B, L, N, C)")
+        batch, steps, nodes, channels = x.shape
+        expected = (
+            getattr(self, "lookback", steps),
+            getattr(self, "num_nodes", nodes),
+            getattr(self, "input_dim", channels),
+        )
+        if (steps, nodes, channels) != expected:
+            raise ValueError(
+                f"unexpected {model_name} input shape: {tuple(x.shape)}; "
+                f"expected (*, {expected[0]}, {expected[1]}, {expected[2]})"
+            )
+        if not 0 <= int(node_start) < int(node_end) <= nodes:
+            raise ValueError(
+                f"{model_name} node range must satisfy 0 <= start < end <= {nodes}; "
+                f"got ({node_start}, {node_end})"
+            )
+        if not torch.isfinite(x).all():
+            raise FloatingPointError(f"{model_name} input contains NaN or Inf")
+        del batch
+        return x[:, :, int(node_start) : int(node_end), :]

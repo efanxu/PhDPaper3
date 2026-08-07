@@ -104,3 +104,4 @@ runtime:
   reproducibility_mode: controlled_nonstrict
   save_predictions: true
   pin_memory: false
+  node_shared_chunk_size: 32

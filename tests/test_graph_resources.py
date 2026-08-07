@@ -82,7 +82,7 @@ def test_dense_edges_validate_ranges_weights_and_nonempty_graph() -> None:
 def test_graph_builder_uses_no_target_and_non_graph_model_needs_no_location_file() -> None:
     assert "target" not in inspect.signature(build_physical_knn_adjacency).parameters
     info = DataInfoView(num_nodes=4, num_features=3, lookback=12, max_pred_len=3)
-    model = build_model("node_shared_lstm", {"hidden_dim": 8, "num_layers": 1, "dropout": 0.0}, info)
+    model = build_model("lstm", {"hidden_dim": 8, "num_layers": 1, "dropout": 0.0}, info)
     output = model(ModelInput(x=torch.randn(1, 12, 4, 3)))
     assert tuple(output.shape) == (1, 4, 3)
 

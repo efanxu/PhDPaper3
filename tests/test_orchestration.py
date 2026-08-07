@@ -103,7 +103,7 @@ class _SelectiveFakeProcess(_FakeProcess):
     def __init__(self, command, **kwargs):
         super().__init__(command, **kwargs)
         request = json.loads(Path(command[-2]).read_text(encoding="utf-8"))
-        if request["operation"] == "validate_shape" and command[-1] == "node_shared_lstm":
+        if request["operation"] == "validate_shape" and command[-1] == "lstm":
             status_path = Path(request["models"][command[-1]]["status_path"])
             status_path.write_text(
                 json.dumps(
@@ -133,7 +133,7 @@ def test_duplicate_check_models_fail_before_starting_worker(monkeypatch, tmp_pat
     with pytest.raises(ValueError, match="duplicate model names"):
         orchestrator.run_isolated_checks(
             operation="check",
-            models=["node_shared_lstm", "node_shared_lstm"],
+        models=["lstm", "lstm"],
             config_path=CONFIG,
             model_config_path=None,
             device="cpu",
@@ -148,7 +148,7 @@ def test_isolated_check_persists_model_json_status_and_summary(monkeypatch, tmp_
     monkeypatch.setattr(orchestrator.subprocess, "Popen", _FakeProcess)
     result = orchestrator.run_isolated_checks(
         operation="check",
-        models=["node_shared_lstm"],
+        models=["lstm"],
         config_path=CONFIG,
         model_config_path=None,
         device="cpu",
@@ -158,7 +158,7 @@ def test_isolated_check_persists_model_json_status_and_summary(monkeypatch, tmp_
     )
     root = tmp_path / "results" / "_checks" / "persisted-check"
     assert result["passed"] is True
-    assert json.loads((root / "node_shared_lstm.json").read_text(encoding="utf-8"))["status"] == PASS
+    assert json.loads((root / "lstm.json").read_text(encoding="utf-8"))["status"] == PASS
     saved = json.loads((root / "status.json").read_text(encoding="utf-8"))
     assert saved["schema_version"] == 2
     assert saved["status"] == PASS
@@ -204,7 +204,7 @@ def test_duplicate_train_models_are_rejected_before_result_directories(
 
 def test_default_conflict_fails_before_starting_worker(monkeypatch, tmp_path: Path) -> None:
     output_root = tmp_path / "results"
-    result_dir = output_root / "node_shared_lstm" / "conflict"
+    result_dir = output_root / "lstm" / "conflict"
     result_dir.mkdir(parents=True)
     (result_dir / "best.pt").write_bytes(b"old")
     calls: list[object] = []
@@ -215,7 +215,7 @@ def test_default_conflict_fails_before_starting_worker(monkeypatch, tmp_path: Pa
 
     monkeypatch.setattr(orchestrator.subprocess, "Popen", fake_popen)
     result = orchestrator.run_training_models(
-        models=["node_shared_lstm"],
+        models=["lstm"],
         config_path=CONFIG,
         model_config_path=None,
         run_id="conflict",
@@ -241,7 +241,7 @@ def test_training_runs_resolved_shape_in_a_distinct_worker_before_train(monkeypa
     _FakeProcess.started.clear()
     monkeypatch.setattr(orchestrator.subprocess, "Popen", _FakeProcess)
     result = orchestrator.run_training_models(
-        models=["node_shared_lstm"],
+        models=["lstm"],
         config_path=CONFIG,
         model_config_path=None,
         run_id="precheck",
@@ -279,7 +279,7 @@ def test_environment_preflight_only_does_not_start_worker_or_create_model_result
     monkeypatch.setattr(orchestrator.subprocess, "Popen", fail_popen)
     output_root = tmp_path / "results"
     result = orchestrator.run_training_models(
-        models=["node_shared_lstm"],
+        models=["lstm"],
         config_path=CONFIG,
         model_config_path=None,
         run_id="preflight-only",
@@ -299,7 +299,7 @@ def test_environment_preflight_only_does_not_start_worker_or_create_model_result
     )
     assert result["passed"] is True
     assert result["models"][0]["status"] == PASS
-    assert not (output_root / "node_shared_lstm" / "preflight-only").exists()
+    assert not (output_root / "lstm" / "preflight-only").exists()
     assert Path(result["model_comparison_csv"]).is_file()
     assert calls == []
 
@@ -330,12 +330,12 @@ def test_worker_command_uses_resolved_python_and_positional_request(tmp_path: Pa
 
 def test_overwrite_archives_old_result_and_suffix_is_distinct(monkeypatch, tmp_path: Path) -> None:
     output_root = tmp_path / "results"
-    old = output_root / "node_shared_lstm" / "rerun"
+    old = output_root / "lstm" / "rerun"
     old.mkdir(parents=True)
     (old / "best.pt").write_bytes(b"old")
     monkeypatch.setattr(orchestrator.subprocess, "Popen", _FakeProcess)
     overwritten = orchestrator.run_training_models(
-        models=["node_shared_lstm"],
+        models=["lstm"],
         config_path=CONFIG,
         model_config_path=None,
         run_id="rerun",
@@ -355,7 +355,7 @@ def test_overwrite_archives_old_result_and_suffix_is_distinct(monkeypatch, tmp_p
     assert overwritten["passed"]
     assert Path(overwritten["models"][0]["archive_path"]).is_dir()
     suffixed = orchestrator.run_training_models(
-        models=["node_shared_lstm"],
+        models=["lstm"],
         config_path=CONFIG,
         model_config_path=None,
         run_id="rerun",
@@ -379,7 +379,7 @@ def test_overwrite_archives_old_result_and_suffix_is_distinct(monkeypatch, tmp_p
 def test_failed_model_continues_by_default_and_fail_fast_stops(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(orchestrator.subprocess, "Popen", _SelectiveFakeProcess)
     common = {
-        "models": ["node_shared_lstm", "dlinear"],
+        "models": ["lstm", "dlinear"],
         "config_path": CONFIG,
         "model_config_path": None,
         "device": "cpu",
