@@ -121,5 +121,11 @@ Resume compatibility 只约束当前 `ExecutionPlan` 实际使用
 
 本次 target GPU 当前被其他任务占用，因此 LSTM/Crossformer/STCN GPU gate 均为
 `NOT EXECUTED — target GPU currently occupied`；real CUDA/cuDNN LSTM
-recurrent-dropout two-pass replay 仍 pending。`node_shared_chunk_size` 保持
-`32`，未下调到 `16` 或 `8`。
+recurrent-dropout two-pass replay 仍 pending。pre-node_shared_microbatch 产生的
+baseline runtime results/logs 已明确作废，不支持复用，且未新增 legacy result
+compatibility layer。`capture_prediction` 的多 ForecastBatch 重组问题已修复；
+real LSTM recurrent-dropout CPU repeatability regression 和 actual Crossformer
+chunk-equivalence regression 已加入。当前工作树缺少 upstream
+`Time-Series-Library`，因此 actual Crossformer test 仍为
+`NOT EXECUTED / ENVIRONMENT BLOCKED`。`node_shared_chunk_size` 保持 `32`，未
+下调到 `16` 或 `8`。

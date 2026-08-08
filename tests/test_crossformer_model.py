@@ -6,6 +6,7 @@ import pytest
 import torch
 from torch import nn
 
+from engine.model_execution import build_execution_plan, forward_with_execution_plan
 from models.base import DataInfoView, ModelInput
 from models.loader import build_model
 from runtime.config import load_model_config_document
@@ -63,6 +64,20 @@ def test_crossformer_forward_backward_and_selects_configured_power_channel() -> 
     assert all(parameter.grad is not None for parameter in model.parameters() if parameter.requires_grad)
     with pytest.raises(ValueError, match="input shape"):
         model(ModelInput(x=torch.randn(1, 23, 3, 4)))
+
+
+def test_crossformer_chunked_execution_matches_full_eval_with_uneven_tail() -> None:
+    model = _build(5).eval()
+    inputs = ModelInput(x=torch.randn(2, 24, 5, 4))
+    plan = build_execution_plan(model, total_nodes=5, node_shared_chunk_size=2)
+    assert [end - start for start, end in plan.node_ranges()] == [2, 2, 1]
+
+    with torch.inference_mode():
+        full = model(inputs)
+        chunked = forward_with_execution_plan(model, inputs, plan)
+
+    assert tuple(chunked.shape) == tuple(full.shape) == (2, 5, 3)
+    torch.testing.assert_close(chunked, full, atol=1e-6, rtol=1e-6)
 
 
 def test_crossformer_node_shared_parameter_count_permutation_and_equal_histories() -> None:

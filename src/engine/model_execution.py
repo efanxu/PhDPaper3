@@ -331,9 +331,10 @@ def execute_training_backward(
     global_count = float(global_terms.valid_count)
     restore_rng_state(rng_before)
 
-    predictions: list[torch.Tensor] = []
+    batch_predictions: list[torch.Tensor] = []
     for batch in batch_list:
         device_batch = batch.to(device)
+        chunk_predictions: list[torch.Tensor] = []
         with autocast():
             model_input = device_batch.model_input()
             for (node_start, node_end) in plan.node_ranges():
@@ -364,9 +365,11 @@ def execute_training_backward(
                         )
                     backward(contribution)
                 if capture_prediction:
-                    predictions.append(prediction.detach())
+                    chunk_predictions.append(prediction.detach())
+        if capture_prediction:
+            batch_predictions.append(torch.cat(chunk_predictions, dim=1))
 
-    prediction = torch.cat(predictions, dim=1) if predictions else None
+    prediction = torch.cat(batch_predictions, dim=0) if batch_predictions else None
     return TrainingExecutionResult(
         loss=float(global_loss.float().cpu()),
         terms=global_terms,

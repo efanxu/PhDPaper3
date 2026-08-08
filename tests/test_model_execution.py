@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+import random
 
+import numpy as np
 import torch
 from torch import nn
 
@@ -13,6 +15,7 @@ from engine.model_execution import (
     forward_with_execution_plan,
 )
 from models.base import ForecastModel, ModelInput, NodeSharedForecastModel
+from models.lstm.model import LSTM
 from models.crossformer.model import Crossformer
 from models.loader import build_model
 from models.stcn.model import STCN
@@ -46,12 +49,21 @@ class _SpatialToy(ForecastModel):
         return inputs.x.mean(dim=(1, 3)).unsqueeze(-1).expand(-1, inputs.x.shape[2], 2)
 
 
-def _batch(nodes: int = 5, *, mask: torch.Tensor | None = None) -> ForecastBatch:
-    x = torch.arange(2 * 3 * nodes, dtype=torch.float32).reshape(2, 3, nodes, 1) / 10.0
-    target = torch.linspace(-0.4, 0.8, 2 * nodes * 2, dtype=torch.float32).reshape(2, nodes, 2)
+def _batch(
+    nodes: int = 5,
+    *,
+    batch_size: int = 2,
+    sample_offset: int = 0,
+    mask: torch.Tensor | None = None,
+) -> ForecastBatch:
+    x = (
+        torch.arange(batch_size * 3 * nodes, dtype=torch.float32) + sample_offset * 100
+    ).reshape(batch_size, 3, nodes, 1) / 10.0
+    target = torch.linspace(-0.4, 0.8, batch_size * nodes * 2, dtype=torch.float32).reshape(batch_size, nodes, 2)
     if mask is None:
         mask = torch.ones_like(target, dtype=torch.bool)
-    return ForecastBatch(x=x, target=target, target_mask=mask, starts=torch.tensor([0, 1]))
+    starts = torch.arange(sample_offset, sample_offset + batch_size, dtype=torch.int64)
+    return ForecastBatch(x=x, target=target, target_mask=mask, starts=starts)
 
 
 def _backward(model: nn.Module, batch: ForecastBatch, chunk_size: int):
@@ -85,6 +97,74 @@ def test_full_and_chunked_evaluation_are_equivalent_for_plain_node_shared_model(
         full = model(batch.model_input())
         chunked = forward_with_execution_plan(model, batch.model_input(), plan)
     torch.testing.assert_close(chunked, full, atol=1e-7, rtol=1e-7)
+
+
+def test_capture_prediction_reassembles_each_forecast_batch_before_node_concat() -> None:
+    model = _ToyNodeShared(nodes=5).eval()
+    batches = [
+        _batch(batch_size=2, sample_offset=10),
+        _batch(batch_size=1, sample_offset=12),
+    ]
+    plan = build_execution_plan(model, total_nodes=5, node_shared_chunk_size=2)
+    with torch.inference_mode():
+        expected = torch.cat(
+            [
+                forward_with_execution_plan(model, batch.model_input(), plan)
+                for batch in batches
+            ],
+            dim=0,
+        )
+
+    result = execute_training_backward(
+        model,
+        batches,
+        device="cpu",
+        plan=plan,
+        loss_name="masked_score_aligned_hybrid",
+        autocast=lambda: nullcontext(),
+        backward=lambda contribution: contribution.backward(),
+        capture_prediction=True,
+    )
+
+    assert result.prediction is not None
+    assert tuple(result.prediction.shape) == (3, 5, 2)
+    assert result.prediction.requires_grad is False
+    torch.testing.assert_close(result.prediction, expected, atol=0.0, rtol=0.0)
+
+
+def test_multi_batch_node_shared_gradient_matches_one_global_full_loss() -> None:
+    torch.manual_seed(17)
+    full_model = _ToyNodeShared(nodes=5)
+    chunk_model = _ToyNodeShared(nodes=5)
+    chunk_model.load_state_dict(full_model.state_dict())
+    batches = [
+        _batch(batch_size=2, sample_offset=0),
+        _batch(batch_size=1, sample_offset=2),
+    ]
+    combined_input = ModelInput(x=torch.cat([batch.x for batch in batches], dim=0))
+    combined_target = torch.cat([batch.target for batch in batches], dim=0)
+    combined_mask = torch.cat([batch.target_mask for batch in batches], dim=0)
+
+    full_prediction = full_model(combined_input)
+    full_loss = masked_score_aligned_hybrid(full_prediction, combined_target, combined_mask)
+    full_loss.backward()
+    full_gradients = [parameter.grad.detach().clone() for parameter in full_model.parameters()]
+
+    plan = build_execution_plan(chunk_model, total_nodes=5, node_shared_chunk_size=2)
+    result = execute_training_backward(
+        chunk_model,
+        batches,
+        device="cpu",
+        plan=plan,
+        loss_name="masked_score_aligned_hybrid",
+        autocast=lambda: nullcontext(),
+        backward=lambda contribution: contribution.backward(),
+    )
+
+    assert abs(result.loss - float(full_loss.detach())) <= 1e-6
+    for parameter, expected in zip(chunk_model.parameters(), full_gradients):
+        assert parameter.grad is not None
+        torch.testing.assert_close(parameter.grad, expected, atol=1e-6, rtol=1e-6)
 
 
 def test_chunked_terms_match_one_global_loss_with_uneven_mask() -> None:
@@ -199,6 +279,66 @@ def test_dropout_two_pass_replays_rng_once_and_is_repeatable() -> None:
             model.forward_node_chunk(batch.model_input(), start, end)
     expected_rng = torch.get_rng_state().clone()
     assert torch.equal(first[2], expected_rng)
+
+
+# real CUDA/cuDNN recurrent-dropout verification remains pending
+def test_real_lstm_recurrent_dropout_chunk_execution_is_repeatable_on_cpu() -> None:
+    torch.manual_seed(2026)
+    template = LSTM(
+        num_nodes=5,
+        input_dim=1,
+        lookback=3,
+        hidden_dim=4,
+        num_layers=2,
+        dropout=0.25,
+        horizon=2,
+    )
+    state = {name: value.detach().clone() for name, value in template.state_dict().items()}
+    batch = _batch(batch_size=2)
+
+    def run() -> tuple[float, list[torch.Tensor], torch.Tensor, torch.Tensor]:
+        model = LSTM(
+            num_nodes=5,
+            input_dim=1,
+            lookback=3,
+            hidden_dim=4,
+            num_layers=2,
+            dropout=0.25,
+            horizon=2,
+        )
+        model.load_state_dict(state)
+        model.train()
+        random.seed(31415)
+        np.random.seed(31415)
+        torch.manual_seed(31415)
+        plan = build_execution_plan(model, total_nodes=5, node_shared_chunk_size=2)
+        result = execute_training_backward(
+            model,
+            [batch],
+            device="cpu",
+            plan=plan,
+            loss_name="masked_score_aligned_hybrid",
+            autocast=lambda: nullcontext(),
+            backward=lambda contribution: contribution.backward(),
+            capture_prediction=True,
+        )
+        assert result.prediction is not None
+        gradients = [parameter.grad.detach().clone() for parameter in model.parameters()]
+        return result.loss, gradients, result.prediction, torch.get_rng_state().clone()
+
+    first = run()
+    second = run()
+    assert first[0] == second[0]
+    assert torch.isfinite(torch.tensor(first[0]))
+    assert torch.isfinite(first[2]).all()
+    assert all(torch.isfinite(gradient).all() for gradient in first[1])
+    torch.testing.assert_close(first[2], second[2], atol=0.0, rtol=0.0)
+    for left, right in zip(first[1], second[1]):
+        torch.testing.assert_close(left, right, atol=0.0, rtol=0.0)
+    torch.testing.assert_close(first[3], second[3], atol=0, rtol=0)
+    assert [end - start for start, end in build_execution_plan(
+        template, total_nodes=5, node_shared_chunk_size=2
+    ).node_ranges()] == [2, 2, 1]
 
 
 def test_batch_norm_node_shared_model_forces_full_nodes() -> None:
