@@ -101,6 +101,12 @@ CLI 改变时修改 `command_schema.py` 并运行生成器；普通模型参数�
   `rtol=1e-6`）。奇数 merge 检查使用 `lookback=60`、Scale0 `5` 段、Scale1 `3` 段，
   padding/数值与 upstream 一致；shared checkpoint reload、forward/backward finite
   和现有 Crossformer/isolation 回归均通过。
+- 当前执行语义已收口：`spatial_disabled=true` 的 P1 concrete adapter 继承
+  `NodeSharedForecastModel`，使用公共 `node_shared_microbatch`；134 个节点范围为
+  `0:32,32:64,64:96,96:128,128:134`。`spatial_disabled=false` 的 P2 concrete
+  adapter 继承普通 `ForecastModel`，保持 `full_spatiotemporal`；其内部
+  `spatial_edge_chunk_size` 与公共 node chunk 独立。P1/P2 共享同一 `backbone.*`
+  canonical implementation。
 - P2 状态：`PASS_WITH_NOTES`。P2 代码、focused tests、完整 pytest、P1 canonical
   回归以及 LSTM/Crossformer/STCN 回归均已通过；正式训练仍未执行。
 - Relation Resource 是模型局部的只读 NPZ 契约，不改公共 `GraphResource`。文件使用
@@ -196,10 +202,10 @@ checkpointing，也未改变模型训练协议。该 P2 专项只进入 `main`�
 
 本次公共 NodeShared execution 已同步到 main：sample batch 与 node chunk 分离，唯一
 公共 `runtime.node_shared_chunk_size` 默认值为 `32`；LSTM/Crossformer 使用 shared
-node microbatch，134 个节点自然分为 `32/32/32/32/6`，STCN 与 RA-DS-PFD 等空间模型
-保持完整 `[B,L,N,C]` 执行。NodeShared 检测到原生 BatchNorm 时保留 full-node，不改为
-LayerNorm；正式 compatible NodeShared OOM 只能统一下调公共 chunk，禁止 per-model
-rescue。上述公共改动不改变当前 RA-DS-PFD/P2 的模型代码、relation resource 或状态。
+node microbatch，134 个节点自然分为 `32/32/32/32/6`；STCN 与 RA-DS-PFD P2
+保持完整 `[B,L,N,C]` 执行，RA-DS-PFD P1 使用同一公共 node microbatch。NodeShared
+检测到原生 BatchNorm 时保留 full-node，不改为 LayerNorm；正式 compatible
+NodeShared OOM 只能统一下调公共 chunk，禁止 per-model rescue。
 
 ## 12. P2 comparison foundation（2026-08-06）
 
@@ -230,8 +236,9 @@ rescue。上述公共改动不改变当前 RA-DS-PFD/P2 的模型代码、relati
 唯一运行值来源是 `configs/experiment.yaml`，production code 不提供独立
 fallback；Resume compatibility 只约束当前 `ExecutionPlan` 实际使用
 `node_shared_microbatch` 的模型，`full_nodes`/`full_spatiotemporal`（包括
-RA-DS-PFD）不因 chunk 值变化失效。Formal shape validation 已改为 resolved
-AMP semantics，且未改变 RA-DS-PFD/P2 的模型、relation resource 或状态。
+RA-DS-PFD P2）不因 chunk 值变化失效。Formal shape validation 已改为 resolved
+AMP semantics；P2 数学路径、relation resource 和 edge chunk 未改变，P1/P2 的
+execution adapter 语义见上文。
 
 本次 target GPU 当前被其他任务占用，因此 LSTM/Crossformer/STCN/RA-DS-PFD
 GPU gate 均为 `NOT EXECUTED — target GPU currently occupied`；real CUDA/cuDNN

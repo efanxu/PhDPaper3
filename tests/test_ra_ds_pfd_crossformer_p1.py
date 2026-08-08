@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -7,9 +8,16 @@ import pytest
 import torch
 from einops import rearrange, repeat
 
+from data.dataset import ForecastBatch
 from engine.checkpoint import load_checkpoint, save_checkpoint
+from engine.losses import masked_score_aligned_hybrid
+from engine.model_execution import (
+    build_execution_plan,
+    execute_training_backward,
+    forward_with_execution_plan,
+)
 from integrations.time_series_library import load_time_series_library_model_class
-from models.base import DataInfoView, ModelInput
+from models.base import DataInfoView, ModelInput, NodeSharedForecastModel
 from models.loader import build_model
 from runtime.config import load_model_config, load_model_config_document
 
@@ -79,6 +87,17 @@ def _formal_info() -> DataInfoView:
 
 def _build(info: DataInfoView | None = None):
     return build_model("ra_ds_pfd_crossformer", dict(CONFIG), info or _info())
+
+
+def test_p1_uses_public_node_shared_execution_plan_for_uneven_node_count() -> None:
+    model = _build(_info(134)).eval()
+    assert isinstance(model, NodeSharedForecastModel)
+
+    plan = build_execution_plan(model, total_nodes=134, node_shared_chunk_size=32)
+
+    assert plan.execution_mode == "node_shared_microbatch"
+    assert plan.node_ranges() == ((0, 32), (32, 64), (64, 96), (96, 128), (128, 134))
+    assert plan.as_dict()["node_chunk_sizes"] == [32, 32, 32, 32, 6]
 
 
 def _upstream(info: DataInfoView, config: dict[str, object] = CONFIG):
@@ -216,6 +235,7 @@ def test_strict_state_transfer_and_full_intermediate_numeric_equivalence() -> No
     local = _build(info).eval()
     upstream = _upstream(info).eval()
     assert list(local.backbone.state_dict()) == list(upstream.state_dict())
+    assert list(local.state_dict()) == [f"backbone.{key}" for key in upstream.state_dict()]
     assert {
         key: tuple(value.shape) for key, value in local.backbone.state_dict().items()
     } == {key: tuple(value.shape) for key, value in upstream.state_dict().items()}
@@ -320,6 +340,83 @@ def test_node_shared_boundaries_and_repeatability() -> None:
     torch.testing.assert_close(permuted, output[:, permutation], atol=0.0, rtol=0.0)
     torch.testing.assert_close(output[:, 0], output[:, 1], atol=0.0, rtol=0.0)
     torch.testing.assert_close(output, repeated, atol=0.0, rtol=0.0)
+
+
+def test_p1_full_node_and_node_chunk_forward_are_equivalent() -> None:
+    model = _build(_info(5)).eval()
+    x = torch.randn(2, 24, 5, 4)
+    plan = build_execution_plan(model, total_nodes=5, node_shared_chunk_size=2)
+
+    with torch.inference_mode():
+        full = model(ModelInput(x=x))
+        chunked = forward_with_execution_plan(model, ModelInput(x=x), plan)
+
+    torch.testing.assert_close(chunked, full, atol=1e-6, rtol=1e-6)
+
+
+def test_p1_global_loss_and_gradients_match_node_chunk_execution() -> None:
+    info = _info(5)
+    torch.manual_seed(2026)
+    full_model = _build(info).eval()
+    chunk_model = _build(info).eval()
+    chunk_model.load_state_dict(full_model.state_dict())
+    batch = ForecastBatch(
+        x=torch.randn(2, 24, 5, 4),
+        target=torch.randn(2, 5, 3),
+        target_mask=torch.tensor(
+            [
+                [
+                    [True, True, False],
+                    [True, False, True],
+                    [False, True, True],
+                    [True, True, True],
+                    [False, True, False],
+                ],
+                [
+                    [True, False, True],
+                    [False, True, True],
+                    [True, True, False],
+                    [True, False, False],
+                    [True, True, True],
+                ],
+            ],
+            dtype=torch.bool,
+        ),
+        starts=torch.tensor([0, 1]),
+    )
+
+    full_prediction = full_model(batch.model_input())
+    full_loss = masked_score_aligned_hybrid(
+        full_prediction,
+        batch.target,
+        batch.target_mask,
+    )
+    full_loss.backward()
+    full_gradients = {
+        name: parameter.grad.detach().clone()
+        for name, parameter in full_model.named_parameters()
+    }
+
+    plan = build_execution_plan(chunk_model, total_nodes=5, node_shared_chunk_size=2)
+    result = execute_training_backward(
+        chunk_model,
+        [batch],
+        device="cpu",
+        plan=plan,
+        loss_name="masked_score_aligned_hybrid",
+        autocast=lambda: nullcontext(),
+        backward=lambda contribution: contribution.backward(),
+    )
+
+    assert result.loss == pytest.approx(float(full_loss.detach()), abs=1e-6)
+    for name, parameter in chunk_model.named_parameters():
+        assert parameter.grad is not None
+        torch.testing.assert_close(
+            parameter.grad,
+            full_gradients[name],
+            atol=1e-6,
+            rtol=1e-6,
+        )
 
 
 def test_public_input_and_finite_boundaries() -> None:

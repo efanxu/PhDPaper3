@@ -6,8 +6,9 @@ from pathlib import Path
 import pytest
 import torch
 
+from engine.model_execution import build_execution_plan
 from engine.reproducibility import set_seed
-from models.base import DataInfoView, ModelInput
+from models.base import DataInfoView, ModelInput, NodeSharedForecastModel
 from models.loader import build_model
 from models.ra_ds_pfd_crossformer.pfd0 import build_wspd_level_diff1
 from models.ra_ds_pfd_crossformer.relation_spatial import (
@@ -66,6 +67,18 @@ def _config() -> dict[str, object]:
 
 def _build() -> torch.nn.Module:
     return build_model("ra_ds_pfd_crossformer", _config(), _info())
+
+
+def test_p2_keeps_full_spatiotemporal_execution_plan() -> None:
+    model = _build()
+    assert not isinstance(model, NodeSharedForecastModel)
+
+    plan = build_execution_plan(model, total_nodes=3, node_shared_chunk_size=2)
+
+    assert plan.execution_mode == "full_spatiotemporal"
+    assert plan.node_chunk_count == 1
+    assert plan.node_ranges() == ((0, 3),)
+    assert plan.uses_node_microbatch is False
 
 
 def _dense_reference(

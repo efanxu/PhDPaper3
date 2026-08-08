@@ -9,7 +9,7 @@ from typing import Any
 
 import torch
 
-from models.base import DataInfoView, ForecastModel, ModelInput
+from models.base import DataInfoView, ForecastModel, ModelInput, NodeSharedForecastModel
 
 from .backbone import CanonicalBackbone, CanonicalTrace
 from .pfd0 import build_pfd0_propagation
@@ -62,10 +62,16 @@ _SPATIAL_QUERY_MODES = {"per_variable", "node_pooled"}
 _PROPAGATION_ENCODER_MODES = {"segment_fusion", "cross_time_then_fusion"}
 _TURBINE_EMBEDDING_MODES = {"relation_only", "temporal_and_relation"}
 _BIAS_SCALING_MODES = {"direct", "learnable_per_scale"}
-class RADSPFDCrossformer(ForecastModel):
-    """Apply one local canonical Crossformer independently to every node."""
+class _RADSPFDCrossformerImplementation:
+    """Shared RA-DS-PFD construction and canonical forward implementation.
 
-    def __init__(
+    The concrete adapters below own only the execution seam: P1 exposes one
+    node range through ``NodeSharedForecastModel`` while P2 keeps one complete
+    spatiotemporal forward.  Modules stay directly on the adapter so existing
+    ``backbone.*`` checkpoint keys remain unchanged.
+    """
+
+    def _init_shared(
         self,
         *,
         num_nodes: int,
@@ -78,7 +84,6 @@ class RADSPFDCrossformer(ForecastModel):
         wspd_index: int | None = None,
         relation_resource: RelationResource | None = None,
     ) -> None:
-        super().__init__()
         self.num_nodes = int(num_nodes)
         self.input_dim = int(input_dim)
         self.lookback = int(lookback)
@@ -173,7 +178,12 @@ class RADSPFDCrossformer(ForecastModel):
             turbine_identity=self.turbine_identity,
         )
 
-    def _node_history(self, inputs: ModelInput) -> tuple[torch.Tensor, int, int]:
+    def _node_history(
+        self,
+        inputs: ModelInput,
+        node_start: int,
+        node_end: int,
+    ) -> tuple[torch.Tensor, int, int]:
         if not isinstance(inputs, ModelInput):
             raise TypeError("RA-DS-PFD Crossformer expects ModelInput")
         if any(
@@ -196,19 +206,35 @@ class RADSPFDCrossformer(ForecastModel):
                 "unexpected RA-DS-PFD Crossformer input shape: "
                 f"{tuple(x.shape)}; expected (*, {expected[0]}, {expected[1]}, {expected[2]})"
             )
+        if not 0 <= int(node_start) < int(node_end) <= nodes:
+            raise ValueError(
+                "RA-DS-PFD Crossformer node range must satisfy "
+                f"0 <= start < end <= {nodes}; got ({node_start}, {node_end})"
+            )
         if not torch.isfinite(x).all():
             raise FloatingPointError("RA-DS-PFD Crossformer input contains NaN or Inf")
-        node_history = x.permute(0, 2, 1, 3).reshape(batch * nodes, steps, channels)
-        return node_history, batch, nodes
+        node_x = x[:, :, int(node_start) : int(node_end), :]
+        local_nodes = int(node_end) - int(node_start)
+        node_history = node_x.permute(0, 2, 1, 3).reshape(
+            batch * local_nodes, steps, channels
+        )
+        return node_history, batch, local_nodes
 
-    def forward(self, inputs: ModelInput) -> torch.Tensor:
-        node_history, batch, nodes = self._node_history(inputs)
-        if self.pfd0 is None:
+    def _forward_canonical_range(
+        self,
+        inputs: ModelInput,
+        node_start: int,
+        node_end: int,
+        *,
+        propagation_tokens: tuple[torch.Tensor, torch.Tensor] | None = None,
+    ) -> torch.Tensor:
+        node_history, batch, nodes = self._node_history(inputs, node_start, node_end)
+        if propagation_tokens is None:
             full_output = self.backbone(node_history)
         else:
             full_output = self.backbone(
                 node_history,
-                propagation_tokens=self.pfd0(inputs.x),
+                propagation_tokens=propagation_tokens,
             )
         expected = (batch * nodes, self.horizon, self.input_dim)
         if tuple(full_output.shape) != expected:
@@ -224,7 +250,7 @@ class RADSPFDCrossformer(ForecastModel):
     def forward_canonical_trace(self, inputs: ModelInput) -> CanonicalTrace:
         """Return canonical stages, using local ``[B,N,C,S,D]`` in P2 mode."""
 
-        node_history, _, _ = self._node_history(inputs)
+        node_history, _, _ = self._node_history(inputs, 0, self.num_nodes)
         propagation_tokens = self.pfd0(inputs.x) if self.pfd0 is not None else None
         trace = self.backbone.forward_backbone(
             node_history,
@@ -248,6 +274,47 @@ class RADSPFDCrossformer(ForecastModel):
             "input_power_index": self.input_power_index,
             **self.model_config,
         }
+
+
+class RADSPFDCrossformerP1(_RADSPFDCrossformerImplementation, NodeSharedForecastModel):
+    """P1 canonical Crossformer adapter with public node micro-batching."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__()
+        self._init_shared(**kwargs)
+
+    def forward_node_chunk(
+        self,
+        inputs: ModelInput,
+        node_start: int,
+        node_end: int,
+    ) -> torch.Tensor:
+        return self._forward_canonical_range(inputs, node_start, node_end)
+
+
+class RADSPFDCrossformerP2(_RADSPFDCrossformerImplementation, ForecastModel):
+    """P2 relation-spatial adapter with one complete-node forward."""
+
+    execution_mode = "full_spatiotemporal"
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__()
+        self._init_shared(**kwargs)
+
+    def forward(self, inputs: ModelInput) -> torch.Tensor:
+        if self.pfd0 is None:
+            raise RuntimeError("RA-DS-PFD P2 requires the enabled spatial path")
+        return self._forward_canonical_range(
+            inputs,
+            0,
+            self.num_nodes,
+            propagation_tokens=self.pfd0(inputs.x),
+        )
+
+
+# Keep the historical P1 class name importable for callers that used the
+# concrete adapter directly; build_model selects the explicit P1/P2 adapter.
+RADSPFDCrossformer = RADSPFDCrossformerP1
 
 
 def _validate_config(model_config: dict[str, Any]) -> None:
@@ -374,7 +441,9 @@ def _validate_data_info(data_info: DataInfoView) -> None:
         raise ValueError("RA-DS-PFD Crossformer input_power_index does not match input_power_column")
 
 
-def build_model(model_config: dict[str, Any], data_info: DataInfoView) -> RADSPFDCrossformer:
+def build_model(
+    model_config: dict[str, Any], data_info: DataInfoView
+) -> RADSPFDCrossformerP1 | RADSPFDCrossformerP2:
     _validate_config(model_config)
     _validate_data_info(data_info)
     project_root = (
@@ -402,7 +471,12 @@ def build_model(model_config: dict[str, Any], data_info: DataInfoView) -> RADSPF
             project_root=project_root,
             node_ids=data_info.node_ids,
         )
-    return RADSPFDCrossformer(
+    adapter = (
+        RADSPFDCrossformerP1
+        if model_config["spatial_disabled"]
+        else RADSPFDCrossformerP2
+    )
+    return adapter(
         num_nodes=data_info.num_nodes,
         input_dim=data_info.num_features,
         lookback=data_info.lookback,
