@@ -6,7 +6,8 @@ PhDPaper3 是可复现的 SDWPF 时间序列预测科研实验工程。统一入
 `scripts/run.py`，正式模型为 LSTM、Crossformer、STCN、DLinear、TSMixer、
 SegRNN、iTransformer、TimesNet、TimeMixer、Transformer、LightTS、TiDE、
 FreTS、FiLM、Informer、Autoformer、STID、DCRNN、AGCRN、GraphWaveNet、
-GRUGCN 和 RNNEncGCNDec；训练、
+GRUGCN、RNNEncGCNDec、PureGCN、PatchTST、Nonstationary Transformer、
+FEDformer 和 EvolveGCN；训练、
 评估、指标和汇总逻辑由共享路径提供。
 
 ## 2. 当前稳定架构
@@ -104,8 +105,8 @@ Run B 按模型名称反转顺序，结果仍按模型名称比较。
 
 当前基准模型接入状态为 LSTM、Crossformer、STCN、DLinear、TSMixer、SegRNN、
 iTransformer、TimesNet、TimeMixer、Transformer、LightTS、TiDE、FreTS、FiLM、
-Informer、Autoformer、STID、DCRNN、AGCRN、GraphWaveNet、GRUGCN 和
-RNNEncGCNDec。第二批软件接入完成；Informer(distil=true) 因官方 BatchNorm
+Informer、Autoformer、STID、DCRNN、AGCRN、GraphWaveNet、GRUGCN、RNNEncGCNDec、
+PureGCN、PatchTST、Nonstationary Transformer、FEDformer 和 EvolveGCN。第二批软件接入完成；Informer(distil=true) 因官方 BatchNorm
 按公共 planner 使用 full_nodes；STID 保留 node identity，使用
 full_spatiotemporal；其余兼容模型按 NodeShared planner；GPU formal validation
 尚未执行，原因是 `target GPU currently occupied`。LSTM/Crossformer 及除
@@ -144,3 +145,9 @@ compatibility layer。`capture_prediction` 的多 ForecastBatch 重组问题已�
 real LSTM recurrent-dropout CPU repeatability regression 和 actual Crossformer
 chunk-equivalence regression 已加入。`node_shared_chunk_size` 保持 `32`，未
 下调到 `16` 或 `8`。
+
+第四批软件接入完成：PureGCN 是基于 TSL GraphConv 的项目定义 spatial-only
+结构控制 baseline，使用公共 k=5 physical graph；PatchTST 保留官方 BatchNorm，
+因此使用 full_nodes；Nonstationary Transformer 与 FEDformer 使用 NodeShared
+planner；EvolveGCN 使用公共 physical graph 和 full_spatiotemporal，保持官方
+evolving-GCN semantics。GPU formal validation 状态按实际执行记录。
