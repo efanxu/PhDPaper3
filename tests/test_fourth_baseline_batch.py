@@ -62,7 +62,10 @@ def _info(
     features: tuple[str, ...] = ("f0", "f1", "power", "f3"),
     project_root: Path = ROOT,
     graph_config: dict[str, object] | None = None,
+    node_ids: tuple[int, ...] | None = None,
 ) -> DataInfoView:
+    if node_ids is None:
+        node_ids = tuple(range(1, nodes + 1))
     return DataInfoView(
         num_nodes=nodes,
         num_features=len(features),
@@ -71,7 +74,7 @@ def _info(
         feature_columns=features,
         input_power_column="power" if "power" in features else features[1],
         input_power_index=features.index("power") if "power" in features else 1,
-        node_ids=tuple(range(1, nodes + 1)),
+        node_ids=node_ids,
         graph_config=graph_config,
         project_root=project_root,
     )
@@ -338,6 +341,46 @@ def test_tsl_public_override_rebuilds_flattened_input_and_evolve_input(tmp_path:
     evolve = _build("evolvegcn", info)
     assert pure.graph_conv1.in_channels == 120 * 3
     assert evolve.upstream.input_encoder[0].in_features == 3
+
+
+@pytest.mark.skipif(not _is_environment("env_tsl"), reason="requires the formal env_tsl interpreter")
+def test_tsl_graph_adapters_reuse_public_resource_and_reject_bad_node_ids(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    for name, nodes in (("puregcn", 5), ("evolvegcn", 32)):
+        graph = _write_locations(tmp_path, nodes)
+        info = _info(nodes=nodes, project_root=tmp_path, graph_config=graph)
+        module = __import__(f"models.{name}.model", fromlist=["build_model"])
+        original = module.build_graph_resource
+        calls: list[object] = []
+
+        def wrapped(*args, **kwargs):
+            calls.append((args, kwargs))
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(module, "build_graph_resource", wrapped)
+        model = _build(name, info)
+        assert calls, name
+        assert "edge_index" in model.state_dict(), name
+        assert "edge_weight" in model.state_dict(), name
+
+        missing = _info(
+            nodes=nodes,
+            project_root=tmp_path,
+            graph_config=graph,
+            node_ids=(),
+        )
+        with pytest.raises(ValueError, match="node_ids"):
+            _build(name, missing)
+        duplicate_ids = tuple(range(1, nodes)) + (nodes - 1,)
+        duplicate = _info(
+            nodes=nodes,
+            project_root=tmp_path,
+            graph_config=graph,
+            node_ids=duplicate_ids,
+        )
+        with pytest.raises(ValueError, match="duplicates"):
+            _build(name, duplicate)
 
 
 def test_fourth_batch_adapters_do_not_cross_the_input_boundary() -> None:
