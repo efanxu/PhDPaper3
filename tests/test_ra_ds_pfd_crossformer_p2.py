@@ -11,7 +11,9 @@ from models.base import DataInfoView, ModelInput
 from models.loader import build_model
 from models.ra_ds_pfd_crossformer.pfd0 import build_wspd_level_diff1
 from models.ra_ds_pfd_crossformer.relation_spatial import (
+    RelationBiasProvider,
     RelationSpatialAttention,
+    RelationSpatialInsertion,
     ordered_relation_pair_representation,
 )
 
@@ -171,6 +173,122 @@ def test_sparse_target_softmax_scatter_matches_dense_reference_and_gradients() -
     for left, right in zip(chunked.parameters(), full.parameters()):
         assert left.grad is not None and right.grad is not None
         torch.testing.assert_close(left.grad, right.grad, atol=1e-6, rtol=1e-6)
+
+
+def test_multiple_edge_chunk_sizes_are_mathematically_equivalent() -> None:
+    torch.manual_seed(2026)
+    nodes = 32
+    sources_per_target = 20
+    edge_pairs = [
+        (source, target)
+        for target in range(nodes)
+        for source in sorted((target + offset) % nodes for offset in range(1, sources_per_target + 1))
+    ]
+    edge_index = torch.tensor(edge_pairs, dtype=torch.long).t().contiguous()
+    assert edge_index.shape == (2, 640)
+    edge_static_features = torch.randn(edge_index.shape[1], 13)
+    base_provider = RelationBiasProvider(
+        edge_index=edge_index,
+        edge_static_features=edge_static_features,
+        num_nodes=nodes,
+        spatial_heads=2,
+        spatial_d_ff=16,
+        relation_dim=4,
+        turbine_embedding_mode="relation_only",
+        bias_scaling_mode="direct",
+    )
+    base_insertion = RelationSpatialInsertion(
+        d_model=8,
+        spatial_heads=2,
+        spatial_dropout=0.0,
+        gamma_init=0.1,
+        bias_provider=base_provider,
+        spatial_query_mode="per_variable",
+        edge_chunk_size=None,
+    )
+    provider_state = base_provider.state_dict()
+    insertion_state = base_insertion.state_dict()
+    self_tokens = torch.randn(1, nodes, 3, 2, 8)
+    propagation_tokens = torch.randn(1, nodes, 2, 8)
+    reference_self = self_tokens.detach().clone().requires_grad_(True)
+    reference_propagation = propagation_tokens.detach().clone().requires_grad_(True)
+    base_provider.eval()
+    base_insertion.eval()
+    reference_output = base_insertion(reference_self, reference_propagation)
+    reference_loss = reference_output.square().mean()
+    reference_loss.backward()
+
+    def gradients(module: torch.nn.Module) -> dict[str, torch.Tensor]:
+        return {
+            name: parameter.grad.detach().clone()
+            for name, parameter in module.named_parameters()
+            if parameter.requires_grad
+        }
+
+    reference_insertion_gradients = gradients(base_insertion)
+    reference_provider_gradients = gradients(base_provider)
+    max_output_error = 0.0
+    max_gradient_error = 0.0
+    for chunk_size in (512, 256, 128, 64):
+        provider = RelationBiasProvider(
+            edge_index=edge_index,
+            edge_static_features=edge_static_features,
+            num_nodes=nodes,
+            spatial_heads=2,
+            spatial_d_ff=16,
+            relation_dim=4,
+            turbine_embedding_mode="relation_only",
+            bias_scaling_mode="direct",
+        )
+        provider.load_state_dict(provider_state)
+        insertion = RelationSpatialInsertion(
+            d_model=8,
+            spatial_heads=2,
+            spatial_dropout=0.0,
+            gamma_init=0.1,
+            bias_provider=provider,
+            spatial_query_mode="per_variable",
+            edge_chunk_size=chunk_size,
+        )
+        insertion.load_state_dict(insertion_state)
+        provider.eval()
+        insertion.eval()
+        current_self = self_tokens.detach().clone().requires_grad_(True)
+        current_propagation = propagation_tokens.detach().clone().requires_grad_(True)
+        output = insertion(current_self, current_propagation)
+        loss = output.square().mean()
+        loss.backward()
+
+        max_output_error = max(
+            max_output_error,
+            float((output.detach() - reference_output.detach()).abs().max()),
+        )
+        torch.testing.assert_close(output, reference_output, atol=1e-6, rtol=1e-6)
+        torch.testing.assert_close(loss, reference_loss, atol=1e-6, rtol=1e-6)
+        for current, reference in (
+            (current_self.grad, reference_self.grad),
+            (current_propagation.grad, reference_propagation.grad),
+        ):
+            assert current is not None and reference is not None
+            max_gradient_error = max(
+                max_gradient_error,
+                float((current - reference).abs().max()),
+            )
+            torch.testing.assert_close(current, reference, atol=1e-6, rtol=1e-6)
+        for current, reference in (
+            (gradients(insertion), reference_insertion_gradients),
+            (gradients(provider), reference_provider_gradients),
+        ):
+            assert current.keys() == reference.keys()
+            for name in current:
+                max_gradient_error = max(
+                    max_gradient_error,
+                    float((current[name] - reference[name]).abs().max()),
+                )
+                torch.testing.assert_close(current[name], reference[name], atol=1e-6, rtol=1e-6)
+
+    assert max_output_error <= 1e-6
+    assert max_gradient_error <= 1e-6
 
 
 def test_edge_permutation_preserves_node_output_and_biases_are_logits_only() -> None:
