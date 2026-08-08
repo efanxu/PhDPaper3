@@ -68,6 +68,22 @@ def test_all_adapters_build_and_return_finite_bnh(models, inputs) -> None:
         assert torch.isfinite(output).all(), name
 
 
+def test_timemixer_channel_independence_zero_builds_and_runs() -> None:
+    model_config = dict(
+        load_model_config(ROOT / "configs" / "models" / "timemixer.yaml")
+    )
+    model_config["channel_independence"] = 0
+    model = build_model("timemixer", model_config, _info()).eval()
+    assert model.upstream.configs.c_out == 4
+
+    torch.manual_seed(2718)
+    inputs = ModelInput(x=torch.randn(2, 144, 5, 4))
+    with torch.inference_mode():
+        output = model(inputs)
+    assert tuple(output.shape) == (2, 5, 10)
+    assert torch.isfinite(output).all()
+
+
 def test_node_chunk_contract_only_consumes_requested_nodes(models, inputs) -> None:
     changed = inputs.x.clone()
     changed[:, :, 0, :] = changed[:, :, 0, :] + 1000.0
