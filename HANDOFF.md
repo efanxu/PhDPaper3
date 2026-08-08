@@ -3,7 +3,8 @@
 ## 1. 项目目标
 
 PhDPaper3 是可复现的 SDWPF 时间序列预测科研实验工程。统一入口是
-`scripts/run.py`，正式模型为 LSTM、Crossformer 和 STCN；训练、
+`scripts/run.py`，正式模型为 LSTM、Crossformer、STCN、DLinear、TSMixer、
+SegRNN、iTransformer、TimesNet、TimeMixer 和 Transformer；训练、
 评估、指标和汇总逻辑由共享路径提供。
 
 ## 2. 当前稳定架构
@@ -31,8 +32,8 @@ schema v1。`validation_status.json` 只是 worker 内部临时通信文件，�
   profile 和必要 artifacts。
 - 已有结果可通过 summarize 重新生成汇总；`model_comparison.csv` 是论文/Excel
   两行分组表头版本，`model_comparison_flat.csv` 是程序读取版本。
-- 保留环境调度、Smoke、Full-shape、Repeatability、Crossformer、STCN、LSTM
-  和共享数据流程。
+- 保留环境调度、Smoke、Full-shape、Repeatability、共享数据流程和全部基准
+  模型接入。
 
 ## 4. 当前限制
 
@@ -99,16 +100,21 @@ Repeatability 现在对 resolved/model config、初始权重、数据 split、ba
 检查；loss、validation/test metrics 和 predictions 使用报告中的固定 atol/rtol。
 Run B 按模型名称反转顺序，结果仍按模型名称比较。
 
-当前基准模型接入状态仍为 LSTM、Crossformer 和 STCN；LSTM/Crossformer 通过公共
-NodeShared microbatch executor 执行，默认 `runtime.node_shared_chunk_size=32`；
+当前基准模型接入状态为 LSTM、Crossformer、STCN、DLinear、TSMixer、SegRNN、
+iTransformer、TimesNet、TimeMixer 和 Transformer。7 个新增
+Time-Series-Library Adapter 已完成软件接入；GPU formal validation 尚未执行，
+原因是 `target GPU currently occupied`。LSTM/Crossformer 及 7 个新增
+Time-Series-Library Adapter 通过公共 NodeShared microbatch executor 执行，默认
+`runtime.node_shared_chunk_size=32`；
+public batch=32 和 `runtime.node_shared_chunk_size=32` 均未改变；
 sample batch 与 node chunk 分离，134 个节点自然分为 `32/32/32/32/6`。
 STCN 保持 `[B,L,N,C]` 的 full spatiotemporal 执行；NodeShared 若检测到原生
 BatchNorm 则保留完整节点执行，不改为 LayerNorm。正式 compatible NodeShared
 发生 OOM 时只能统一下调公共 chunk，禁止按模型救援。正式 Full 训练与
 正式 GPU 显存验收尚未运行。当前主机为 NVIDIA GeForce RTX 4070 Ti SUPER、CUDA
-12.4；链接工作树缺少外部 `Time-Series-Library` 源码，因此完整 pytest 的
-Crossformer 相关 4 项暂标记为未运行环境阻塞，其余共享测试通过。尚未完成项是
-在对应 `env_tslib`/`env_tsl` 和真实数据上按固定序列完成基准模型的 GPU 验收；不
+12.4；外部 `Time-Series-Library` 源码仅作为只读运行时依赖，不纳入仓库。本次
+7 个新增 Adapter 的真实 upstream CPU 测试已执行；尚未完成项是在对应
+`env_tslib`/`env_tsl` 和真实数据上按固定序列完成基准模型的 GPU 验收；不
 将此分支用于 RA-DS-PFD 开发。
 
 ### NodeShared software closeout
@@ -119,13 +125,11 @@ Resume compatibility 只约束当前 `ExecutionPlan` 实际使用
 `node_shared_microbatch` 的模型，`full_nodes`/`full_spatiotemporal` 不因 chunk
 值变化失效。Formal shape validation 已改为 resolved AMP semantics。
 
-本次 target GPU 当前被其他任务占用，因此 LSTM/Crossformer/STCN GPU gate 均为
+本次 target GPU 当前被其他任务占用，因此现有及 7 个新增模型的 GPU gate 均为
 `NOT EXECUTED — target GPU currently occupied`；real CUDA/cuDNN LSTM
 recurrent-dropout two-pass replay 仍 pending。pre-node_shared_microbatch 产生的
 baseline runtime results/logs 已明确作废，不支持复用，且未新增 legacy result
 compatibility layer。`capture_prediction` 的多 ForecastBatch 重组问题已修复；
 real LSTM recurrent-dropout CPU repeatability regression 和 actual Crossformer
-chunk-equivalence regression 已加入。当前工作树缺少 upstream
-`Time-Series-Library`，因此 actual Crossformer test 仍为
-`NOT EXECUTED / ENVIRONMENT BLOCKED`。`node_shared_chunk_size` 保持 `32`，未
+chunk-equivalence regression 已加入。`node_shared_chunk_size` 保持 `32`，未
 下调到 `16` 或 `8`。

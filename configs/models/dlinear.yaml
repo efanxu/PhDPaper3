@@ -1,0 +1,5 @@
+runtime:
+  environment: tslib
+
+model:
+  moving_avg: 25

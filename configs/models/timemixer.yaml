@@ -1,0 +1,19 @@
+runtime:
+  environment: tslib
+
+model:
+  d_model: 32
+  d_ff: 64
+  e_layers: 2
+  down_sampling_layers: 2
+  down_sampling_window: 2
+  channel_independence: 1
+  moving_avg: 25
+  decomp_method: moving_avg
+  top_k: 5
+  use_norm: 1
+  down_sampling_method: avg
+  dropout: 0.1
+  label_len: 48
+  embed: timeF
+  freq: t
