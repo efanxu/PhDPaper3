@@ -1,0 +1,10 @@
+runtime:
+  environment: tsl
+
+model:
+  hidden_size: 64
+  enc_layers: 1
+  gcn_layers: 2
+  norm: mean
+  encode_edges: false
+  activation: softplus

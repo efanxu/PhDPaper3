@@ -1,0 +1,7 @@
+runtime:
+  environment: tsl
+
+model:
+  hidden_size: 64
+  emb_size: 10
+  n_layers: 1

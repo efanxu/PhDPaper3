@@ -1,0 +1,1 @@
+"""Graph WaveNet baseline adapter."""

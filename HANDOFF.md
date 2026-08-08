@@ -5,7 +5,8 @@
 PhDPaper3 是可复现的 SDWPF 时间序列预测科研实验工程。统一入口是
 `scripts/run.py`，正式模型为 LSTM、Crossformer、STCN、DLinear、TSMixer、
 SegRNN、iTransformer、TimesNet、TimeMixer、Transformer、LightTS、TiDE、
-FreTS、FiLM、Informer、Autoformer 和 STID；训练、
+FreTS、FiLM、Informer、Autoformer、STID、DCRNN、AGCRN、GraphWaveNet、
+GRUGCN 和 RNNEncGCNDec；训练、
 评估、指标和汇总逻辑由共享路径提供。
 
 ## 2. 当前稳定架构
@@ -103,11 +104,17 @@ Run B 按模型名称反转顺序，结果仍按模型名称比较。
 
 当前基准模型接入状态为 LSTM、Crossformer、STCN、DLinear、TSMixer、SegRNN、
 iTransformer、TimesNet、TimeMixer、Transformer、LightTS、TiDE、FreTS、FiLM、
-Informer、Autoformer 和 STID。第二批软件接入完成；Informer(distil=true) 因官方
-BatchNorm 按公共 planner 使用 full_nodes；STID 保留 node identity，使用
+Informer、Autoformer、STID、DCRNN、AGCRN、GraphWaveNet、GRUGCN 和
+RNNEncGCNDec。第二批软件接入完成；Informer(distil=true) 因官方 BatchNorm
+按公共 planner 使用 full_nodes；STID 保留 node identity，使用
 full_spatiotemporal；其余兼容模型按 NodeShared planner；GPU formal validation
-尚未执行，原因是 `target GPU currently occupied`。LSTM/Crossformer 及 13 个
-Time-Series-Library Adapter 通过公共 NodeShared microbatch executor 执行，默认
+尚未执行，原因是 `target GPU currently occupied`。LSTM/Crossformer 及除
+Informer 外的 12 个 Time-Series-Library Adapter 使用公共 NodeShared
+microbatch executor；Informer(distil=true) 因官方 BatchNorm 使用 full_nodes；
+STCN 和 STID 保持 full_spatiotemporal。第三批 TSL 图模型软件接入完成；
+DCRNN/GraphWaveNet/GRUGCN/RNNEncGCNDec 复用公共 k=5 physical graph；AGCRN
+保留官方 adaptive learned graph；5 个模型均使用 full_spatiotemporal，不参与
+NodeShared node chunk。GPU formal validation pending。默认
 `runtime.node_shared_chunk_size=32`；
 public batch=32 和 `runtime.node_shared_chunk_size=32` 均未改变；
 sample batch 与 node chunk 分离，134 个节点自然分为 `32/32/32/32/6`。
