@@ -1,0 +1,5 @@
+runtime:
+  environment: tslib
+
+model:
+  channel_independence: 1

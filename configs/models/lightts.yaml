@@ -1,0 +1,7 @@
+runtime:
+  environment: tslib
+
+model:
+  d_model: 64
+  dropout: 0.1
+  chunk_size: 24

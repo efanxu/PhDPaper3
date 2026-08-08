@@ -1,0 +1,6 @@
+runtime:
+  environment: tslib
+
+model:
+  e_layers: 2
+  label_len: 48

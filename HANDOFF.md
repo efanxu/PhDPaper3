@@ -4,7 +4,8 @@
 
 PhDPaper3 是可复现的 SDWPF 时间序列预测科研实验工程。统一入口是
 `scripts/run.py`，正式模型为 LSTM、Crossformer、STCN、DLinear、TSMixer、
-SegRNN、iTransformer、TimesNet、TimeMixer 和 Transformer；训练、
+SegRNN、iTransformer、TimesNet、TimeMixer、Transformer、LightTS、TiDE、
+FreTS、FiLM、Informer、Autoformer 和 STID；训练、
 评估、指标和汇总逻辑由共享路径提供。
 
 ## 2. 当前稳定架构
@@ -101,9 +102,11 @@ Repeatability 现在对 resolved/model config、初始权重、数据 split、ba
 Run B 按模型名称反转顺序，结果仍按模型名称比较。
 
 当前基准模型接入状态为 LSTM、Crossformer、STCN、DLinear、TSMixer、SegRNN、
-iTransformer、TimesNet、TimeMixer 和 Transformer。7 个新增
-Time-Series-Library Adapter 已完成软件接入；GPU formal validation 尚未执行，
-原因是 `target GPU currently occupied`。LSTM/Crossformer 及 7 个新增
+iTransformer、TimesNet、TimeMixer、Transformer、LightTS、TiDE、FreTS、FiLM、
+Informer、Autoformer 和 STID。第二批软件接入完成；Informer(distil=true) 因官方
+BatchNorm 按公共 planner 使用 full_nodes；STID 保留 node identity，使用
+full_spatiotemporal；其余兼容模型按 NodeShared planner；GPU formal validation
+尚未执行，原因是 `target GPU currently occupied`。LSTM/Crossformer 及 13 个
 Time-Series-Library Adapter 通过公共 NodeShared microbatch executor 执行，默认
 `runtime.node_shared_chunk_size=32`；
 public batch=32 和 `runtime.node_shared_chunk_size=32` 均未改变；
@@ -113,7 +116,8 @@ BatchNorm 则保留完整节点执行，不改为 LayerNorm。正式 compatible 
 发生 OOM 时只能统一下调公共 chunk，禁止按模型救援。正式 Full 训练与
 正式 GPU 显存验收尚未运行。当前主机为 NVIDIA GeForce RTX 4070 Ti SUPER、CUDA
 12.4；外部 `Time-Series-Library` 源码仅作为只读运行时依赖，不纳入仓库。本次
-7 个新增 Adapter 的真实 upstream CPU 测试已执行；尚未完成项是在对应
+第二批 6 个 Time-Series-Library Adapter 的真实 upstream CPU 测试已执行，STID
+已在 `env_tsl` 完成真实 CPU build/forward；尚未完成项是在对应
 `env_tslib`/`env_tsl` 和真实数据上按固定序列完成基准模型的 GPU 验收；不
 将此分支用于 RA-DS-PFD 开发。
 
@@ -125,7 +129,7 @@ Resume compatibility 只约束当前 `ExecutionPlan` 实际使用
 `node_shared_microbatch` 的模型，`full_nodes`/`full_spatiotemporal` 不因 chunk
 值变化失效。Formal shape validation 已改为 resolved AMP semantics。
 
-本次 target GPU 当前被其他任务占用，因此现有及 7 个新增模型的 GPU gate 均为
+本次 target GPU 当前被其他任务占用，因此现有全部模型的 GPU gate 均为
 `NOT EXECUTED — target GPU currently occupied`；real CUDA/cuDNN LSTM
 recurrent-dropout two-pass replay 仍 pending。pre-node_shared_microbatch 产生的
 baseline runtime results/logs 已明确作废，不支持复用，且未新增 legacy result
