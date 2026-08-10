@@ -245,3 +245,26 @@ GPU gate 均为 `NOT EXECUTED — target GPU currently occupied`；real CUDA/cuD
 LSTM recurrent-dropout two-pass replay 仍 pending。`node_shared_chunk_size` 保持
 `32`，未下调到 `16` 或 `8`。P0/P1/P2、relation resource 和 P2 comparison
 foundation 状态继续以本 HANDOFF 前文为准。
+
+## 14. RA-DS-PFD R0-R7 Matrix Foundation（2026-08-10）
+
+- `R0_R7_MATRIX_FOUNDATION = PASS`：该状态仅表示 machine-readable matrix、resolver
+  和 CPU structural/software foundation 已通过权威验收。
+- 唯一 suite 为 `configs/experiments/ra_ds_pfd_r0_r7.yaml`；resolver 为
+  `src/models/ra_ds_pfd_crossformer/r0_r7_suite.py`；权威矩阵测试为
+  `tests/test_ra_ds_pfd_r0_r7_suite.py`。R0 严格保持 canonical P1 identity；R1
+  为 current P2 mapping；R2 为 old endpoint mapping；R3/R4/R5/R6 分别只改变
+  Query、Propagation Encoder、Turbine Embedding、Bias Scaling；R7 只改变 Query
+  与 Propagation Encoder 两轴。
+- R0 使用 `NodeShared` execution；R1-R7 使用 `full_spatiotemporal` execution。
+  R1-R7 共享 canonical backbone、P2 参数、relation resource 和
+  `spatial_edge_chunk_size=512`；512 是当前 common/provisional engineering value，
+  不是 GPU-validated selected edge chunk。
+- focused CPU acceptance：`66 passed`。完整 CPU-only acceptance：`246 passed,
+  3 skipped`；skip 为既有 env_tslib 中正式 `tsl` 不可用的 STCN 测试。权威命令为
+  `pytest -q --ignore=tests/test_full_shape.py`。
+- GPU tests executed during recovery task：`NO`。Historical accidental GPU invocation
+  before recovery：`YES`，`tests/test_full_shape.py`，结果为 `PASS`；该运行不计为
+  authoritative GPU validation、P2 memory finalization、GPU acceptance 或任何 GPU gate
+  升级。P2 memory finalization、R0-R7 GPU Stage A、R0-R7 Full 均为 `PENDING/NOT RUN`。
+  runner 未实现，P3/P4 未开始。

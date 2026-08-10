@@ -21,47 +21,62 @@ from .relation_spatial import (
 )
 
 
-_CONFIG_FIELDS = {
-    "d_model",
-    "n_heads",
-    "d_ff",
-    "e_layers",
-    "dropout",
-    "factor",
-    "seg_len",
-    "win_size",
-    "spatial_disabled",
-    "pfd_mode",
-    "spatial_heads",
-    "spatial_d_ff",
-    "relation_dim",
-    "spatial_dropout",
-    "gamma_init",
-    "relation_resource",
-    "spatial_edge_chunk_size",
-    "spatial_query_mode",
-    "propagation_encoder_mode",
-    "turbine_embedding_mode",
-    "bias_scaling_mode",
-    "base_turbine_dim",
-}
-_CANONICAL_CONFIG_FIELDS = {
-    "d_model",
-    "n_heads",
-    "d_ff",
-    "e_layers",
-    "dropout",
-    "factor",
-    "seg_len",
-    "win_size",
-    "spatial_disabled",
-}
+CONFIG_FIELDS = frozenset(
+    {
+        "d_model",
+        "n_heads",
+        "d_ff",
+        "e_layers",
+        "dropout",
+        "factor",
+        "seg_len",
+        "win_size",
+        "spatial_disabled",
+        "pfd_mode",
+        "spatial_heads",
+        "spatial_d_ff",
+        "relation_dim",
+        "spatial_dropout",
+        "gamma_init",
+        "relation_resource",
+        "spatial_edge_chunk_size",
+        "spatial_query_mode",
+        "propagation_encoder_mode",
+        "turbine_embedding_mode",
+        "bias_scaling_mode",
+        "base_turbine_dim",
+    }
+)
+CANONICAL_CONFIG_FIELDS = frozenset(
+    {
+        "d_model",
+        "n_heads",
+        "d_ff",
+        "e_layers",
+        "dropout",
+        "factor",
+        "seg_len",
+        "win_size",
+        "spatial_disabled",
+    }
+)
 _POSITIVE_INTEGER_FIELDS = {"d_model", "n_heads", "d_ff", "e_layers", "factor", "seg_len", "win_size"}
 _P2_POSITIVE_INTEGER_FIELDS = {"spatial_heads", "spatial_d_ff", "relation_dim", "base_turbine_dim"}
-_SPATIAL_QUERY_MODES = {"per_variable", "node_pooled"}
-_PROPAGATION_ENCODER_MODES = {"segment_fusion", "cross_time_then_fusion"}
-_TURBINE_EMBEDDING_MODES = {"relation_only", "temporal_and_relation"}
-_BIAS_SCALING_MODES = {"direct", "learnable_per_scale"}
+SPATIAL_QUERY_MODES = frozenset({"per_variable", "node_pooled"})
+PROPAGATION_ENCODER_MODES = frozenset({"segment_fusion", "cross_time_then_fusion"})
+TURBINE_EMBEDDING_MODES = frozenset({"relation_only", "temporal_and_relation"})
+BIAS_SCALING_MODES = frozenset({"direct", "learnable_per_scale"})
+
+# Keep the existing private names local to this module while exposing the
+# formal architecture domains to the R0-R7 suite resolver as one source.
+_CONFIG_FIELDS = CONFIG_FIELDS
+_CANONICAL_CONFIG_FIELDS = CANONICAL_CONFIG_FIELDS
+_SPATIAL_QUERY_MODES = SPATIAL_QUERY_MODES
+_PROPAGATION_ENCODER_MODES = PROPAGATION_ENCODER_MODES
+_TURBINE_EMBEDDING_MODES = TURBINE_EMBEDDING_MODES
+_BIAS_SCALING_MODES = BIAS_SCALING_MODES
+
+
 class _RADSPFDCrossformerImplementation:
     """Shared RA-DS-PFD construction and canonical forward implementation.
 

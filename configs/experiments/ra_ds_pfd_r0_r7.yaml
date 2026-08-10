@@ -1,0 +1,71 @@
+suite: ra_ds_pfd_r0_r7
+model: ra_ds_pfd_crossformer
+
+base_model_config:
+  file: configs/models/ra_ds_pfd_crossformer.yaml
+
+p2_common:
+  pfd_mode: pfd0
+  spatial_heads: 4
+  spatial_d_ff: 128
+  relation_dim: 16
+  base_turbine_dim: 16
+  spatial_dropout: 0.1
+  gamma_init: 0.1
+  relation_resource:
+    file: dataset/derived/ra_ds_pfd/ra_ds_pfd_trueunion_sdwpf_v1.npz
+  # Current common engineering value; not GPU-validated by this batch.
+  spatial_edge_chunk_size: 512
+
+variants:
+  R0:
+    spatial_disabled: true
+
+  R1:
+    spatial_disabled: false
+    spatial_query_mode: per_variable
+    propagation_encoder_mode: segment_fusion
+    turbine_embedding_mode: relation_only
+    bias_scaling_mode: direct
+
+  R2:
+    spatial_disabled: false
+    spatial_query_mode: node_pooled
+    propagation_encoder_mode: cross_time_then_fusion
+    turbine_embedding_mode: temporal_and_relation
+    bias_scaling_mode: learnable_per_scale
+
+  R3:
+    spatial_disabled: false
+    spatial_query_mode: node_pooled
+    propagation_encoder_mode: segment_fusion
+    turbine_embedding_mode: relation_only
+    bias_scaling_mode: direct
+
+  R4:
+    spatial_disabled: false
+    spatial_query_mode: per_variable
+    propagation_encoder_mode: cross_time_then_fusion
+    turbine_embedding_mode: relation_only
+    bias_scaling_mode: direct
+
+  R5:
+    spatial_disabled: false
+    spatial_query_mode: per_variable
+    propagation_encoder_mode: segment_fusion
+    turbine_embedding_mode: temporal_and_relation
+    bias_scaling_mode: direct
+
+  R6:
+    spatial_disabled: false
+    spatial_query_mode: per_variable
+    propagation_encoder_mode: segment_fusion
+    turbine_embedding_mode: relation_only
+    bias_scaling_mode: learnable_per_scale
+
+  R7:
+    spatial_disabled: false
+    spatial_query_mode: node_pooled
+    propagation_encoder_mode: cross_time_then_fusion
+    turbine_embedding_mode: relation_only
+    bias_scaling_mode: direct
