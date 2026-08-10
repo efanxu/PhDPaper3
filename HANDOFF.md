@@ -109,10 +109,11 @@ Informer、Autoformer、STID、DCRNN、AGCRN、GraphWaveNet、GRUGCN、RNNEncGCN
 PureGCN、PatchTST、Nonstationary Transformer、FEDformer 和 EvolveGCN。第二批软件接入完成；Informer(distil=true) 因官方 BatchNorm
 按公共 planner 使用 full_nodes；STID 保留 node identity，使用
 full_spatiotemporal；其余兼容模型按 NodeShared planner；GPU formal validation
-尚未执行，原因是 `target GPU currently occupied`。LSTM/Crossformer 及除
-Informer 外的 12 个 Time-Series-Library Adapter 使用公共 NodeShared
-microbatch executor；Informer(distil=true) 因官方 BatchNorm 使用 full_nodes；
-STCN 和 STID 保持 full_spatiotemporal。第三批 TSL 图模型软件接入完成；
+尚未执行，原因是 `target GPU currently occupied`。16 个 Time-Series-Library
+adapters 中，14 个不含原生 BatchNorm 的 adapter 使用公共 NodeShared
+microbatch executor；Informer(distil=true) 与 PatchTST 因官方 BatchNorm 使用
+full_nodes。LSTM、Crossformer 作为独立 NodeShared baseline，不计入上述 16 个
+adapter 统计；STCN 和 STID 保持 full_spatiotemporal。第三批 TSL 图模型软件接入完成；
 DCRNN/GraphWaveNet/GRUGCN/RNNEncGCNDec 复用公共 k=5 physical graph；AGCRN
 保留官方 adaptive learned graph；5 个模型均使用 full_spatiotemporal，不参与
 NodeShared node chunk。GPU formal validation pending。默认
@@ -151,3 +152,12 @@ chunk-equivalence regression 已加入。`node_shared_chunk_size` 保持 `32`，
 因此使用 full_nodes；Nonstationary Transformer 与 FEDformer 使用 NodeShared
 planner；EvolveGCN 使用公共 physical graph 和 full_spatiotemporal，保持官方
 evolving-GCN semantics。GPU formal validation 状态按实际执行记录。
+
+### Baseline software integration status
+
+Baseline software integration is frozen / SOFTWARE PASS。
+
+`env_tslib` full CPU regression：PASS，0 failures，0 errors（234 passed，22 expected skips）。
+`env_tsl` full CPU regression：PASS，0 failures，0 errors（205 passed，51 expected skips）。
+
+Remaining validation：GPU formal validation；real-data Full training/evaluation。

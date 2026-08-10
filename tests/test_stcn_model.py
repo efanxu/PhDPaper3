@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
+import sys
 
 import pytest
 import torch
@@ -11,9 +11,19 @@ from models.loader import build_model
 from runtime.config import load_model_config_document
 
 
-pytestmark = pytest.mark.skipif(importlib.util.find_spec("tsl") is None, reason="formal tsl package is only installed in env_tsl")
-
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _is_environment(name: str) -> bool:
+    return Path(sys.executable).parent.name.casefold() == name.casefold()
+
+
+TSL_RUNTIME = pytest.mark.skipif(
+    not _is_environment("env_tsl"),
+    reason="requires the formal env_tsl interpreter",
+)
+
+
 FIXTURE = ROOT / "tests" / "fixtures" / "turbine_locations_small.csv"
 CONFIG = {
     "hidden_size": 8,
@@ -56,13 +66,18 @@ def _info(tmp_path: Path, *, node_ids: tuple[int, ...] = (1, 2, 3, 4)) -> DataIn
     )
 
 
-def test_stcn_yaml_uses_tsl_runtime_and_formal_class(tmp_path: Path) -> None:
+def test_stcn_yaml_uses_tsl_runtime() -> None:
     assert load_model_config_document(ROOT / "configs" / "models" / "stcn.yaml")["runtime"] == {"environment": "tsl"}
+
+
+@TSL_RUNTIME
+def test_stcn_uses_formal_class(tmp_path: Path) -> None:
     model = build_model("stcn", dict(CONFIG), _info(tmp_path))
     assert model.upstream.__class__.__module__.startswith("tsl.nn.models.stgn")
     assert "Time-Series-Library" not in (ROOT / "src" / "models" / "stcn" / "model.py").read_text(encoding="utf-8")
 
 
+@TSL_RUNTIME
 def test_stcn_forward_backward_output_layout_and_sparse_graph_buffers(tmp_path: Path) -> None:
     model = build_model("stcn", dict(CONFIG), _info(tmp_path)).eval()
     x = torch.randn(2, 24, 4, 3)
@@ -77,6 +92,7 @@ def test_stcn_forward_backward_output_layout_and_sparse_graph_buffers(tmp_path: 
     assert all(parameter.grad is not None for parameter in model.parameters() if parameter.requires_grad)
 
 
+@TSL_RUNTIME
 def test_stcn_requires_complete_aligned_graph_and_rejects_unknown_model_fields(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="node_ids"):
         build_model("stcn", dict(CONFIG), _info(tmp_path, node_ids=(1, 2, 3)))

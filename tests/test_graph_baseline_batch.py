@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib
-import importlib.util
 import inspect
 from pathlib import Path
 import subprocess
@@ -21,13 +20,19 @@ from runtime.config import (
     load_model_config_document,
 )
 
+ROOT = Path(__file__).resolve().parents[1]
 
-pytestmark = pytest.mark.skipif(
-    importlib.util.find_spec("tsl") is None,
-    reason="formal tsl package is only installed in env_tsl",
+
+def _is_environment(name: str) -> bool:
+    return Path(sys.executable).parent.name.casefold() == name.casefold()
+
+
+TSL_RUNTIME = pytest.mark.skipif(
+    not _is_environment("env_tsl"),
+    reason="requires the formal env_tsl interpreter",
 )
 
-ROOT = Path(__file__).resolve().parents[1]
+
 FIXTURE = ROOT / "tests" / "fixtures" / "turbine_locations_small.csv"
 MODEL_NAMES = ("dcrnn", "agcrn", "graphwavenet", "grugcn", "rnnencgcndec")
 GRAPH_NAMES = ("dcrnn", "graphwavenet", "grugcn", "rnnencgcndec")
@@ -125,6 +130,7 @@ def test_graph_batch_yaml_runtime_and_structure_only() -> None:
             assert not _contains_key(document["model"], key), (name, key)
 
 
+@TSL_RUNTIME
 def test_graph_batch_models_are_full_spatiotemporal_and_real_upstream(model_bundle) -> None:
     _, models = model_bundle
     for name, model in models.items():
@@ -135,6 +141,7 @@ def test_graph_batch_models_are_full_spatiotemporal_and_real_upstream(model_bund
         assert model.upstream.__class__.__module__.startswith("tsl.nn.models.stgn"), name
 
 
+@TSL_RUNTIME
 def test_graph_batch_cpu_forward_backward_and_output_contract(model_bundle) -> None:
     _, models = model_bundle
     torch.manual_seed(2026)
@@ -151,6 +158,7 @@ def test_graph_batch_cpu_forward_backward_and_output_contract(model_bundle) -> N
         assert all(torch.isfinite(gradient).all() for gradient in gradients if gradient is not None), name
 
 
+@TSL_RUNTIME
 def test_graph_batch_execution_plan_never_chunks_nodes(model_bundle) -> None:
     _, models = model_bundle
     for name, model in models.items():
@@ -160,6 +168,7 @@ def test_graph_batch_execution_plan_never_chunks_nodes(model_bundle) -> None:
         assert plan.node_ranges() == ((0, 134),), name
 
 
+@TSL_RUNTIME
 def test_graph_models_use_public_graph_resource_and_persistent_buffers(monkeypatch, tmp_path: Path) -> None:
     for name in GRAPH_NAMES:
         root = tmp_path / name
@@ -191,6 +200,7 @@ def test_graph_models_use_public_graph_resource_and_persistent_buffers(monkeypat
         assert "edge_weight" in model.state_dict()
 
 
+@TSL_RUNTIME
 def test_graph_resource_preserves_public_node_order(tmp_path: Path) -> None:
     info = _info(tmp_path, node_ids=(4, 1, 3, 2))
     model = _build("dcrnn", info)
@@ -204,6 +214,7 @@ def test_graph_resource_preserves_public_node_order(tmp_path: Path) -> None:
     torch.testing.assert_close(model.edge_weight, expected.edge_weight)
 
 
+@TSL_RUNTIME
 def test_agcrn_keeps_only_official_adaptive_graph(monkeypatch, tmp_path: Path) -> None:
     def fail(*args, **kwargs):
         del args, kwargs
@@ -221,6 +232,7 @@ def test_agcrn_keeps_only_official_adaptive_graph(monkeypatch, tmp_path: Path) -
     assert tuple(model.upstream.agrn.node_emb.emb.shape) == (info.num_nodes, 10)
 
 
+@TSL_RUNTIME
 def test_graphwavenet_keeps_physical_plus_learned_graph(model_bundle) -> None:
     info, models = model_bundle
     model = models["graphwavenet"]
@@ -233,6 +245,7 @@ def test_graphwavenet_keeps_physical_plus_learned_graph(model_bundle) -> None:
     assert "edge_weight" in model.state_dict()
 
 
+@TSL_RUNTIME
 def test_graph_batch_preserves_explicit_upstream_structure(model_bundle) -> None:
     _, models = model_bundle
     assert models["dcrnn"].upstream.cache_support is False
@@ -242,6 +255,7 @@ def test_graph_batch_preserves_explicit_upstream_structure(model_bundle) -> None
 
 
 @pytest.mark.parametrize("name", MODEL_NAMES)
+@TSL_RUNTIME
 def test_graph_models_fail_closed_on_missing_or_duplicate_node_ids(name: str, tmp_path: Path) -> None:
     missing = _info(tmp_path / "missing", node_ids=())
     with pytest.raises(ValueError, match="node_ids"):
@@ -251,12 +265,13 @@ def test_graph_models_fail_closed_on_missing_or_duplicate_node_ids(name: str, tm
         _build(name, duplicate)
 
 
+@TSL_RUNTIME
 def test_graph_models_rebuild_from_public_lookback_and_feature_overrides(tmp_path: Path) -> None:
     base = load_experiment_config(ROOT / "configs" / "experiment.yaml")
     resolved = apply_cli_overrides(
         base,
         {"lookback": 120, "feature_columns": ["f0", "Patv_clean_for_input", "f2"]},
-        project_root=ROOT,
+        project_root=tmp_path,
     )
     assert resolved.data["lookback"] == 120
     assert resolved.data["feature_columns"] == ["f0", "Patv_clean_for_input", "f2"]

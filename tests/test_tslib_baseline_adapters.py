@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 from pathlib import Path
+import sys
 
 import pytest
 import torch
@@ -17,6 +18,18 @@ from runtime.config import load_model_config, load_model_config_document
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _is_environment(name: str) -> bool:
+    return Path(sys.executable).parent.name.casefold() == name.casefold()
+
+
+TSLIB_RUNTIME = pytest.mark.skipif(
+    not _is_environment("env_tslib"),
+    reason="requires the formal env_tslib interpreter",
+)
+
+
 MODEL_NAMES = (
     "dlinear",
     "tsmixer",
@@ -59,6 +72,7 @@ def inputs() -> ModelInput:
     return ModelInput(x=torch.randn(2, 144, 5, 4))
 
 
+@TSLIB_RUNTIME
 def test_all_adapters_build_and_return_finite_bnh(models, inputs) -> None:
     for name, model in models.items():
         assert isinstance(model, NodeSharedForecastModel), name
@@ -68,6 +82,7 @@ def test_all_adapters_build_and_return_finite_bnh(models, inputs) -> None:
         assert torch.isfinite(output).all(), name
 
 
+@TSLIB_RUNTIME
 def test_timemixer_channel_independence_zero_builds_and_runs() -> None:
     model_config = dict(
         load_model_config(ROOT / "configs" / "models" / "timemixer.yaml")
@@ -84,6 +99,7 @@ def test_timemixer_channel_independence_zero_builds_and_runs() -> None:
     assert torch.isfinite(output).all()
 
 
+@TSLIB_RUNTIME
 def test_node_chunk_contract_only_consumes_requested_nodes(models, inputs) -> None:
     changed = inputs.x.clone()
     changed[:, :, 0, :] = changed[:, :, 0, :] + 1000.0
@@ -98,6 +114,7 @@ def test_node_chunk_contract_only_consumes_requested_nodes(models, inputs) -> No
         torch.testing.assert_close(output, changed_output, atol=0.0, rtol=0.0)
 
 
+@TSLIB_RUNTIME
 def test_full_and_uneven_chunked_execution_are_equivalent(models, inputs) -> None:
     for name, model in models.items():
         with torch.inference_mode():
@@ -114,6 +131,7 @@ def test_full_and_uneven_chunked_execution_are_equivalent(models, inputs) -> Non
         torch.testing.assert_close(full, chunked, atol=1e-6, rtol=1e-6)
 
 
+@TSLIB_RUNTIME
 def test_formal_execution_plan_is_node_shared_for_all_new_models(models) -> None:
     for name, model in models.items():
         plan = build_execution_plan(model, total_nodes=134, node_shared_chunk_size=32)
@@ -125,12 +143,14 @@ def test_formal_execution_plan_is_node_shared_for_all_new_models(models) -> None
         assert has_batch_dependent_normalization(model) is False, name
 
 
+@TSLIB_RUNTIME
 def test_segrnn_uses_the_horizon_compatible_segment_layout(models) -> None:
     model = models["segrnn"]
     assert model.upstream.seg_num_x == 72
     assert model.upstream.seg_num_y == 5
 
 
+@TSLIB_RUNTIME
 def test_input_power_channel_is_selected_by_metadata_not_zero(models, inputs) -> None:
     class FixedUpstream(nn.Module):
         def forward(self, x, *args):
@@ -167,6 +187,7 @@ _INVALID_CONFIG = {
 
 
 @pytest.mark.parametrize("name", MODEL_NAMES)
+@TSLIB_RUNTIME
 def test_each_adapter_rejects_missing_and_unknown_fields(name: str) -> None:
     config = load_model_config(ROOT / "configs" / "models" / f"{name}.yaml")
     missing_name = next(iter(config))
@@ -180,6 +201,7 @@ def test_each_adapter_rejects_missing_and_unknown_fields(name: str) -> None:
 
 
 @pytest.mark.parametrize("name", MODEL_NAMES)
+@TSLIB_RUNTIME
 def test_each_adapter_rejects_a_model_specific_invalid_value(name: str) -> None:
     config = load_model_config(ROOT / "configs" / "models" / f"{name}.yaml")
     field, value = _INVALID_CONFIG[name]
@@ -188,6 +210,7 @@ def test_each_adapter_rejects_a_model_specific_invalid_value(name: str) -> None:
 
 
 @pytest.mark.parametrize("name", MODEL_NAMES)
+@TSLIB_RUNTIME
 def test_each_adapter_rejects_misaligned_input_metadata(name: str) -> None:
     config = load_model_config(ROOT / "configs" / "models" / f"{name}.yaml")
     invalid_info = DataInfoView(

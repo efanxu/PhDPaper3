@@ -25,6 +25,22 @@ from runtime.config import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _is_environment(name: str) -> bool:
+    return Path(sys.executable).parent.name.casefold() == name.casefold()
+
+
+TSLIB_RUNTIME = pytest.mark.skipif(
+    not _is_environment("env_tslib"),
+    reason="requires the formal env_tslib interpreter",
+)
+TSL_RUNTIME = pytest.mark.skipif(
+    not _is_environment("env_tsl"),
+    reason="requires the formal env_tsl interpreter",
+)
+
+
 TSLIB_NAMES = ("lightts", "tide", "frets", "film", "informer", "autoformer")
 ALL_NAMES = (*TSLIB_NAMES, "stid")
 EXPECTED_ENVIRONMENTS = {name: "tslib" for name in TSLIB_NAMES} | {"stid": "tsl"}
@@ -108,6 +124,7 @@ def test_second_batch_model_yaml_environment_and_structure() -> None:
             assert not _contains_key(document["model"], key), (name, key)
 
 
+@TSLIB_RUNTIME
 def test_second_batch_adapters_build_and_return_finite_bnh(
     tslib_models: dict[str, NodeSharedForecastModel],
     default_inputs: ModelInput,
@@ -120,6 +137,7 @@ def test_second_batch_adapters_build_and_return_finite_bnh(
         assert torch.isfinite(output).all(), name
 
 
+@TSLIB_RUNTIME
 def test_second_batch_node_range_contract_and_isolation(
     tslib_models: dict[str, NodeSharedForecastModel],
     default_inputs: ModelInput,
@@ -138,6 +156,7 @@ def test_second_batch_node_range_contract_and_isolation(
         torch.testing.assert_close(output, changed_output, atol=0.0, rtol=0.0)
 
 
+@TSLIB_RUNTIME
 def test_second_batch_full_and_uneven_chunks_match_for_microbatch_models(
     tslib_models: dict[str, NodeSharedForecastModel],
     default_inputs: ModelInput,
@@ -157,6 +176,7 @@ def test_second_batch_full_and_uneven_chunks_match_for_microbatch_models(
         torch.testing.assert_close(full, chunked, atol=1e-5, rtol=1e-5, msg=name)
 
 
+@TSLIB_RUNTIME
 def test_second_batch_execution_plans_preserve_special_architectures(
     tslib_models: dict[str, NodeSharedForecastModel],
 ) -> None:
@@ -180,7 +200,10 @@ def test_second_batch_execution_plans_preserve_special_architectures(
     assert informer_plan.reason == "batch_dependent_normalization"
 
 
-def test_second_batch_resolved_lookback_and_feature_columns_are_model_inputs() -> None:
+@TSLIB_RUNTIME
+def test_second_batch_resolved_lookback_and_feature_columns_are_model_inputs(
+    tmp_path: Path,
+) -> None:
     base = load_experiment_config(ROOT / "configs" / "experiment.yaml")
     resolved = apply_cli_overrides(
         base,
@@ -188,7 +211,7 @@ def test_second_batch_resolved_lookback_and_feature_columns_are_model_inputs() -
             "lookback": 120,
             "feature_columns": ["f0", "Patv_clean_for_input", "f2"],
         },
-        project_root=ROOT,
+        project_root=tmp_path,
     )
     assert resolved.data["lookback"] == 120
     assert resolved.data["feature_columns"] == ["f0", "Patv_clean_for_input", "f2"]
@@ -245,6 +268,7 @@ def test_second_batch_power_channel_is_selected_by_resolved_index() -> None:
     torch.testing.assert_close(output, torch.full((2, 3, 10), 1.0))
 
 
+@TSLIB_RUNTIME
 def test_second_batch_decoder_placeholders_and_tide_fallback_do_not_use_future_values() -> None:
     class RecordingUpstream(nn.Module):
         def __init__(self):
@@ -277,6 +301,7 @@ def test_second_batch_decoder_placeholders_and_tide_fallback_do_not_use_future_v
             assert torch.count_nonzero(decoder_input[:, model.label_len :]) == 0
 
 
+@TSLIB_RUNTIME
 def test_film_cpu_device_isolation_even_when_cuda_is_visible() -> None:
     model = _build("film").eval()
     assert all(value.device.type == "cpu" for value in model.upstream.buffers())
@@ -301,6 +326,7 @@ def test_film_cpu_device_isolation_even_when_cuda_is_visible() -> None:
         ("autoformer", "moving_avg", 24, 144),
     ],
 )
+@TSLIB_RUNTIME
 def test_second_batch_model_math_conflicts_fail_closed(
     name: str,
     field: str,
@@ -324,8 +350,8 @@ def test_command_reference_and_cli_schema_regression() -> None:
     assert result.returncode == 0, result.stderr
 
 
+@TSL_RUNTIME
 def test_stid_real_tsl_cpu_build_forward_and_identity_contract() -> None:
-    pytest.importorskip("tsl")
     info = _info(node_ids=(101, 205, 309, 412, 518))
     model = _build("stid", info).to("cpu").eval()
     assert isinstance(model, ForecastModel)
@@ -343,8 +369,8 @@ def test_stid_real_tsl_cpu_build_forward_and_identity_contract() -> None:
     assert torch.isfinite(output).all()
 
 
+@TSL_RUNTIME
 def test_stid_rejects_missing_or_duplicate_node_ids() -> None:
-    pytest.importorskip("tsl")
     with pytest.raises(ValueError, match="node_ids"):
         _build("stid", _info(node_ids=()))
     with pytest.raises(ValueError, match="duplicates"):

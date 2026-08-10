@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 
 import pytest
 import torch
@@ -13,6 +14,18 @@ from runtime.config import load_model_config_document
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _is_environment(name: str) -> bool:
+    return Path(sys.executable).parent.name.casefold() == name.casefold()
+
+
+TSLIB_RUNTIME = pytest.mark.skipif(
+    not _is_environment("env_tslib"),
+    reason="requires the formal env_tslib interpreter",
+)
+
+
 CONFIG = {"d_model": 16, "n_heads": 4, "d_ff": 32, "e_layers": 2, "dropout": 0.0, "factor": 2}
 
 
@@ -38,6 +51,7 @@ def test_crossformer_yaml_uses_tslib_runtime() -> None:
     assert load_model_config_document(ROOT / "configs" / "models" / "crossformer.yaml")["runtime"] == {"environment": "tslib"}
 
 
+@TSLIB_RUNTIME
 def test_crossformer_rejects_missing_unknown_and_invalid_input_metadata() -> None:
     with pytest.raises(ValueError, match="unknown"):
         build_model("crossformer", {**CONFIG, "unknown": 1}, _info())
@@ -51,6 +65,7 @@ def test_crossformer_rejects_missing_unknown_and_invalid_input_metadata() -> Non
         build_model("crossformer", dict(CONFIG), invalid)
 
 
+@TSLIB_RUNTIME
 def test_crossformer_forward_backward_and_selects_configured_power_channel() -> None:
     model = _build()
     model.eval()
@@ -66,6 +81,7 @@ def test_crossformer_forward_backward_and_selects_configured_power_channel() -> 
         model(ModelInput(x=torch.randn(1, 23, 3, 4)))
 
 
+@TSLIB_RUNTIME
 def test_crossformer_chunked_execution_matches_full_eval_with_uneven_tail() -> None:
     model = _build(5).eval()
     inputs = ModelInput(x=torch.randn(2, 24, 5, 4))
@@ -80,6 +96,7 @@ def test_crossformer_chunked_execution_matches_full_eval_with_uneven_tail() -> N
     torch.testing.assert_close(chunked, full, atol=1e-6, rtol=1e-6)
 
 
+@TSLIB_RUNTIME
 def test_crossformer_node_shared_parameter_count_permutation_and_equal_histories() -> None:
     three = _build(3).eval()
     five = _build(5).eval()
@@ -94,6 +111,7 @@ def test_crossformer_node_shared_parameter_count_permutation_and_equal_histories
     torch.testing.assert_close(output[:, 0], output[:, 1])
 
 
+@TSLIB_RUNTIME
 def test_crossformer_rejects_nonfinite_output_and_missing_upstream_source(tmp_path: Path) -> None:
     model = _build()
 
