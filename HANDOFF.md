@@ -250,8 +250,9 @@ foundation 状态继续以本 HANDOFF 前文为准。
 
 - `R0_R7_MATRIX_FOUNDATION = PASS`：该状态仅表示 machine-readable matrix、resolver
   和 CPU structural/software foundation 已通过权威验收。
-- 唯一 suite 为 `configs/experiments/ra_ds_pfd_r0_r7.yaml`；resolver 为
-  `src/models/ra_ds_pfd_crossformer/r0_r7_suite.py`；权威矩阵测试为
+- `configs/experiments/ra_ds_pfd_r0_r7.yaml` is the sole machine-readable R0-R7 matrix
+  source; the resolver validates schema and relational invariants without maintaining a
+  second full matrix copy. Resolver 为 `src/models/ra_ds_pfd_crossformer/r0_r7_suite.py`；权威矩阵测试为
   `tests/test_ra_ds_pfd_r0_r7_suite.py`。R0 严格保持 canonical P1 identity；R1
   为 current P2 mapping；R2 为 old endpoint mapping；R3/R4/R5/R6 分别只改变
   Query、Propagation Encoder、Turbine Embedding、Bias Scaling；R7 只改变 Query

@@ -42,58 +42,6 @@ P2_COMMON_FIELDS = (
     "relation_resource",
     "spatial_edge_chunk_size",
 )
-EXPECTED_MATRIX = {
-    "R0": {"spatial_disabled": True},
-    "R1": {
-        "spatial_disabled": False,
-        "spatial_query_mode": "per_variable",
-        "propagation_encoder_mode": "segment_fusion",
-        "turbine_embedding_mode": "relation_only",
-        "bias_scaling_mode": "direct",
-    },
-    "R2": {
-        "spatial_disabled": False,
-        "spatial_query_mode": "node_pooled",
-        "propagation_encoder_mode": "cross_time_then_fusion",
-        "turbine_embedding_mode": "temporal_and_relation",
-        "bias_scaling_mode": "learnable_per_scale",
-    },
-    "R3": {
-        "spatial_disabled": False,
-        "spatial_query_mode": "node_pooled",
-        "propagation_encoder_mode": "segment_fusion",
-        "turbine_embedding_mode": "relation_only",
-        "bias_scaling_mode": "direct",
-    },
-    "R4": {
-        "spatial_disabled": False,
-        "spatial_query_mode": "per_variable",
-        "propagation_encoder_mode": "cross_time_then_fusion",
-        "turbine_embedding_mode": "relation_only",
-        "bias_scaling_mode": "direct",
-    },
-    "R5": {
-        "spatial_disabled": False,
-        "spatial_query_mode": "per_variable",
-        "propagation_encoder_mode": "segment_fusion",
-        "turbine_embedding_mode": "temporal_and_relation",
-        "bias_scaling_mode": "direct",
-    },
-    "R6": {
-        "spatial_disabled": False,
-        "spatial_query_mode": "per_variable",
-        "propagation_encoder_mode": "segment_fusion",
-        "turbine_embedding_mode": "relation_only",
-        "bias_scaling_mode": "learnable_per_scale",
-    },
-    "R7": {
-        "spatial_disabled": False,
-        "spatial_query_mode": "node_pooled",
-        "propagation_encoder_mode": "cross_time_then_fusion",
-        "turbine_embedding_mode": "relation_only",
-        "bias_scaling_mode": "direct",
-    },
-}
 
 
 def _info(nodes: int = 3) -> DataInfoView:
@@ -129,10 +77,28 @@ def test_exact_variant_set() -> None:
     validate_r0_r7_suite(suite, project_root=ROOT)
 
 
-def test_resolved_matrix_is_exact() -> None:
+def architecture_tuple(config: dict[str, object]) -> tuple[object, ...]:
+    return tuple(config[field] for field in AXIS_FIELDS)
+
+
+def test_r1_current_endpoint_regression() -> None:
     resolved = _resolved()
-    assert {variant: {field: resolved[variant][field] for field in EXPECTED_MATRIX[variant]}
-            for variant in VARIANT_IDS} == EXPECTED_MATRIX
+    assert architecture_tuple(resolved["R1"]) == (
+        "per_variable",
+        "segment_fusion",
+        "relation_only",
+        "direct",
+    )
+
+
+def test_r2_old_endpoint_regression() -> None:
+    resolved = _resolved()
+    assert architecture_tuple(resolved["R2"]) == (
+        "node_pooled",
+        "cross_time_then_fusion",
+        "temporal_and_relation",
+        "learnable_per_scale",
+    )
 
 
 def test_r0_has_canonical_p1_identity_without_p2_fields() -> None:
@@ -163,6 +129,13 @@ def test_bridge_isolation_is_checked_on_resolved_configs() -> None:
         "propagation_encoder_mode",
     }
     assert differences("R2", "R1") == set(AXIS_FIELDS)
+    assert resolved["R7"]["spatial_query_mode"] == resolved["R3"]["spatial_query_mode"]
+    assert (
+        resolved["R7"]["propagation_encoder_mode"]
+        == resolved["R4"]["propagation_encoder_mode"]
+    )
+    assert resolved["R7"]["turbine_embedding_mode"] == resolved["R1"]["turbine_embedding_mode"]
+    assert resolved["R7"]["bias_scaling_mode"] == resolved["R1"]["bias_scaling_mode"]
 
 
 def test_shared_p2_invariants_are_exact() -> None:

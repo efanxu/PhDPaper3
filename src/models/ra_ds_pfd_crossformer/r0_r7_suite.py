@@ -46,58 +46,6 @@ _P2_COMMON_FIELDS = frozenset(
 _SUITE_FIELDS = frozenset(
     {"suite", "model", "base_model_config", "p2_common", "variants"}
 )
-_EXPECTED_MATRIX: dict[str, dict[str, Any]] = {
-    "R0": {"spatial_disabled": True},
-    "R1": {
-        "spatial_disabled": False,
-        "spatial_query_mode": "per_variable",
-        "propagation_encoder_mode": "segment_fusion",
-        "turbine_embedding_mode": "relation_only",
-        "bias_scaling_mode": "direct",
-    },
-    "R2": {
-        "spatial_disabled": False,
-        "spatial_query_mode": "node_pooled",
-        "propagation_encoder_mode": "cross_time_then_fusion",
-        "turbine_embedding_mode": "temporal_and_relation",
-        "bias_scaling_mode": "learnable_per_scale",
-    },
-    "R3": {
-        "spatial_disabled": False,
-        "spatial_query_mode": "node_pooled",
-        "propagation_encoder_mode": "segment_fusion",
-        "turbine_embedding_mode": "relation_only",
-        "bias_scaling_mode": "direct",
-    },
-    "R4": {
-        "spatial_disabled": False,
-        "spatial_query_mode": "per_variable",
-        "propagation_encoder_mode": "cross_time_then_fusion",
-        "turbine_embedding_mode": "relation_only",
-        "bias_scaling_mode": "direct",
-    },
-    "R5": {
-        "spatial_disabled": False,
-        "spatial_query_mode": "per_variable",
-        "propagation_encoder_mode": "segment_fusion",
-        "turbine_embedding_mode": "temporal_and_relation",
-        "bias_scaling_mode": "direct",
-    },
-    "R6": {
-        "spatial_disabled": False,
-        "spatial_query_mode": "per_variable",
-        "propagation_encoder_mode": "segment_fusion",
-        "turbine_embedding_mode": "relation_only",
-        "bias_scaling_mode": "learnable_per_scale",
-    },
-    "R7": {
-        "spatial_disabled": False,
-        "spatial_query_mode": "node_pooled",
-        "propagation_encoder_mode": "cross_time_then_fusion",
-        "turbine_embedding_mode": "relation_only",
-        "bias_scaling_mode": "direct",
-    },
-}
 
 
 class _UniqueKeyLoader(yaml.SafeLoader):
@@ -227,27 +175,38 @@ def _validate_definition(value: Any) -> dict[str, Any]:
 
     for variant_id in VARIANT_IDS:
         variant = _mapping(variants[variant_id], field=f"variants.{variant_id}")
-        expected = _EXPECTED_MATRIX[variant_id]
-        _exact_keys(variant, set(expected), field=f"variants.{variant_id}")
+        if variant_id == "R0":
+            _exact_keys(variant, {"spatial_disabled"}, field=f"variants.{variant_id}")
+        else:
+            _exact_keys(
+                variant,
+                {"spatial_disabled", *_AXIS_FIELDS},
+                field=f"variants.{variant_id}",
+            )
         if not isinstance(variant["spatial_disabled"], bool):
             raise ValueError(
                 f"RA-DS-PFD R0-R7 suite {variant_id}.spatial_disabled must be boolean"
             )
-        if variant_id != "R0":
-            for field, allowed in (
-                ("spatial_query_mode", SPATIAL_QUERY_MODES),
-                ("propagation_encoder_mode", PROPAGATION_ENCODER_MODES),
-                ("turbine_embedding_mode", TURBINE_EMBEDDING_MODES),
-                ("bias_scaling_mode", BIAS_SCALING_MODES),
-            ):
-                if not isinstance(variant[field], str) or variant[field] not in allowed:
-                    raise ValueError(
-                        f"RA-DS-PFD R0-R7 suite {variant_id}.{field} has an unsupported value"
-                    )
-        if dict(variant) != expected:
+        if variant_id == "R0":
+            if variant["spatial_disabled"] is not True:
+                raise ValueError(
+                    "RA-DS-PFD R0-R7 suite R0.spatial_disabled must be true"
+                )
+            continue
+        if variant["spatial_disabled"] is not False:
             raise ValueError(
-                f"RA-DS-PFD R0-R7 suite {variant_id} does not match the frozen matrix"
+                f"RA-DS-PFD R0-R7 suite {variant_id}.spatial_disabled must be false"
             )
+        for field, allowed in (
+            ("spatial_query_mode", SPATIAL_QUERY_MODES),
+            ("propagation_encoder_mode", PROPAGATION_ENCODER_MODES),
+            ("turbine_embedding_mode", TURBINE_EMBEDDING_MODES),
+            ("bias_scaling_mode", BIAS_SCALING_MODES),
+        ):
+            if not isinstance(variant[field], str) or variant[field] not in allowed:
+                raise ValueError(
+                    f"RA-DS-PFD R0-R7 suite {variant_id}.{field} has an unsupported value"
+                )
     return deepcopy(suite)
 
 
@@ -356,6 +315,20 @@ def _validate_resolved_matrix(
                 )
 
     baseline = resolved["R1"]
+    axis_domains = {
+        "spatial_query_mode": SPATIAL_QUERY_MODES,
+        "propagation_encoder_mode": PROPAGATION_ENCODER_MODES,
+        "turbine_embedding_mode": TURBINE_EMBEDDING_MODES,
+        "bias_scaling_mode": BIAS_SCALING_MODES,
+    }
+    for variant_id in VARIANT_IDS[1:]:
+        config = resolved[variant_id]
+        for field, allowed in axis_domains.items():
+            if baseline[field] not in allowed or config[field] not in allowed:
+                raise ValueError(
+                    f"RA-DS-PFD {variant_id}.{field} is outside the formal architecture domain"
+                )
+
     expected_differences = {
         "R2": set(_AXIS_FIELDS),
         "R3": {"spatial_query_mode"},
@@ -371,6 +344,17 @@ def _validate_resolved_matrix(
                 f"RA-DS-PFD {variant_id} bridge drifted relative to R1: "
                 f"expected {sorted(expected)}, got {sorted(actual)}"
             )
+
+    if resolved["R7"]["spatial_query_mode"] != resolved["R3"]["spatial_query_mode"]:
+        raise ValueError("RA-DS-PFD R7 must use the R3 spatial query endpoint")
+    if (
+        resolved["R7"]["propagation_encoder_mode"]
+        != resolved["R4"]["propagation_encoder_mode"]
+    ):
+        raise ValueError("RA-DS-PFD R7 must use the R4 propagation endpoint")
+    for field in ("turbine_embedding_mode", "bias_scaling_mode"):
+        if resolved["R7"][field] != baseline[field]:
+            raise ValueError(f"RA-DS-PFD R7 must preserve the R1 {field} endpoint")
 
 
 def resolve_r0_r7_variants(
