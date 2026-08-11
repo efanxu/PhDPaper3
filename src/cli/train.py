@@ -25,6 +25,7 @@ from engine.evaluator import EvaluationResult, evaluate
 from engine.model_execution import ExecutionPlan, build_execution_plan
 from engine.reproducibility import set_seed
 from engine.trainer import TrainResult, Trainer
+from models.base import ForecastModel
 from models.loader import build_model
 from runtime.config import (
     ExperimentConfig,
@@ -223,6 +224,7 @@ def _check_checkpoint_compatibility(
     model_config: Mapping[str, Any],
     checkpoint_path: Path,
     *,
+    model: ForecastModel,
     model_name: str,
     execution_plan: ExecutionPlan,
     for_resume: bool = True,
@@ -281,7 +283,7 @@ def _check_checkpoint_compatibility(
             # Evaluate-only accepts old or differently configured checkpoints;
             # it never restores training RNG state.
             continue
-        if model_name != "stcn" and path in _GRAPH_CHECKPOINT_CONFIG_PATHS:
+        if path in _GRAPH_CHECKPOINT_CONFIG_PATHS and not model.uses_public_graph_resource:
             continue
         if not for_resume and path in {
             ("training", "train_batch_size"),
@@ -618,6 +620,7 @@ def _run_model_impl(
             config,
             model_config,
             checkpoint_file,
+            model=model,
             model_name=model_name,
             execution_plan=execution_plan,
             for_resume=not evaluate_only,

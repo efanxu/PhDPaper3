@@ -64,6 +64,7 @@ def _validate_node_ids(data_info: DataInfoView) -> None:
 class RNNEncGCNDec(ForecastModel):
     """Normalize the installed TSL RNN/GCN model to ``(B, N, H)``."""
 
+    uses_public_graph_resource = True
     execution_mode = "full_spatiotemporal"
 
     def __init__(

@@ -117,6 +117,9 @@ adapter 统计；STCN 和 STID 保持 full_spatiotemporal。第三批 TSL 图模
 DCRNN/GraphWaveNet/GRUGCN/RNNEncGCNDec 复用公共 k=5 physical graph；AGCRN
 保留官方 adaptive learned graph；5 个模型均使用 full_spatiotemporal，不参与
 NodeShared node chunk。GPU formal validation pending。默认
+graph checkpoint compatibility now follows each built model's
+`uses_public_graph_resource` capability, so shared physical-graph consumers
+reject changed public graph configuration while AGCRN remains compatible。
 `runtime.node_shared_chunk_size=32`；
 public batch=32 和 `runtime.node_shared_chunk_size=32` 均未改变；
 sample batch 与 node chunk 分离，134 个节点自然分为 `32/32/32/32/6`。

@@ -184,6 +184,7 @@ def test_graph_models_use_public_graph_resource_and_persistent_buffers(monkeypat
         monkeypatch.setattr(module, "build_graph_resource", wrapped)
         model = _build(name, info)
         assert calls, name
+        assert model.uses_public_graph_resource is True
         resource = build_graph_resource(
             info.graph_config,
             node_ids=info.node_ids,
@@ -224,6 +225,7 @@ def test_agcrn_keeps_only_official_adaptive_graph(monkeypatch, tmp_path: Path) -
     monkeypatch.setattr(graph_module, "build_graph_resource", fail)
     info = _info(tmp_path)
     model = _build("agcrn", info)
+    assert model.uses_public_graph_resource is False
     assert "edge_index" not in model.state_dict()
     assert "edge_weight" not in model.state_dict()
     assert not hasattr(model, "edge_index")

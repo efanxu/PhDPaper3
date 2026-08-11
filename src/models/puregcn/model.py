@@ -67,6 +67,7 @@ def _validate_node_ids(data_info: DataInfoView) -> None:
 class PureGCN(ForecastModel):
     """Spatial-only GCN over flattened historical node features."""
 
+    uses_public_graph_resource = True
     execution_mode = "full_spatiotemporal"
 
     def __init__(

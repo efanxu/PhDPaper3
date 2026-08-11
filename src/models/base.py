@@ -94,6 +94,7 @@ class ModelInput:
 class ForecastModel(nn.Module):
     """Marker base class for models that return ``(B, N, H)`` forecasts."""
 
+    uses_public_graph_resource: bool = False
     output_layout = "batch_nodes_horizon"
 
     def validate_output(self, value: torch.Tensor, *, batch: int, nodes: int, horizon: int) -> torch.Tensor:

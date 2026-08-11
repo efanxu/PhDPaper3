@@ -63,6 +63,7 @@ def _validate_node_ids(data_info: DataInfoView) -> None:
 class DCRNN(ForecastModel):
     """Normalize the installed TSL DCRNN output to ``(B, N, H)``."""
 
+    uses_public_graph_resource = True
     execution_mode = "full_spatiotemporal"
 
     def __init__(

@@ -38,6 +38,14 @@ class _SpatialToy(ForecastModel):
         return values.unsqueeze(-1).expand(-1, inputs.x.shape[2], 2)
 
 
+class _PublicGraphSpatialToy(_SpatialToy):
+    uses_public_graph_resource = True
+
+
+class _AdaptiveGraphSpatialToy(_SpatialToy):
+    uses_public_graph_resource = False
+
+
 def _plan(model: ForecastModel, chunk_size: int = 32) -> ExecutionPlan:
     return build_execution_plan(model, total_nodes=134, node_shared_chunk_size=chunk_size)
 
@@ -70,9 +78,43 @@ def test_stcn_k4_checkpoint_is_rejected_when_public_graph_k_is_5() -> None:
             config,
             model,
             ROOT / "old-k4.pt",
+            model=_PublicGraphSpatialToy(),
             model_name="stcn",
             execution_plan=_plan(_SpatialToy()),
         )
+
+
+def test_dcrnn_public_graph_checkpoint_is_rejected_when_public_graph_k_changes() -> None:
+    config = load_experiment_config(ROOT / "configs" / "experiment.yaml")
+    model = load_model_config(ROOT / "configs" / "models" / "dcrnn.yaml")
+    old = deepcopy(config.values)
+    old["resources"]["graph"]["k"] = 4
+    with pytest.raises(ValueError, match=r"resources\.graph\.k"):
+        _check_checkpoint_compatibility(
+            _manifest(old, model, "dcrnn"),
+            config,
+            model,
+            ROOT / "old-dcrnn-k4.pt",
+            model=_PublicGraphSpatialToy(),
+            model_name="dcrnn",
+            execution_plan=_plan(_PublicGraphSpatialToy()),
+        )
+
+
+def test_agcrn_adaptive_graph_checkpoint_allows_public_graph_k_change() -> None:
+    config = load_experiment_config(ROOT / "configs" / "experiment.yaml")
+    model = load_model_config(ROOT / "configs" / "models" / "agcrn.yaml")
+    old = deepcopy(config.values)
+    old["resources"]["graph"]["k"] = 4
+    _check_checkpoint_compatibility(
+        _manifest(old, model, "agcrn"),
+        config,
+        model,
+        ROOT / "old-agcrn-k4.pt",
+        model=_AdaptiveGraphSpatialToy(),
+        model_name="agcrn",
+        execution_plan=_plan(_AdaptiveGraphSpatialToy()),
+    )
 
 
 def test_non_graph_checkpoint_is_not_rejected_only_for_graph_k_change() -> None:
@@ -85,6 +127,7 @@ def test_non_graph_checkpoint_is_not_rejected_only_for_graph_k_change() -> None:
         config,
         model,
         ROOT / "old-k4.pt",
+        model=_NodeSharedToy(),
         model_name="lstm",
         execution_plan=_plan(_NodeSharedToy()),
     )
@@ -103,6 +146,7 @@ def test_spatial_resume_ignores_changed_chunk_and_missing_legacy_chunk() -> None
         current,
         model,
         ROOT / "spatial-chunk-change.pt",
+        model=_PublicGraphSpatialToy(),
         model_name="stcn",
         execution_plan=_plan(_SpatialToy(), 16),
     )
@@ -114,6 +158,7 @@ def test_spatial_resume_ignores_changed_chunk_and_missing_legacy_chunk() -> None
         config,
         model,
         ROOT / "spatial-legacy.pt",
+        model=_PublicGraphSpatialToy(),
         model_name="stcn",
         execution_plan=_plan(_SpatialToy()),
     )
@@ -140,6 +185,7 @@ def test_node_shared_resume_requires_matching_chunk_and_new_execution_metadata(
             current,
             model,
             ROOT / "node-shared-chunk-change.pt",
+            model=_NodeSharedToy(),
             model_name=model_name,
             execution_plan=_plan(_NodeSharedToy(), 16),
         )
@@ -150,6 +196,7 @@ def test_node_shared_resume_requires_matching_chunk_and_new_execution_metadata(
             config,
             model,
             ROOT / "node-shared-legacy.pt",
+            model=_NodeSharedToy(),
             model_name=model_name,
             execution_plan=_plan(_NodeSharedToy()),
         )
@@ -168,6 +215,7 @@ def test_batch_norm_node_shared_resume_ignores_chunk_change() -> None:
         current,
         model,
         ROOT / "batch-norm-chunk-change.pt",
+        model=_BatchNormNodeSharedToy(),
         model_name="lstm",
         execution_plan=_plan(_BatchNormNodeSharedToy(), 16),
     )
@@ -193,6 +241,7 @@ def test_evaluate_only_ignores_node_shared_chunk_change(
         current,
         model,
         ROOT / "evaluate-only-chunk-change.pt",
+        model=_NodeSharedToy(),
         model_name=model_name,
         execution_plan=_plan(_NodeSharedToy(), 16),
         for_resume=False,
