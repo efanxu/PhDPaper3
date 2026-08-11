@@ -269,6 +269,42 @@ def test_second_batch_power_channel_is_selected_by_resolved_index() -> None:
 
 
 @TSLIB_RUNTIME
+def test_time_series_library_forecast_cuda_fp32_island_disables_outer_autocast() -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("requires CUDA")
+
+    class RecordingUpstream(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.projection = nn.Linear(2, 2)
+            self.input_dtype = None
+            self.autocast_enabled = None
+
+        def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
+            del x_mark_enc, x_dec, x_mark_dec
+            self.input_dtype = x_enc.dtype
+            self.autocast_enabled = torch.is_autocast_enabled(device_type="cuda")
+            return self.projection(x_enc[:, :2])
+
+    upstream = RecordingUpstream().cuda()
+    inputs = torch.randn(1, 3, 1, 2, device="cuda")
+    with torch.autocast(device_type="cuda", dtype=torch.float16):
+        output, batch, nodes = run_time_series_library_forecast(
+            inputs,
+            upstream,
+            horizon=2,
+            input_power_index=1,
+            model_name="forecast-island",
+            force_cuda_fp32_forecast=True,
+        )
+
+    assert (batch, nodes) == (1, 1)
+    assert upstream.input_dtype is torch.float32
+    assert upstream.autocast_enabled is False
+    assert output.dtype is torch.float32
+
+
+@TSLIB_RUNTIME
 def test_second_batch_decoder_placeholders_and_tide_fallback_do_not_use_future_values() -> None:
     class RecordingUpstream(nn.Module):
         def __init__(self):

@@ -109,6 +109,7 @@ class FEDformer(NodeSharedForecastModel):
             input_power_index=self.input_power_index,
             model_name="FEDformer",
             decoder_input=decoder_input,
+            force_cuda_fp32_forecast=True,
         )
         return self.validate_output(output, batch=batch, nodes=nodes, horizon=self.horizon)
 

@@ -66,6 +66,7 @@ class FiLM(NodeSharedForecastModel):
             horizon=self.horizon,
             input_power_index=self.input_power_index,
             model_name="FiLM",
+            force_cuda_fp32_forecast=True,
         )
         return self.validate_output(output, batch=batch, nodes=nodes, horizon=self.horizon)
 

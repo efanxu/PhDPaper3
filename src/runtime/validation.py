@@ -83,6 +83,30 @@ def _estimated_input_tensor_mb(batch: int, info: DataInfoView) -> float:
     return float(values * 4) / (1024.0 * 1024.0)
 
 
+def _validate_gradients(model: torch.nn.Module) -> dict[str, int]:
+    """Validate gradients that the current forward actually populated."""
+
+    named_gradients = [
+        (name, parameter.grad)
+        for name, parameter in model.named_parameters()
+        if parameter.requires_grad
+    ]
+    populated = [
+        (name, gradient)
+        for name, gradient in named_gradients
+        if gradient is not None
+    ]
+    if not populated:
+        raise RuntimeError("no gradients after backward")
+    if not all(bool(torch.isfinite(gradient).all()) for _, gradient in populated):
+        raise FloatingPointError("gradient contains NaN or Inf")
+    return {
+        "trainable_parameter_tensor_count": len(named_gradients),
+        "gradient_tensor_count": len(populated),
+        "missing_gradient_tensor_count": len(named_gradients) - len(populated),
+    }
+
+
 def run_shape_validation(
     *,
     model_name: str,
@@ -221,11 +245,7 @@ def run_shape_validation(
         if not torch.isfinite(torch.tensor(loss)):
             raise FloatingPointError("loss contains NaN or Inf")
         phase = "backward"
-        gradients = [parameter.grad for parameter in model.parameters() if parameter.requires_grad]
-        if not all(gradient is not None for gradient in gradients):
-            raise RuntimeError("missing gradient after backward")
-        if not all(bool(torch.isfinite(gradient).all()) for gradient in gradients if gradient is not None):
-            raise FloatingPointError("gradient contains NaN or Inf")
+        payload["details"].update(_validate_gradients(model))
         payload["status"] = PASS
         payload["classification"] = None
         payload["phase"] = "resolved_shape"

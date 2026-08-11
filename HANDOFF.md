@@ -157,18 +157,21 @@ evolving-GCN semantics。GPU formal validation 状态按实际执行记录。
 
 - GPU：NVIDIA GeForce RTX 4070 Ti SUPER；PyTorch `2.5.1+cu124`；CUDA `12.4`；总显存 `16375.5 MB`。运行时 resolve/preflight：`env_tslib=18`、`env_tsl=9`，全部 PASS。
 - 公共配置：graph `k=5`；train/validation/test batch `32`；`node_shared_chunk_size=32`；AMP 为 YAML resolved `true/float16`；seed `2026`；nodes `134`；lookback `144`；horizon `10`。
-- GPU Smoke：`17 PASS`、`0 OOM`、`10 FAIL`。PASS：`lstm crossformer stcn dlinear tsmixer segrnn itransformer lightts tide stid dcrnn agcrn grugcn rnnencgcndec puregcn patchtst evolvegcn`。FAIL：`autoformer fedformer film frets graphwavenet informer nonstationary_transformer timemixer timesnet transformer`。
-- FORMAL_DEFAULT_SHAPE：`17 PASS`、`0 OOM`、`10 FAIL`；17 个 PASS 的 profile 均为 `FORMAL_DEFAULT_SHAPE`，真实 shape 为 `[32,144,134,16] -> [32,134,10]`。FAIL：`autoformer fedformer film frets graphwavenet informer nonstationary_transformer timemixer timesnet transformer`。cuFFT：`autoformer fedformer film timesnet`；`MISSING_GRADIENT`：`frets graphwavenet informer nonstationary_transformer timemixer transformer`。
-- GPU Repeatability：`15 PASS`、`2 FAIL`。PASS：`lstm crossformer stcn dlinear tsmixer segrnn itransformer lightts tide stid dcrnn agcrn grugcn rnnencgcndec patchtst`；FAIL：`evolvegcn`（predictions）、`puregcn`（validation metrics）。未放宽既有 tolerance；LSTM 为真实 CUDA/cuDNN replay PASS。
+- 原始 GPU gate 中 `27` 个模型完成了 Smoke / FORMAL_DEFAULT_SHAPE；只有 dual-gate PASS 模型进入 repeatability。原始 gate 为 Smoke `17 PASS / 10 FAIL`、FORMAL_DEFAULT_SHAPE `17 PASS / 10 FAIL`，随后 repeatability `15 PASS / 2 FAIL`。
+- 本轮 `baseline_gpu_fix_smoke_seed2026`：`10/10 PASS`、`0 OOM`；`baseline_gpu_fix_formal_shape_seed2026`：`10/10 PASS`，真实 shape 均为 `[32,144,134,16] -> [32,134,10]`，profile 均为 `FORMAL_DEFAULT_SHAPE`。本轮通过模型：`autoformer fedformer film timesnet frets graphwavenet informer nonstationary_transformer timemixer transformer`。
+- 本轮 `baseline_gpu_fix_repeatability_seed2026`：`10 PASS / 2 FAIL`。PASS：`autoformer fedformer film timesnet frets graphwavenet informer nonstationary_transformer timemixer transformer`；FAIL：`evolvegcn`（predictions，max abs `6.42791748046875`）、`puregcn`（predictions，max abs `1.750457763671875`）。未放宽既有 tolerance，未发现 selection tie；GraphWaveNet 为 fixed tolerance 内的 `NUMERICAL` PASS。
+- Autoformer/FEDformer/FiLM/TimesNet 保持 public AMP=`true`，其 read-only upstream CUDA FFT forecast path 在 project-owned FP32 compatibility island 内执行，以避开 CUDA FP16 cuFFT 对 resolved non-power-of-two transform length 的限制。
+- missing-gradient validator 现在只要求至少一个 participating finite gradient，并拒绝全空梯度或 NaN/Inf；本轮六个模型均有真实 finite gradients，部分 `grad=None` 仅来自当前 forecasting forward 未使用的 upstream 参数。
 - Formal Full：`lstm=PASS`、`crossformer=PASS`；H3/H6/H10 artifacts、metrics、checkpoint reload 和 performance 均完整且有效。其余 13 个模型为 `NOT RUN — user deferred after Crossformer`；STCN 曾因 scheduler race 启动，随后在 Full 完成前终止，不计为 PASS。
 - Formal shape peak allocated GPU memory（MB）：`Informer=4040.7`（full_nodes）、`PatchTST=9541.3`（full_nodes）、`STCN=4568.4`（full_spatiotemporal）、`STID=136.1`（full_spatiotemporal）、`DCRNN=1546.2`、`AGCRN=3879.7`、`GraphWaveNet=6821.0`、`GRUGCN=2151.6`、`RNNEncGCNDec=2396.8`、`PureGCN=161.2`、`EvolveGCN=437.3`。Full peak：`LSTM=731.5`、`Crossformer=2593.8`。
-- 本轮无 OOM、无 source-code change；仅更新本文件。剩余 blocker：10 个 Smoke/formal 软件失败、EvolveGCN/PureGCN repeatability FAIL，以及 13 个 deferred Full。
+- 本轮无 OOM；本轮未运行任何 Formal Full。剩余 blocker 为 EvolveGCN/PureGCN repeatability FAIL，以及 13 个 deferred Full。
 
 ### Baseline software integration status
 
-Baseline software integration is frozen / SOFTWARE PASS。
+Baseline CPU software integration: PASS。
+GPU acceptance closeout: IN PROGRESS。
 
-`env_tslib` full CPU regression：PASS，0 failures，0 errors（236 passed，22 expected skips）。
-`env_tsl` full CPU regression：PASS，0 failures，0 errors（207 passed，51 expected skips）。
+`env_tslib` full CPU regression：PASS，0 failures，0 errors（240 passed，22 expected skips）。
+`env_tsl` full CPU regression：PASS，0 failures，0 errors（210 passed，52 expected skips）。
 
-Remaining validation：修复/复核 10 个 GPU 软件失败与 2 个 repeatability FAIL；按用户决定后续是否恢复 deferred models 的 formal Full。
+GPU Smoke / FORMAL_DEFAULT_SHAPE：本轮 10 个受影响模型全部 PASS；GPU Repeatability：`10 PASS / 2 FAIL`。Formal Full：`PARTIAL / USER DEFERRED`，本轮固定在 Repeatability 结束。

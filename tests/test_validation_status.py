@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 
 import pytest
+import torch
+from torch import nn
 
 from cli import orchestrator
 from cli import train
@@ -24,7 +26,7 @@ from runtime.status import (
     write_status,
     write_validation_status,
 )
-from runtime.validation import _batch_size
+from runtime.validation import _batch_size, _validate_gradients
 
 
 @pytest.mark.parametrize(
@@ -76,6 +78,39 @@ def test_shape_profiles_and_batch_sources_are_not_conflated() -> None:
     assert _batch_size(RESOLVED_SHAPE, 1, {"training.train_batch_size": 1}) == (1, "cli_override")
     assert _batch_size(FORMAL_DEFAULT_SHAPE, 32, {}) == (32, "yaml_default")
     assert _batch_size(INTERFACE_SMALL, 32, {}) == (2, "interface_small")
+
+
+def test_gradient_validation_allows_unused_trainable_parameters() -> None:
+    model = nn.Module()
+    model.active = nn.Parameter(torch.tensor(2.0))
+    model.unused = nn.Parameter(torch.tensor(3.0))
+    (model.active.square()).backward()
+
+    details = _validate_gradients(model)
+
+    assert details == {
+        "trainable_parameter_tensor_count": 2,
+        "gradient_tensor_count": 1,
+        "missing_gradient_tensor_count": 1,
+    }
+
+
+def test_gradient_validation_rejects_no_gradients() -> None:
+    model = nn.Module()
+    model.unused = nn.Parameter(torch.tensor(3.0))
+
+    with pytest.raises(RuntimeError, match="no gradients after backward"):
+        _validate_gradients(model)
+
+
+def test_gradient_validation_rejects_nonfinite_populated_gradients() -> None:
+    model = nn.Module()
+    model.active = nn.Parameter(torch.tensor(2.0))
+    (model.active.square()).backward()
+    model.active.grad = torch.tensor(float("nan"))
+
+    with pytest.raises(FloatingPointError, match="gradient contains NaN or Inf"):
+        _validate_gradients(model)
 
 
 def test_validation_status_write_is_atomic_and_always_v2(tmp_path: Path) -> None:

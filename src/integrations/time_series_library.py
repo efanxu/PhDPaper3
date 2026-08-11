@@ -209,6 +209,7 @@ def run_time_series_library_forecast(
     input_power_index: int,
     model_name: str,
     decoder_input: torch.Tensor | None = None,
+    force_cuda_fp32_forecast: bool = False,
 ) -> tuple[torch.Tensor, int, int]:
     """Run one upstream forecast on flattened node-batch history and select power."""
 
@@ -218,7 +219,16 @@ def run_time_series_library_forecast(
     node_history = x.permute(0, 2, 1, 3).contiguous().view(
         batch * nodes, steps, channels
     )
-    upstream_output = upstream(node_history, None, decoder_input, None)
+    if force_cuda_fp32_forecast and x.device.type == "cuda":
+        with torch.autocast(device_type="cuda", enabled=False):
+            upstream_output = upstream(
+                node_history.float(),
+                None,
+                decoder_input.float() if decoder_input is not None else None,
+                None,
+            )
+    else:
+        upstream_output = upstream(node_history, None, decoder_input, None)
     expected = (batch * nodes, int(horizon), channels)
     if not isinstance(upstream_output, torch.Tensor):
         raise TypeError(f"upstream {model_name} output must be a torch.Tensor")

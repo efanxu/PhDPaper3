@@ -83,6 +83,7 @@ class TimesNet(NodeSharedForecastModel):
                 horizon=self.horizon,
                 input_power_index=self.input_power_index,
                 model_name="TimesNet",
+                force_cuda_fp32_forecast=True,
             )
             outputs.append(output)
         output = torch.cat(outputs, dim=1)
