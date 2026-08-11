@@ -21,8 +21,7 @@ from runtime.config import load_model_config, load_model_config_document
 
 ROOT = Path(__file__).resolve().parents[1]
 TSLIB_NAMES = ("patchtst", "nonstationary_transformer", "fedformer")
-TSL_NAMES = ("puregcn", "evolvegcn")
-ALL_NAMES = (*TSLIB_NAMES, *TSL_NAMES)
+ALL_NAMES = TSLIB_NAMES
 PUBLIC_MODEL_KEYS = {
     "batch_size",
     "train_batch_size",
@@ -88,34 +87,11 @@ def _build(name: str, info: DataInfoView) -> ForecastModel:
     return build_model(name, _config(name), info)
 
 
-def _write_locations(root: Path, nodes: int) -> dict[str, object]:
-    location_dir = root / "dataset"
-    location_dir.mkdir(parents=True, exist_ok=True)
-    location_file = location_dir / "locations.csv"
-    location_file.write_text(
-        "\n".join(
-            ["TurbID,x,y"]
-            + [f"{node},{node % 8},{node // 8}" for node in range(1, nodes + 1)]
-        ),
-        encoding="utf-8",
-    )
-    return {
-        "type": "physical_knn",
-        "location_file": "locations.csv",
-        "k": 1,
-        "symmetrize": True,
-        "self_loops": False,
-        "weighting": "binary",
-    }
-
-
 def test_fourth_batch_yaml_is_structure_only() -> None:
     expected_environment = {
-        "puregcn": "tsl",
         "patchtst": "tslib",
         "nonstationary_transformer": "tslib",
         "fedformer": "tslib",
-        "evolvegcn": "tsl",
     }
     for name in ALL_NAMES:
         document = load_model_config_document(ROOT / "configs" / "models" / f"{name}.yaml")
@@ -268,119 +244,6 @@ def test_fedformer_random_modes_follow_shared_seed() -> None:
     torch.manual_seed(2026)
     second = _build("fedformer", _info())
     assert first_indices == mode_indices(second)
-
-
-@pytest.mark.skipif(not _is_environment("env_tsl"), reason="requires the formal env_tsl interpreter")
-def test_tsl_fourth_batch_real_upstream_forward_backward_and_graph_contract(tmp_path: Path) -> None:
-    from tsl.nn.layers.graph_convs import GraphConv
-    from tsl.nn.models.stgn import EvolveGCNModel
-
-    small_graph = _write_locations(tmp_path, 5)
-    pure_info = _info(nodes=5, project_root=tmp_path, graph_config=small_graph)
-    pure = _build("puregcn", pure_info)
-    assert isinstance(pure, ForecastModel)
-    assert pure.execution_mode == "full_spatiotemporal"
-    assert sum(isinstance(module, GraphConv) for module in pure.modules()) == 2
-    assert pure.graph_conv1.in_channels == 144 * 4
-    assert "edge_index" in pure.state_dict()
-    assert "edge_weight" in pure.state_dict()
-    assert pure.edge_index.dtype == torch.long
-    assert torch.isfinite(pure.edge_weight).all()
-    assert not any(
-        isinstance(module, (nn.RNN, nn.LSTM, nn.GRU, nn.Conv1d, nn.MultiheadAttention))
-        for module in pure.modules()
-    )
-
-    pure.train()
-    pure.zero_grad(set_to_none=True)
-    pure_output = pure(ModelInput(x=torch.randn(2, 144, 5, 4)))
-    pure_output.square().mean().backward()
-    pure_gradients = [parameter.grad for parameter in pure.parameters() if parameter.requires_grad]
-    assert tuple(pure_output.shape) == (2, 5, 10)
-    assert torch.isfinite(pure_output).all()
-    assert any(gradient is not None for gradient in pure_gradients)
-    assert all(torch.isfinite(gradient).all() for gradient in pure_gradients if gradient is not None)
-
-    large_graph = _write_locations(tmp_path, 32)
-    evolve_info = _info(nodes=32, project_root=tmp_path, graph_config=large_graph)
-    evolve = _build("evolvegcn", evolve_info)
-    assert isinstance(evolve.upstream, EvolveGCNModel)
-    assert evolve.execution_mode == "full_spatiotemporal"
-    assert evolve.model_config["variant"] == "H"
-    assert evolve.upstream.encoder.rnn_cells[0].pooling_layer.k == 32
-    plan = build_execution_plan(evolve, total_nodes=134, node_shared_chunk_size=32)
-    assert plan.execution_mode == "full_spatiotemporal"
-    assert plan.node_chunk_count == 1
-    evolve.train()
-    evolve.zero_grad(set_to_none=True)
-    evolve_output = evolve(ModelInput(x=torch.randn(1, 144, 32, 4)))
-    evolve_output.square().mean().backward()
-    evolve_gradients = [parameter.grad for parameter in evolve.parameters() if parameter.requires_grad]
-    assert tuple(evolve_output.shape) == (1, 32, 10)
-    assert torch.isfinite(evolve_output).all()
-    assert any(gradient is not None for gradient in evolve_gradients)
-    assert all(torch.isfinite(gradient).all() for gradient in evolve_gradients if gradient is not None)
-
-    invalid = dict(_config("evolvegcn"))
-    invalid["hidden_size"] = 32
-    with pytest.raises(ValueError, match="hidden_size <= num_nodes"):
-        build_model("evolvegcn", invalid, pure_info)
-
-
-@pytest.mark.skipif(not _is_environment("env_tsl"), reason="requires the formal env_tsl interpreter")
-def test_tsl_public_override_rebuilds_flattened_input_and_evolve_input(tmp_path: Path) -> None:
-    graph = _write_locations(tmp_path, 32)
-    info = _info(
-        nodes=32,
-        lookback=120,
-        features=("f0", "Patv_clean_for_input", "f2"),
-        project_root=tmp_path,
-        graph_config=graph,
-    )
-    pure = _build("puregcn", info)
-    evolve = _build("evolvegcn", info)
-    assert pure.graph_conv1.in_channels == 120 * 3
-    assert evolve.upstream.input_encoder[0].in_features == 3
-
-
-@pytest.mark.skipif(not _is_environment("env_tsl"), reason="requires the formal env_tsl interpreter")
-def test_tsl_graph_adapters_reuse_public_resource_and_reject_bad_node_ids(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    for name, nodes in (("puregcn", 5), ("evolvegcn", 32)):
-        graph = _write_locations(tmp_path, nodes)
-        info = _info(nodes=nodes, project_root=tmp_path, graph_config=graph)
-        module = __import__(f"models.{name}.model", fromlist=["build_model"])
-        original = module.build_graph_resource
-        calls: list[object] = []
-
-        def wrapped(*args, **kwargs):
-            calls.append((args, kwargs))
-            return original(*args, **kwargs)
-
-        monkeypatch.setattr(module, "build_graph_resource", wrapped)
-        model = _build(name, info)
-        assert calls, name
-        assert "edge_index" in model.state_dict(), name
-        assert "edge_weight" in model.state_dict(), name
-
-        missing = _info(
-            nodes=nodes,
-            project_root=tmp_path,
-            graph_config=graph,
-            node_ids=(),
-        )
-        with pytest.raises(ValueError, match="node_ids"):
-            _build(name, missing)
-        duplicate_ids = tuple(range(1, nodes)) + (nodes - 1,)
-        duplicate = _info(
-            nodes=nodes,
-            project_root=tmp_path,
-            graph_config=graph,
-            node_ids=duplicate_ids,
-        )
-        with pytest.raises(ValueError, match="duplicates"):
-            _build(name, duplicate)
 
 
 def test_fourth_batch_adapters_do_not_cross_the_input_boundary() -> None:
