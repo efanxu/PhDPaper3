@@ -224,8 +224,8 @@ NodeShared OOM 只能统一下调公共 chunk，禁止 per-model rescue。
   Old-concept endpoint 是四轴第二项组合。
 - 16 个小形状组合均完成 build/forward/backward；正式 `B=32,L=144,N=134,C=16,
   horizon=10` 两端点在等价 `edge_chunk=512` 下 output/loss/required gradients finite。
-  Current P2 峰值为 `18230.07/19550.0 MiB allocated/reserved`，Old-concept 为
-  `12246.16/12446.0 MiB`；未运行 epoch/Full 训练。
+  这些历史峰值是 PyTorch allocator 统计，不是 WDDM 下可与物理 VRAM 总量比较的
+  authoritative physical-memory evidence；本次审计已将其替换，不再作为正式显存值。
 - 本任务未实现 P3/P4；未运行 R0–R7 Full、多 seed 对照或正式训练。
 - `P2_COMPARISON_FOUNDATION = PASS_WITH_NOTES`；`OLD_RESOURCE_SAFE_TO_DELETE = NO`
   （未能证明的旧目录仍需用户自行保留/处置）。
@@ -259,19 +259,23 @@ foundation 状态继续以本 HANDOFF 前文为准；2026-08-11 的 GPU 收口�
   与 Propagation Encoder 两轴。
 - R0 使用 `NodeShared` execution；R1-R7 使用 `full_spatiotemporal` execution。
   R1-R7 共享 canonical backbone、P2 参数、relation resource 和
-  `spatial_edge_chunk_size=512`；512 已通过本轮正式 GPU gate，冻结为
-  `GPU-validated common selected edge chunk`。
+  `spatial_edge_chunk_size=512`；512 仍是配置中的 common engineering value，
+  但本次 GPU memory evidence audit 未完成，因此不能标记为 GPU-validated。
 - focused CPU acceptance：`67 passed`。完整 CPU-only acceptance：`247 passed,
   3 skipped`；skip 为既有 env_tslib 中正式 `tsl` 不可用的 STCN 测试。权威命令为
   `pytest -q --ignore=tests/test_full_shape.py`。
-- 2026-08-11 正式 GPU 收口：NVIDIA GeForce RTX 4070 Ti SUPER，16,375.5 MiB，
-  Python `D:\Apps\Miniconda3\envs\env_tslib\python.exe`，Torch `2.5.1+cu124`，
-  CUDA runtime `12.4`。`P2_MEMORY_FINALIZATION = PASS`；R1 formal F/B、1 optimizer
-  step、20 optimizer updates 全 PASS，peak `18,965.05/19,478 MiB allocated/reserved`，
-  无 OOM、无非有限值、无单调显存增长。R0-R7 `Stage A @512` 全 PASS；R0 为
-  `32/32/32/32/6` NodeShared，R1-R7 均为 `full_spatiotemporal`；Stage A 最大峰值
-  为 R4 `19,346.72/20,620 MiB`。LSTM、标准 Crossformer、R0/P1、STCN formal
-  NodeShared/shared execution regression 全 PASS；LSTM 当前 dropout `0.05`、2 layers
-  的真实 CUDA two-pass replay 也 PASS。R0-R7 Full、multi-seed、正式 test-set
-  comparison、P3/P4、Hybrid Self-View node chunk、activation checkpointing 均未运行/未实现；
-  本轮未新增 runner 或 GPU certificate/manifest。
+- 2026-08-11 `RA-DS-PFD GPU Memory Evidence Audit`：正式 R1 resolver、shape、AMP、
+  relation resource 和 `full_spatiotemporal` execution 均已核对；独立 formal F/B
+  进程 output/loss/gradients finite，但 raw allocator peak 为
+  `19847414784/20405288960 bytes`（`18927.97/19460.0 MiB`），而
+  `mem_get_info`/device property total 为 `17170956288 bytes`（`16375.5 MiB`）。
+  live `nvidia-smi` 同时为 `15989/16376 MiB used/total`、`75 MiB free`，设备为
+  单卡 NVIDIA GeForce RTX 4070 Ti SUPER、WDDM；没有多卡或多个 compute process。
+  PyTorch 文档定义 `max_memory_allocated/reserved` 为 tensor/caching-allocator
+  统计，不能在该 WDDM 运行时直接当作物理 FB VRAM peak。历史未提交 here-string
+  确实读取了这些 allocator peak；20-step 还逐 step reset 后取 `max`，没有 peak 求和。
+  因此 `R1` formal execution observation = `PASS`，但 `GPU_MEMORY_EVIDENCE_AUDIT =
+  BLOCKED`；R1 one-step/20 updates、R4、corrected R0-R7 Stage A 均按 Case C 停止，
+  `P2_MEMORY_FINALIZATION` 与 `R0_R7_GPU_STAGE_A` 不得标记为 PASS。R0-R7 Full、
+  multi-seed、正式 test-set comparison、P3/P4、Hybrid Self-View node chunk、
+  activation checkpointing 均未运行/未实现；本轮未新增 runner 或 GPU certificate/manifest。
