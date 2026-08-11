@@ -106,6 +106,7 @@ def test_old_user_entrypoints_are_removed_and_business_modules_have_no_parser() 
     assert {path.name for path in scripts.glob("*.py")} == {
         "_bootstrap.py",
         "run.py",
+        "run_ra_ds_pfd_r0_r7.py",
         "generate_command_reference.py",
         "build_ra_ds_pfd_relation.py",
     }

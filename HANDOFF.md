@@ -307,6 +307,45 @@ foundation 状态继续以本 HANDOFF 前文为准；2026-08-11 的 GPU 收口�
   触发真实 CUDA OOM。`GPU_MEMORY_EVIDENCE_AUDIT = PASS`，
   `P2_MEMORY_FINALIZATION = PASS`，`R0_R7_GPU_STAGE_A = PASS`；selected common
   edge chunk = `512`。
-- Explicitly not run/implemented：R0-R7 Full、multi-seed、formal test-set comparison、
-  P3/P4、Hybrid Self-View node chunk、activation checkpointing、R0-R7 runner；本轮只
-  使用临时 validation helper，未新增 production runner、certificate 或 manifest。
+- 该表是 single-step Stage A，不是 R0-R7 Full。R0-R7 Full、multi-seed、formal
+  test-set comparison、P3/P4 均未运行；Hybrid Self-View node chunk 与 activation
+  checkpointing 均未实现。
+
+## 16. RA-DS-PFD R0-R7 Execution Foundation（2026-08-11）
+
+- `R0_R7_FULL_READINESS_MEMORY_GATE = PASS`：在每个 variant 各自独立 Python
+  process、每轮前 `nvidia-smi` cleanliness check、正式 train split/DataLoader/loss/
+  Adam/AMP/Trainer execution primitive 下，R4 与 R5 均完成 20/20 optimizer updates。
+  全部 loss 与 required gradients finite，optimizer state 每步恰好前进一次，无
+  CUDA OOM、NaN/Inf 或持续单调 physical FB 泄漏。配置保持
+  `B/L/N/C/H=32/144/134/16/10`、seed `2026`、AMP `float16`、
+  `controlled_nonstrict`、relation resource
+  `dataset/derived/ra_ds_pfd/ra_ds_pfd_trueunion_sdwpf_v1.npz` 与 common
+  `spatial_edge_chunk_size=512`。
+- R4 20-step device-wide physical FB `baseline/peak/delta=1380/16051/14671 MiB`；
+  baseline last-20 range `1380..1417 MiB`。PyTorch allocator diagnostics 为
+  `19353.26/20630.0 MiB` allocated/reserved。R5 为
+  `591/16017/15426 MiB`；baseline range `588..599 MiB`；allocator diagnostics
+  `18966.15/19468.0 MiB`。Allocator 数值不作为 physical VRAM。
+- `R0_R7_EXECUTION_FOUNDATION = PASS`：正式 suite entry 为
+  `scripts/run_ra_ds_pfd_r0_r7.py`，支持严格互斥的 `--variant Rk`、
+  `--variants R1,R3,...`、`--all` 与 `--dry-run`。`--all` 稳定按 R0..R7；默认
+  fail-fast。runner 不提供 batch、epochs、seed、AMP、loss、split 或 edge-chunk
+  专用覆盖，只调用既有 `scripts/run.py train` → orchestrator → isolated worker →
+  Trainer。
+- `configs/experiments/ra_ds_pfd_r0_r7.yaml` 仍是唯一 matrix SSOT。runner 通过
+  `resolve_r0_r7_variants()` 生成临时 `runtime/model` YAML；临时文件位于系统临时
+  目录，结束/异常后清理，不写入 `configs/models/`。每个 variant 使用
+  `<base-run-id>__Rk` 独立 identity；result path、run_info/status 与持久化
+  `model_config.yaml` 可直接识别 variant。Resume 复用公共 checkpoint compatibility，
+  比较 resolved model-config 内容而非临时路径，因此 R3 只能恢复 R3，R4 config 会被
+  R3 checkpoint 拒绝。
+- Execution Foundation 验收：suite + runner focused `18 passed`；CLI/orchestration/
+  execution/config/resume focused `113 passed`；完整 CPU-only regression
+  `255 passed, 3 skipped`（3 个 skip 为 env_tslib 中无正式 `tsl` 的既有 STCN
+  条件 skip）。`--all --dry-run` PASS，R0 active node chunk `32` 且 edge chunk
+  `not applicable`；R1-R7 均为 `full_spatiotemporal`、edge chunk `512`，resolved
+  四轴与 suite resolver 一致。未启动正式训练。
+- Explicitly NOT RUN / NOT IMPLEMENTED：`R0-R7 Full = NOT RUN`，
+  `multi-seed = NOT RUN`，`formal test comparison = NOT RUN`，`P3/P4 = NOT RUN`，
+  `Hybrid = NOT IMPLEMENTED`，`activation checkpointing = NOT IMPLEMENTED`。
