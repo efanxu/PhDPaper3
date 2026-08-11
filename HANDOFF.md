@@ -349,3 +349,30 @@ foundation 状态继续以本 HANDOFF 前文为准；2026-08-11 的 GPU 收口�
 - Explicitly NOT RUN / NOT IMPLEMENTED：`R0-R7 Full = NOT RUN`，
   `multi-seed = NOT RUN`，`formal test comparison = NOT RUN`，`P3/P4 = NOT RUN`，
   `Hybrid = NOT IMPLEMENTED`，`activation checkpointing = NOT IMPLEMENTED`。
+
+## 17. RA-DS-PFD R0-R7 Execution Foundation Final Closeout（2026-08-11）
+
+- `R0_R7_EXECUTION_FOUNDATION_CLOSEOUT = PASS`。suite runner 已支持单一
+  `--smoke` 布尔开关；该开关只转发既有公共 train smoke profile，不提供或重定义
+  suite 专用 smoke epochs/update/eval 参数。
+- 单 R1 real smoke 使用 `ra_ds_pfd_r0_r7_r1_smoke_seed2026__R1`，结果为
+  `PASS / SMOKE`。全 suite 使用独立 base identity
+  `ra_ds_pfd_r0_r7_all_smoke_seed2026`，R0-R7 均为 `PASS / SMOKE`；每个 result
+  directory identity 唯一且 artifacts 完整。该验收是 execution/provenance integration
+  smoke，不是 20-step memory gate，也不是 Formal Full。
+- Temporary model YAML lifecycle 为 PASS：runner 在一个系统临时目录中逐项生成
+  resolver 的 `runtime/model` 文档，每个 variant 结束后删除 YAML，suite 结束后删除
+  空目录。公共 worker 持久化的 `model_config.yaml` 现在保留完整、已验证的
+  `runtime/model` 文档，八个 suite smoke 均与 resolver 输出精确一致，可直接传给
+  `scripts/run.py train --model-config` 重放。
+- `command.json` 不回写、不篡改原始 `argv`；`model_config_path` 继续记录真实临时
+  invocation path，新增 `replay_model_config_path` 指向同一 result directory 内实际存在的
+  `model_config.yaml`。Resume compatibility 继续比较 checkpoint 与当前 resolved model
+  config 内容，不依赖临时路径；实际 R1 smoke checkpoint 与当前 R1 resolver compatible，
+  R3/R4 不兼容回归继续 PASS。
+- Closeout 验收：suite/runner focused `21 passed`；CLI/provenance/documentation focused
+  `40 passed`；完整 CPU-only regression `258 passed, 3 skipped`，3 个 skip 仍是
+  env_tslib 中无正式 `tsl` 的既有 STCN 条件 skip；generated command reference
+  consistency PASS。
+- `R0-R7 Formal Full = NOT RUN`。本 closeout 完成后停止；Formal Full 只能在下一批由
+  用户显式启动。

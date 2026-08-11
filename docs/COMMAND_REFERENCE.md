@@ -253,6 +253,14 @@ python scripts\run_ra_ds_pfd_r0_r7.py --all --run-id ra_ds_pfd_seed2026 --device
 
 每个 variant 的实际 run identity 为 `<run-id>__R0` 至 `<run-id>__R7`。`--resume` 必须提供原始 base `--run-id`；checkpoint compatibility 比较 resolved model-config 内容，不依赖临时 YAML 路径。
 
+### Suite smoke
+
+```powershell
+python scripts\run_ra_ds_pfd_r0_r7.py --all --run-id ra_ds_pfd_r0_r7_smoke_seed2026 --device cuda --smoke
+```
+
+`--smoke` 只原样转发公共 train smoke profile，不定义 suite 专用 smoke 参数。runner execution 使用的临时 resolved model YAML 会在结束后清理；每个 result directory 的 `model_config.yaml` 是完整、持久化且可直接重放的 model config。
+
 ### Dry-run
 
 ```powershell
@@ -263,7 +271,7 @@ Dry-run 只解析并打印 variant 轴、execution mode、active chunk、公共 
 
 ## 覆盖记录
 
-`resolved_config.yaml` 是公共 YAML 应用命令行覆盖后的完整最终配置；`cli_overrides.yaml` 只保存本次实际提供的覆盖项；`command.json` 保存原始 argv、命令、模型和配置路径。
+`resolved_config.yaml` 是公共 YAML 应用命令行覆盖后的完整最终配置；`cli_overrides.yaml` 只保存本次实际提供的覆盖项；`command.json` 保存原始 argv、命令、模型和配置路径。其 `model_config_path` 保留真实 invocation provenance（suite runner 下可能是已清理的临时路径），`replay_model_config_path` 指向同一 result directory 内持久化的 `model_config.yaml`。
 
 ```text
 YAML 默认值 + 命令行显式覆盖 = 本次 resolved config

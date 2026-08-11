@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from cli.train import _check_checkpoint_compatibility
+from cli.train import _check_checkpoint_compatibility, _write_model_invocation_artifacts
 from models.ra_ds_pfd_crossformer.r0_r7_suite import (
     VARIANT_IDS,
     resolve_r0_r7_variant,
@@ -85,8 +85,15 @@ def test_runner_exposes_no_public_protocol_overrides() -> None:
             "val_ratio",
             "test_ratio",
             "spatial_edge_chunk_size",
+            "smoke_epochs",
+            "smoke_max_train_updates",
+            "smoke_max_eval_batches",
         }
     )
+
+
+def test_smoke_parser_is_a_single_boolean_switch() -> None:
+    assert _parse("--variant", "R1", "--smoke").smoke is True
 
 
 def test_plan_uses_resolver_output_and_unique_variant_identities() -> None:
@@ -138,6 +145,7 @@ def test_dry_run_writes_no_results_and_prints_public_invocation(tmp_path: Path) 
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload["dry_run"] is True
+    assert payload["smoke"] is False
     assert [item["variant"] for item in payload["variants"]] == ["R1", "R4"]
     assert not output_root.exists()
     for item in payload["variants"]:
@@ -145,6 +153,71 @@ def test_dry_run_writes_no_results_and_prints_public_invocation(tmp_path: Path) 
         assert command[2:5] == ["train", "--model", "ra_ds_pfd_crossformer"]
         assert "--fail-fast" in command
         assert "--smoke" not in command
+
+
+def test_smoke_dry_run_only_adds_public_smoke_forwarding(tmp_path: Path) -> None:
+    output_root = tmp_path / "smoke-results-must-not-exist"
+    normal = RUNNER.build_plan(
+        _parse("--all", "--run-id", "smoke-forwarding", "--device", "cuda")
+    )
+    smoke = RUNNER.build_plan(
+        _parse("--all", "--run-id", "smoke-forwarding", "--device", "cuda", "--smoke")
+    )
+    assert [item["variant"] for item in smoke] == list(VARIANT_IDS)
+    for normal_item, smoke_item in zip(normal, smoke, strict=True):
+        normal_command = normal_item.pop("planned_command")
+        smoke_command = smoke_item.pop("planned_command")
+        assert normal_item == smoke_item
+        assert "--smoke" not in normal_command
+        assert smoke_command == [*normal_command, "--smoke"]
+
+    result = _dry_run(
+        "--all",
+        "--run-id",
+        "smoke-forwarding",
+        "--device",
+        "cuda",
+        "--smoke",
+        "--output-root",
+        str(output_root),
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["smoke"] is True
+    assert [item["variant"] for item in payload["variants"]] == list(VARIANT_IDS)
+    assert all("--smoke" in item["planned_command"] for item in payload["variants"])
+    assert not output_root.exists()
+
+
+def test_command_provenance_preserves_invocation_and_stable_replay_config(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "result"
+    original_model_path = tmp_path / "temporary-R1.yaml"
+    resolved = resolve_r0_r7_variants(RUNNER.SUITE_PATH, project_root=ROOT)
+    document = RUNNER.resolved_model_document(
+        "R1", resolved, RUNNER._base_runtime_document()
+    )
+    argv = ["train", "--model-config", str(original_model_path), "--smoke"]
+    _write_model_invocation_artifacts(
+        output_dir=output_dir,
+        command_argv=argv,
+        command_name="train",
+        model_name="ra_ds_pfd_crossformer",
+        run_name="provenance__R1",
+        config_file=ROOT / "configs" / "experiment.yaml",
+        model_file=original_model_path,
+        model_document=document,
+        effective_overrides={},
+    )
+
+    command = json.loads((output_dir / "command.json").read_text(encoding="utf-8"))
+    replay_path = Path(command["replay_model_config_path"])
+    assert command["argv"] == argv
+    assert command["model_config_path"] == str(original_model_path)
+    assert replay_path == output_dir / "model_config.yaml"
+    assert replay_path.is_file()
+    assert yaml.safe_load(replay_path.read_text(encoding="utf-8")) == document
 
 
 def test_execution_generates_exact_temporary_yaml_and_fails_fast(monkeypatch) -> None:

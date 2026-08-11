@@ -71,6 +71,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--output-root", type=Path)
+    parser.add_argument(
+        "--smoke",
+        action="store_true",
+        help="forward the public train smoke profile unchanged",
+    )
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--resume", action="store_true")
     modes.add_argument("--overwrite", action="store_true")
@@ -112,6 +117,7 @@ def public_command(
     resume: bool,
     overwrite: bool,
     id_suffix: str | None,
+    smoke: bool,
 ) -> list[str]:
     config_display = (
         str(model_config_path)
@@ -136,6 +142,8 @@ def public_command(
     ]
     if output_root is not None:
         command.extend(("--output-root", str(output_root)))
+    if smoke:
+        command.append("--smoke")
     if resume:
         command.append("--resume")
     elif overwrite:
@@ -190,6 +198,7 @@ def build_plan(args: argparse.Namespace) -> list[dict[str, Any]]:
                     resume=args.resume,
                     overwrite=args.overwrite,
                     id_suffix=args.id_suffix,
+                    smoke=args.smoke,
                 ),
             }
         )
@@ -240,6 +249,7 @@ def execute_plan(args: argparse.Namespace, plan: list[dict[str, Any]]) -> int:
                     resume=args.resume,
                     overwrite=args.overwrite,
                     id_suffix=args.id_suffix,
+                    smoke=args.smoke,
                 )
                 print(
                     f"Launching {variant}: {json.dumps(command, ensure_ascii=False)}",
@@ -268,7 +278,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.id_suffix is not None:
         validate_run_id(args.id_suffix, label="id-suffix")
     plan = build_plan(args)
-    print(json.dumps({"dry_run": bool(args.dry_run), "variants": plan}, ensure_ascii=False, indent=2))
+    print(
+        json.dumps(
+            {"dry_run": bool(args.dry_run), "smoke": bool(args.smoke), "variants": plan},
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     if args.dry_run:
         return 0
     return execute_plan(args, plan)

@@ -32,7 +32,7 @@ from runtime.config import (
     cli_overrides_as_nested,
     cli_overrides_from_namespace,
     load_experiment_config,
-    load_model_config,
+    load_model_config_document,
     resolved_config_values,
 )
 from runtime.environment import collect_environment
@@ -411,6 +411,37 @@ def _performance(
     }
 
 
+def _write_model_invocation_artifacts(
+    *,
+    output_dir: Path,
+    command_argv: list[str] | None,
+    command_name: str,
+    model_name: str,
+    run_name: str,
+    config_file: Path,
+    model_file: Path,
+    model_document: Mapping[str, Any],
+    effective_overrides: Mapping[str, Any],
+) -> None:
+    """Persist original invocation provenance and its stable replay config."""
+
+    replay_model_config_path = output_dir / "model_config.yaml"
+    write_yaml(replay_model_config_path, dict(model_document))
+    write_json(
+        output_dir / "command.json",
+        {
+            "argv": list(command_argv or []),
+            "command": command_name,
+            "model": model_name,
+            "run_id": run_name,
+            "config_path": str(config_file),
+            "model_config_path": str(model_file),
+            "replay_model_config_path": str(replay_model_config_path),
+            "cli_overrides": cli_overrides_as_nested(effective_overrides),
+        },
+    )
+
+
 def _run_model_impl(
     *,
     model_name: str,
@@ -445,7 +476,8 @@ def _run_model_impl(
             config = apply_cli_overrides(config, {"training.seed": int(seed_override)}, project_root=project_root)
             effective_overrides["training.seed"] = int(seed_override)
     model_file = Path(model_config_path).resolve() if model_config_path else _default_model_config_path(config_file, model_name)
-    model_config = load_model_config(model_file)
+    model_document = load_model_config_document(model_file)
+    model_config = dict(model_document["model"])
     if runtime_environment is None:
         resolved_environment = resolve_model_environment(
             model_file,
@@ -525,9 +557,18 @@ def _run_model_impl(
         }
     write_yaml(output_dir / "resolved_config.yaml", resolved)
     write_yaml(output_dir / "cli_overrides.yaml", cli_overrides_as_nested(effective_overrides))
-    write_json(output_dir / "command.json", {"argv": list(command_argv or []), "command": command_name, "model": model_name, "run_id": run_name, "config_path": str(config_file), "model_config_path": str(model_file), "cli_overrides": cli_overrides_as_nested(effective_overrides)})
+    _write_model_invocation_artifacts(
+        output_dir=output_dir,
+        command_argv=command_argv,
+        command_name=command_name,
+        model_name=model_name,
+        run_name=run_name,
+        config_file=config_file,
+        model_file=model_file,
+        model_document=model_document,
+        effective_overrides=effective_overrides,
+    )
     _print_config_summary(config_file=config_file, model_file=model_file, base_config=base_config, cli_overrides=effective_overrides, output_dir=output_dir)
-    write_yaml(output_dir / "model_config.yaml", model_config)
     write_json(output_dir / "environment.json", environment)
     run_phases = {
         "preflight": phase_record(phase="preflight"),
