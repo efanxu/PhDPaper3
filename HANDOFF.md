@@ -108,15 +108,15 @@ iTransformer、TimesNet、TimeMixer、Transformer、LightTS、TiDE、FreTS、FiL
 Informer、Autoformer、STID、DCRNN、AGCRN、GraphWaveNet、GRUGCN、RNNEncGCNDec、
 PureGCN、PatchTST、Nonstationary Transformer、FEDformer 和 EvolveGCN。第二批软件接入完成；Informer(distil=true) 因官方 BatchNorm
 按公共 planner 使用 full_nodes；STID 保留 node identity，使用
-full_spatiotemporal；其余兼容模型按 NodeShared planner；GPU formal validation
-尚未执行，原因是 `target GPU currently occupied`。16 个 Time-Series-Library
+full_spatiotemporal；其余兼容模型按 NodeShared planner；本轮 GPU validation
+已在 target GPU 上按固定 acceptance sequence 执行。16 个 Time-Series-Library
 adapters 中，14 个不含原生 BatchNorm 的 adapter 使用公共 NodeShared
 microbatch executor；Informer(distil=true) 与 PatchTST 因官方 BatchNorm 使用
 full_nodes。LSTM、Crossformer 作为独立 NodeShared baseline，不计入上述 16 个
 adapter 统计；STCN 和 STID 保持 full_spatiotemporal。第三批 TSL 图模型软件接入完成；
 DCRNN/GraphWaveNet/GRUGCN/RNNEncGCNDec 复用公共 k=5 physical graph；AGCRN
 保留官方 adaptive learned graph；5 个模型均使用 full_spatiotemporal，不参与
-NodeShared node chunk。GPU formal validation pending。默认
+NodeShared node chunk。默认
 graph checkpoint compatibility now follows each built model's
 `uses_public_graph_resource` capability, so shared physical-graph consumers
 reject changed public graph configuration while AGCRN remains compatible。
@@ -125,13 +125,10 @@ public batch=32 和 `runtime.node_shared_chunk_size=32` 均未改变；
 sample batch 与 node chunk 分离，134 个节点自然分为 `32/32/32/32/6`。
 STCN 保持 `[B,L,N,C]` 的 full spatiotemporal 执行；NodeShared 若检测到原生
 BatchNorm 则保留完整节点执行，不改为 LayerNorm。正式 compatible NodeShared
-发生 OOM 时只能统一下调公共 chunk，禁止按模型救援。正式 Full 训练与
-正式 GPU 显存验收尚未运行。当前主机为 NVIDIA GeForce RTX 4070 Ti SUPER、CUDA
-12.4；外部 `Time-Series-Library` 源码仅作为只读运行时依赖，不纳入仓库。本次
-第二批 6 个 Time-Series-Library Adapter 的真实 upstream CPU 测试已执行，STID
-已在 `env_tsl` 完成真实 CPU build/forward；尚未完成项是在对应
-`env_tslib`/`env_tsl` 和真实数据上按固定序列完成基准模型的 GPU 验收；不
-将此分支用于 RA-DS-PFD 开发。
+发生 OOM 时只能统一下调公共 chunk，禁止按模型救援。当前主机为 NVIDIA
+GeForce RTX 4070 Ti SUPER、CUDA 12.4；外部 `Time-Series-Library` 源码仅作为
+只读运行时依赖，不纳入仓库。本轮正式 Full 已完成 LSTM 与 Crossformer；其余
+模型按用户要求暂缓，不将此分支用于 RA-DS-PFD 开发。
 
 ### NodeShared software closeout
 
@@ -141,9 +138,9 @@ Resume compatibility 只约束当前 `ExecutionPlan` 实际使用
 `node_shared_microbatch` 的模型，`full_nodes`/`full_spatiotemporal` 不因 chunk
 值变化失效。Formal shape validation 已改为 resolved AMP semantics。
 
-本次 target GPU 当前被其他任务占用，因此现有全部模型的 GPU gate 均为
-`NOT EXECUTED — target GPU currently occupied`；real CUDA/cuDNN LSTM
-recurrent-dropout two-pass replay 仍 pending。pre-node_shared_microbatch 产生的
+本轮 target GPU 已完成全部 Smoke、formal shape 和 repeatability gate；real
+CUDA/cuDNN LSTM recurrent-dropout two-pass replay 已通过现有真实 CUDA
+repeatability 路径验证。pre-node_shared_microbatch 产生的
 baseline runtime results/logs 已明确作废，不支持复用，且未新增 legacy result
 compatibility layer。`capture_prediction` 的多 ForecastBatch 重组问题已修复；
 real LSTM recurrent-dropout CPU repeatability regression 和 actual Crossformer
@@ -156,11 +153,22 @@ chunk-equivalence regression 已加入。`node_shared_chunk_size` 保持 `32`，
 planner；EvolveGCN 使用公共 physical graph 和 full_spatiotemporal，保持官方
 evolving-GCN semantics。GPU formal validation 状态按实际执行记录。
 
+### GPU validation closeout (2026-08-11)
+
+- GPU：NVIDIA GeForce RTX 4070 Ti SUPER；PyTorch `2.5.1+cu124`；CUDA `12.4`；总显存 `16375.5 MB`。运行时 resolve/preflight：`env_tslib=18`、`env_tsl=9`，全部 PASS。
+- 公共配置：graph `k=5`；train/validation/test batch `32`；`node_shared_chunk_size=32`；AMP 为 YAML resolved `true/float16`；seed `2026`；nodes `134`；lookback `144`；horizon `10`。
+- GPU Smoke：`17 PASS`、`0 OOM`、`10 FAIL`。PASS：`lstm crossformer stcn dlinear tsmixer segrnn itransformer lightts tide stid dcrnn agcrn grugcn rnnencgcndec puregcn patchtst evolvegcn`。FAIL：`autoformer fedformer film frets graphwavenet informer nonstationary_transformer timemixer timesnet transformer`。
+- FORMAL_DEFAULT_SHAPE：`17 PASS`、`0 OOM`、`10 FAIL`；17 个 PASS 的 profile 均为 `FORMAL_DEFAULT_SHAPE`，真实 shape 为 `[32,144,134,16] -> [32,134,10]`。FAIL：`autoformer fedformer film frets graphwavenet informer nonstationary_transformer timemixer timesnet transformer`。cuFFT：`autoformer fedformer film timesnet`；`MISSING_GRADIENT`：`frets graphwavenet informer nonstationary_transformer timemixer transformer`。
+- GPU Repeatability：`15 PASS`、`2 FAIL`。PASS：`lstm crossformer stcn dlinear tsmixer segrnn itransformer lightts tide stid dcrnn agcrn grugcn rnnencgcndec patchtst`；FAIL：`evolvegcn`（predictions）、`puregcn`（validation metrics）。未放宽既有 tolerance；LSTM 为真实 CUDA/cuDNN replay PASS。
+- Formal Full：`lstm=PASS`、`crossformer=PASS`；H3/H6/H10 artifacts、metrics、checkpoint reload 和 performance 均完整且有效。其余 13 个模型为 `NOT RUN — user deferred after Crossformer`；STCN 曾因 scheduler race 启动，随后在 Full 完成前终止，不计为 PASS。
+- Formal shape peak allocated GPU memory（MB）：`Informer=4040.7`（full_nodes）、`PatchTST=9541.3`（full_nodes）、`STCN=4568.4`（full_spatiotemporal）、`STID=136.1`（full_spatiotemporal）、`DCRNN=1546.2`、`AGCRN=3879.7`、`GraphWaveNet=6821.0`、`GRUGCN=2151.6`、`RNNEncGCNDec=2396.8`、`PureGCN=161.2`、`EvolveGCN=437.3`。Full peak：`LSTM=731.5`、`Crossformer=2593.8`。
+- 本轮无 OOM、无 source-code change；仅更新本文件。剩余 blocker：10 个 Smoke/formal 软件失败、EvolveGCN/PureGCN repeatability FAIL，以及 13 个 deferred Full。
+
 ### Baseline software integration status
 
 Baseline software integration is frozen / SOFTWARE PASS。
 
-`env_tslib` full CPU regression：PASS，0 failures，0 errors（234 passed，22 expected skips）。
-`env_tsl` full CPU regression：PASS，0 failures，0 errors（205 passed，51 expected skips）。
+`env_tslib` full CPU regression：PASS，0 failures，0 errors（236 passed，22 expected skips）。
+`env_tsl` full CPU regression：PASS，0 failures，0 errors（207 passed，51 expected skips）。
 
-Remaining validation：GPU formal validation；real-data Full training/evaluation。
+Remaining validation：修复/复核 10 个 GPU 软件失败与 2 个 repeatability FAIL；按用户决定后续是否恢复 deferred models 的 formal Full。
