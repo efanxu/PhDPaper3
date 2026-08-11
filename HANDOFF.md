@@ -166,6 +166,15 @@ evolving-GCN semantics。GPU formal validation 状态按实际执行记录。
 - Formal shape peak allocated GPU memory（MB）：`Informer=4040.7`（full_nodes）、`PatchTST=9541.3`（full_nodes）、`STCN=4568.4`（full_spatiotemporal）、`STID=136.1`（full_spatiotemporal）、`DCRNN=1546.2`、`AGCRN=3879.7`、`GraphWaveNet=6821.0`、`GRUGCN=2151.6`、`RNNEncGCNDec=2396.8`、`PureGCN=161.2`、`EvolveGCN=437.3`。Full peak：`LSTM=731.5`、`Crossformer=2593.8`。
 - 本轮无 OOM；本轮未运行任何 Formal Full。剩余 blocker 为 EvolveGCN/PureGCN repeatability FAIL，以及 13 个 deferred Full。
 
+### PureGCN / EvolveGCN repeatability diagnosis (2026-08-11)
+
+- 两模型均使用正式 `env_tsl`、当前 YAML、公共 `k=5` graph、`[32,144,134,16]` input、seed `2026`；诊断重新核对了 initial state hash，分别为 PureGCN `71a12a369c4b5c7699361db0de39131d809c8d42395e71760cb302314d32daec`、EvolveGCN `936fe4895a0f6412565e7490bd9387d24ae33cfb38be6bfd1052e98b8aa427b6`。
+- PureGCN：CPU FP32 repeated eval forward exact；CUDA FP32 max abs `2.384185791015625e-7`、AMP max abs `4.8828125e-4`。stage probe 首个非 exact 点是 `graph_conv1.aggr_module`；CUDA FP32 8/8 gradient tensors diverge，首个参数 `graph_conv1.bias`，max grad abs `2.7939677238464355e-9`。
+- EvolveGCN：CPU FP32 repeated eval forward exact；CUDA FP32 max abs `2.682209014892578e-7`、AMP max abs `4.8828125e-4`。stage probe 首个非 exact 点是 `upstream.encoder.rnn_cells.0.aggr_module` 的第一个时间步；CUDA FP32 11/11 gradient tensors diverge，首个参数 `upstream.input_encoder.0.weight`，max grad abs `7.450580596923828e-9`。
+- 两模型的 forward 均未 mutation state 或 cache（`cached=false`，cache 保持 `None`）。用完全相同 gradient 隔离 Adam step 后，model state 和 optimizer state 均 exact；正式 CUDA AMP 两-update path 在 `update 0` 已出现非零 state/prediction/loss 差异，故不是 optimizer 首因。
+- 只读源码链为：TSL `GraphConv` / `EvolveGCNHCell` → PyG `MessagePassing(aggr="add")` → `SumAggregation` → `torch_geometric.utils._scatter.scatter` → CUDA `Tensor.scatter_add_`；`norm=mean` 的 TSL degree normalization 也使用 `Tensor.scatter_add_`。`torch.use_deterministic_algorithms(True)` 在本次两模型 forward/backward 未抛出错误，因此低层 CUDA kernel 归因记为 STRONGLY SUPPORTED，而非 strict-probe CONFIRMED。
+- 结论：failure layer = CUDA graph forward aggregation（CONFIRMED）；项目 RNG/input/state/cache/optimizer bug = 未发现；根因为 upstream CUDA graph reduction 的受控数值非确定性（STRONGLY SUPPORTED）。Repeatability 继续为 PureGCN `FAIL`、EvolveGCN `FAIL`，tolerance 和正式协议不变；本轮不新增永久测试、不运行 Formal Full。`GPU acceptance closeout` 保持 `IN PROGRESS`。
+
 ### Baseline software integration status
 
 Baseline CPU software integration: PASS。
