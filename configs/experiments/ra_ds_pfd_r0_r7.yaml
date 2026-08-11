@@ -14,7 +14,7 @@ p2_common:
   gamma_init: 0.1
   relation_resource:
     file: dataset/derived/ra_ds_pfd/ra_ds_pfd_trueunion_sdwpf_v1.npz
-  # Current common engineering value; not GPU-validated by this batch.
+  # GPU-validated common selected edge chunk for the R1-R7 closeout.
   spatial_edge_chunk_size: 512
 
 variants:

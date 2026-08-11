@@ -259,23 +259,54 @@ foundation 状态继续以本 HANDOFF 前文为准；2026-08-11 的 GPU 收口�
   与 Propagation Encoder 两轴。
 - R0 使用 `NodeShared` execution；R1-R7 使用 `full_spatiotemporal` execution。
   R1-R7 共享 canonical backbone、P2 参数、relation resource 和
-  `spatial_edge_chunk_size=512`；512 仍是配置中的 common engineering value，
-  但本次 GPU memory evidence audit 未完成，因此不能标记为 GPU-validated。
+  `spatial_edge_chunk_size=512`；本次 GPU closeout 后该值成为统一的
+  GPU-validated common selected edge chunk。
 - focused CPU acceptance：`67 passed`。完整 CPU-only acceptance：`247 passed,
   3 skipped`；skip 为既有 env_tslib 中正式 `tsl` 不可用的 STCN 测试。权威命令为
   `pytest -q --ignore=tests/test_full_shape.py`。
-- 2026-08-11 `RA-DS-PFD GPU Memory Evidence Audit`：正式 R1 resolver、shape、AMP、
-  relation resource 和 `full_spatiotemporal` execution 均已核对；独立 formal F/B
-  进程 output/loss/gradients finite，但 raw allocator peak 为
-  `19847414784/20405288960 bytes`（`18927.97/19460.0 MiB`），而
-  `mem_get_info`/device property total 为 `17170956288 bytes`（`16375.5 MiB`）。
-  live `nvidia-smi` 同时为 `15989/16376 MiB used/total`、`75 MiB free`，设备为
-  单卡 NVIDIA GeForce RTX 4070 Ti SUPER、WDDM；没有多卡或多个 compute process。
-  PyTorch 文档定义 `max_memory_allocated/reserved` 为 tensor/caching-allocator
-  统计，不能在该 WDDM 运行时直接当作物理 FB VRAM peak。历史未提交 here-string
-  确实读取了这些 allocator peak；20-step 还逐 step reset 后取 `max`，没有 peak 求和。
-  因此 `R1` formal execution observation = `PASS`，但 `GPU_MEMORY_EVIDENCE_AUDIT =
-  BLOCKED`；R1 one-step/20 updates、R4、corrected R0-R7 Stage A 均按 Case C 停止，
-  `P2_MEMORY_FINALIZATION` 与 `R0_R7_GPU_STAGE_A` 不得标记为 PASS。R0-R7 Full、
-  multi-seed、正式 test-set comparison、P3/P4、Hybrid Self-View node chunk、
-  activation checkpointing 均未运行/未实现；本轮未新增 runner 或 GPU certificate/manifest。
+- 2026-08-11 `RA-DS-PFD GPU Memory Evidence Audit` 已完成；正式 R1 resolver、
+  relation resource、AMP、shape 和执行语义均通过，R1 formal F/B、one-step、20-step
+  均 PASS。WDDM physical FB 证据统一来自独立 `nvidia-smi` device-wide
+  `memory.used` sampling；PyTorch allocator peaks 只保留为独立诊断，绝不解释为
+  physical VRAM。全部 authoritative workload 前均执行 `nvidia-smi` cleanliness gate；
+  没有其他 CUDA compute workload，桌面 C+G 占用计入 baseline。
+
+## 15. RA-DS-PFD WDDM GPU / P2 / Stage A closeout（2026-08-11）
+
+- GPU：单卡 NVIDIA GeForce RTX 4070 Ti SUPER，WDDM，driver `591.86`；
+  `nvidia-smi` physical total `16376 MiB`，Python `3.11.15`，Torch `2.5.1+cu124`，
+  CUDA runtime `12.4`。正式 shape 为 `B/L/N/C/H=32/144/134/16/10`，AMP
+  `float16`，`controlled_nonstrict`，seed `2026`。
+- Measurement：sampler 为
+  `nvidia-smi --query-gpu=timestamp,memory.used,memory.total --format=csv,noheader,nounits -lms 50`；
+  baseline 是 workload 启动前最后 20 个有效样本的中位数，并要求该窗口范围不超过
+  `64 MiB`；peak 是 workload 期间/结束后采样 `memory.used` 的最大值；delta 是
+  `peak - baseline`。该 physical FB 指标是 device-wide WDDM evidence，不是 per-process
+  resident VRAM。
+- R1 memory finalization：formal F/B `baseline/peak/delta=2576/16032/13456 MiB`，
+  one-step `1011/15973/14962 MiB`，20-step `1385/15963/14578 MiB`；三轮均
+  output/loss/required gradients finite、正式 Adam 成功、无 CUDA OOM。20-step
+  losses 全部 finite，结束后 device-wide used 回落，无异常持续上涨。对应 allocator
+  diagnostics：F/B `18927.97/19460.0 MiB`，one-step `18927.97/19460.0 MiB`，
+  20-step `18964.02/19464.0 MiB`（allocated/reserved）。
+
+| Variant | Execution | Params | Physical FB baseline | Physical FB peak | Physical FB delta | PyTorch peak allocated | PyTorch peak reserved | Status |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| R0 | node_shared_microbatch | 532,068 | 904 | 4,069 | 3,165 | 2,711.90 | 2,836.0 | PASS |
+| R1 | full_spatiotemporal | 603,150 | 766 | 16,025 | 15,259 | 18,927.97 | 19,460.0 | PASS |
+| R2 | full_spatiotemporal | 760,816 | 660 | 14,016 | 13,356 | 12,841.31 | 13,008.0 | PASS |
+| R3 | full_spatiotemporal | 611,600 | 691 | 13,634 | 12,943 | 12,456.03 | 12,604.0 | PASS |
+| R4 | full_spatiotemporal | 750,990 | 915 | 16,045 | 15,130 | 19,308.46 | 20,620.0 | PASS |
+| R5 | full_spatiotemporal | 604,510 | 553 | 16,015 | 15,462 | 18,927.73 | 19,460.0 | PASS |
+| R6 | full_spatiotemporal | 603,166 | 638 | 16,026 | 15,388 | 18,927.97 | 19,460.0 | PASS |
+| R7 | full_spatiotemporal | 759,440 | 673 | 14,003 | 13,330 | 12,841.54 | 13,008.0 | PASS |
+
+- Stage A 统一通过；R0 节点范围为 `32/32/32/32/6`，R1-R7 全部使用
+  `spatial_edge_chunk_size=512`。最大 physical FB peak 为 R4 `16045 MiB`，最大
+  physical delta 为 R5 `15462 MiB`；二者均未超过 device total，且没有 variant
+  触发真实 CUDA OOM。`GPU_MEMORY_EVIDENCE_AUDIT = PASS`，
+  `P2_MEMORY_FINALIZATION = PASS`，`R0_R7_GPU_STAGE_A = PASS`；selected common
+  edge chunk = `512`。
+- Explicitly not run/implemented：R0-R7 Full、multi-seed、formal test-set comparison、
+  P3/P4、Hybrid Self-View node chunk、activation checkpointing、R0-R7 runner；本轮只
+  使用临时 validation helper，未新增 production runner、certificate 或 manifest。
