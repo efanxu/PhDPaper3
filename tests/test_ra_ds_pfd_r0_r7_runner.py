@@ -212,12 +212,25 @@ def test_command_provenance_preserves_invocation_and_stable_replay_config(
     )
 
     command = json.loads((output_dir / "command.json").read_text(encoding="utf-8"))
-    replay_path = Path(command["replay_model_config_path"])
+    assert command["replay_model_config_path"] == "model_config.yaml"
+    replay_path = output_dir / command["replay_model_config_path"]
     assert command["argv"] == argv
     assert command["model_config_path"] == str(original_model_path)
-    assert replay_path == output_dir / "model_config.yaml"
     assert replay_path.is_file()
-    assert yaml.safe_load(replay_path.read_text(encoding="utf-8")) == document
+    model_config_contents = replay_path.read_text(encoding="utf-8")
+    assert yaml.safe_load(model_config_contents) == document
+
+    archive_dir = tmp_path / "archive"
+    output_dir.rename(archive_dir)
+    relocated_command = json.loads(
+        (archive_dir / "command.json").read_text(encoding="utf-8")
+    )
+    relocated_replay_path = archive_dir / relocated_command["replay_model_config_path"]
+    assert relocated_replay_path.is_file()
+    assert relocated_replay_path.read_text(encoding="utf-8") == model_config_contents
+    assert yaml.safe_load(relocated_replay_path.read_text(encoding="utf-8")) == document
+    assert relocated_command["argv"] == argv
+    assert relocated_command["model_config_path"] == str(original_model_path)
 
 
 def test_execution_generates_exact_temporary_yaml_and_fails_fast(monkeypatch) -> None:

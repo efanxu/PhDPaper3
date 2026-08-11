@@ -200,7 +200,7 @@ def render_reference() -> str:
         [
             "## 覆盖记录",
             "",
-            "`resolved_config.yaml` 是公共 YAML 应用命令行覆盖后的完整最终配置；`cli_overrides.yaml` 只保存本次实际提供的覆盖项；`command.json` 保存原始 argv、命令、模型和配置路径。其 `model_config_path` 保留真实 invocation provenance（suite runner 下可能是已清理的临时路径），`replay_model_config_path` 指向同一 result directory 内持久化的 `model_config.yaml`。",
+            "`resolved_config.yaml` 是公共 YAML 应用命令行覆盖后的完整最终配置；`cli_overrides.yaml` 只保存本次实际提供的覆盖项；`command.json` 保存原始 argv、命令、模型和配置路径。其 `model_config_path` 保留真实 invocation provenance（suite runner 下可能是已清理的临时路径）；`replay_model_config_path` 是相对于 `command.json` 所在 run directory 的持久化 model config 路径，通常为 `model_config.yaml`，因此整个 result directory relocation 后仍有效。",
             "",
             "```text",
             "YAML 默认值 + 命令行显式覆盖 = 本次 resolved config",

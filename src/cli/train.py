@@ -436,7 +436,7 @@ def _write_model_invocation_artifacts(
             "run_id": run_name,
             "config_path": str(config_file),
             "model_config_path": str(model_file),
-            "replay_model_config_path": str(replay_model_config_path),
+            "replay_model_config_path": "model_config.yaml",
             "cli_overrides": cli_overrides_as_nested(effective_overrides),
         },
     )

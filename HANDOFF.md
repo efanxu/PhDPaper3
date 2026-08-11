@@ -376,3 +376,11 @@ foundation 状态继续以本 HANDOFF 前文为准；2026-08-11 的 GPU 收口�
   consistency PASS。
 - `R0-R7 Formal Full = NOT RUN`。本 closeout 完成后停止；Formal Full 只能在下一批由
   用户显式启动。
+
+## 18. R0-R7 Replay Metadata Portability Closeout（2026-08-11）
+
+- `R0_R7_REPLAY_METADATA_CLOSEOUT = PASS`。`replay_model_config_path` 从 absolute
+  result path 收口为 result-directory-relative `model_config.yaml`；整目录 archive/rename
+  relocation test PASS。原始 `argv` 与 `model_config_path` provenance 未修改，历史
+  artifacts 未迁移，checkpoint/resume 语义未修改。
+- `R0-R7 Formal Full = NOT RUN`。
