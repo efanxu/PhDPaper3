@@ -240,11 +240,11 @@ RA-DS-PFD P2）不因 chunk 值变化失效。Formal shape validation 已改为 
 AMP semantics；P2 数学路径、relation resource 和 edge chunk 未改变，P1/P2 的
 execution adapter 语义见上文。
 
-本次 target GPU 当前被其他任务占用，因此 LSTM/Crossformer/STCN/RA-DS-PFD
+此前 target GPU 被其他任务占用，因此当时 LSTM/Crossformer/STCN/RA-DS-PFD
 GPU gate 均为 `NOT EXECUTED — target GPU currently occupied`；real CUDA/cuDNN
-LSTM recurrent-dropout two-pass replay 仍 pending。`node_shared_chunk_size` 保持
+LSTM recurrent-dropout two-pass replay 当时 pending。`node_shared_chunk_size` 保持
 `32`，未下调到 `16` 或 `8`。P0/P1/P2、relation resource 和 P2 comparison
-foundation 状态继续以本 HANDOFF 前文为准。
+foundation 状态继续以本 HANDOFF 前文为准；2026-08-11 的 GPU 收口见下文。
 
 ## 14. RA-DS-PFD R0-R7 Matrix Foundation（2026-08-10）
 
@@ -259,13 +259,19 @@ foundation 状态继续以本 HANDOFF 前文为准。
   与 Propagation Encoder 两轴。
 - R0 使用 `NodeShared` execution；R1-R7 使用 `full_spatiotemporal` execution。
   R1-R7 共享 canonical backbone、P2 参数、relation resource 和
-  `spatial_edge_chunk_size=512`；512 是当前 common/provisional engineering value，
-  不是 GPU-validated selected edge chunk。
-- focused CPU acceptance：`66 passed`。完整 CPU-only acceptance：`246 passed,
+  `spatial_edge_chunk_size=512`；512 已通过本轮正式 GPU gate，冻结为
+  `GPU-validated common selected edge chunk`。
+- focused CPU acceptance：`67 passed`。完整 CPU-only acceptance：`247 passed,
   3 skipped`；skip 为既有 env_tslib 中正式 `tsl` 不可用的 STCN 测试。权威命令为
   `pytest -q --ignore=tests/test_full_shape.py`。
-- GPU tests executed during recovery task：`NO`。Historical accidental GPU invocation
-  before recovery：`YES`，`tests/test_full_shape.py`，结果为 `PASS`；该运行不计为
-  authoritative GPU validation、P2 memory finalization、GPU acceptance 或任何 GPU gate
-  升级。P2 memory finalization、R0-R7 GPU Stage A、R0-R7 Full 均为 `PENDING/NOT RUN`。
-  runner 未实现，P3/P4 未开始。
+- 2026-08-11 正式 GPU 收口：NVIDIA GeForce RTX 4070 Ti SUPER，16,375.5 MiB，
+  Python `D:\Apps\Miniconda3\envs\env_tslib\python.exe`，Torch `2.5.1+cu124`，
+  CUDA runtime `12.4`。`P2_MEMORY_FINALIZATION = PASS`；R1 formal F/B、1 optimizer
+  step、20 optimizer updates 全 PASS，peak `18,965.05/19,478 MiB allocated/reserved`，
+  无 OOM、无非有限值、无单调显存增长。R0-R7 `Stage A @512` 全 PASS；R0 为
+  `32/32/32/32/6` NodeShared，R1-R7 均为 `full_spatiotemporal`；Stage A 最大峰值
+  为 R4 `19,346.72/20,620 MiB`。LSTM、标准 Crossformer、R0/P1、STCN formal
+  NodeShared/shared execution regression 全 PASS；LSTM 当前 dropout `0.05`、2 layers
+  的真实 CUDA two-pass replay 也 PASS。R0-R7 Full、multi-seed、正式 test-set
+  comparison、P3/P4、Hybrid Self-View node chunk、activation checkpointing 均未运行/未实现；
+  本轮未新增 runner 或 GPU certificate/manifest。
