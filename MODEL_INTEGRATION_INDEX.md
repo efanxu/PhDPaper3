@@ -214,6 +214,17 @@ environment or limitation changes update `HANDOFF.md`.  `README.md` changes
 only for stable user-entry changes such as installation, data location,
 commands, help or result locations.
 
+### HANDOFF current-state rule
+
+`HANDOFF.md` is a current-state handoff, not a changelog.  Update existing
+sections in place and remove superseded phase status, historical test counts,
+old HEADs and obsolete closeout records when a later state replaces them.
+Keep only history that is still necessary to understand a current constraint
+or avoid a known failure.  Git history is the authoritative historical record.
+Do not grow `HANDOFF.md` by appending a new dated section for every maintenance
+pass.  A new handoff should let a session without prior context see the
+current real state, current limits, next step and important pitfalls.
+
 ## Commands
 
 Use the generated reference for current options:

@@ -75,13 +75,6 @@ def loader_seed(seed: int, offset: int) -> int:
     return int(seed) + int(offset)
 
 
-def seed_worker(worker_id: int) -> None:
-    del worker_id
-    worker_seed = torch.initial_seed() % (2**32)
-    np.random.seed(worker_seed)
-    random.seed(worker_seed)
-
-
 def capture_rng_state() -> dict[str, Any]:
     """Capture every process RNG used by the shared training path."""
 

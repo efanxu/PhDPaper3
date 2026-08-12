@@ -20,14 +20,21 @@ automatically. Use `--environment-preflight-only` on `train`, `check`,
 `preflight` or `repeatability` to check the environments without starting
 model workers.
 
-## One command entry point
+## Public execution entry points
 
-All user tasks use `scripts/run.py`:
+`scripts/run.py` is the single shared execution entry point for training,
+evaluation, checks, repeatability and summarization:
 
 ```powershell
 python scripts\run.py --help
 python scripts\run.py train --help
 ```
+
+`scripts/run_ra_ds_pfd_r0_r7.py` is only the RA-DS-PFD R0-R7
+variant-selection wrapper. It resolves the selected suite variants and
+temporary model YAML, then calls the same public `scripts/run.py train` path.
+It does not implement a separate Trainer, Evaluator, data pipeline, public
+experiment parameters or result system.
 
 The complete generated parameter reference is
 [`docs/COMMAND_REFERENCE.md`](docs/COMMAND_REFERENCE.md).
