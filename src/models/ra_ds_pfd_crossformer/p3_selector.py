@@ -4,8 +4,9 @@ The selector solves the entropic Top-K relaxation on the capped simplex.  For
 candidate logits ``alpha`` and a fixed cardinality ``K``, its relaxed gate is
 the solution of the entropy-regularized selected/unselected transport problem
 with row capacity one and total selected mass ``K``.  The scalar dual
-threshold is solved by a fixed number of bisection iterations, so the forward
-path stays differentiable and never executes a discrete Top-K operation.
+threshold is solved numerically by a fixed number of bisection iterations; the
+custom backward supplies its implicit derivative and never executes a
+discrete Top-K operation.
 """
 
 from __future__ import annotations
@@ -66,6 +67,90 @@ def validate_selector_bisection_iterations(value: Any) -> int:
     return int(value)
 
 
+class _ImplicitTopKGateFunction(torch.autograd.Function):
+    """Fixed-cardinality gate with an analytic implicit-differentiation backward."""
+
+    @staticmethod
+    def forward(
+        ctx: torch.autograd.function.FunctionCtx,
+        logits: torch.Tensor,
+        top_k: int,
+        temperature: float,
+        bisection_iterations: int,
+    ) -> torch.Tensor:
+        if not torch.isfinite(logits).all():
+            raise FloatingPointError("P3 selector logits contain NaN or Inf")
+
+        ctx.top_k = int(top_k)
+        ctx.temperature = float(temperature)
+        ctx.all_selected = ctx.top_k == int(logits.numel())
+        if ctx.all_selected:
+            # When every candidate is selected, the constrained relaxation is
+            # exactly one for every candidate and has no selection gradient.
+            return torch.ones_like(logits)
+
+        # The threshold is a numerical scalar solve.  Its bracket is allowed
+        # to use detached logits because the backward below does not traverse
+        # an unrolled bisection graph; it applies the analytic implicit
+        # derivative of the fixed-cardinality constraint instead.
+        with torch.no_grad():
+            dtype = logits.dtype
+            finfo = torch.finfo(dtype)
+            temperature_tensor = logits.new_tensor(ctx.temperature)
+            margin = temperature_tensor * 80.0
+            low = torch.clamp(
+                logits.detach().amin() - margin,
+                min=finfo.min,
+                max=finfo.max,
+            )
+            high = torch.clamp(
+                logits.detach().amax() + margin,
+                min=finfo.min,
+                max=finfo.max,
+            )
+            target = logits.new_tensor(float(ctx.top_k))
+            for _ in range(int(bisection_iterations)):
+                midpoint = (low + high) * 0.5
+                mass = torch.sigmoid((logits.detach() - midpoint) / temperature_tensor).sum()
+                if bool(mass > target):
+                    low = midpoint
+                else:
+                    high = midpoint
+            threshold = (low + high) * 0.5
+            gate = torch.sigmoid((logits.detach() - threshold) / temperature_tensor)
+
+        if not torch.isfinite(gate).all():
+            raise FloatingPointError("P3 selector relaxed gate contains NaN or Inf")
+        ctx.save_for_backward(gate)
+        return gate
+
+    @staticmethod
+    def backward(
+        ctx: torch.autograd.function.FunctionCtx,
+        grad_gate: torch.Tensor,
+    ) -> tuple[torch.Tensor, None, None, None]:
+        if ctx.all_selected:
+            return torch.zeros_like(grad_gate), None, None, None
+        if not torch.isfinite(grad_gate).all():
+            raise FloatingPointError("P3 selector gate upstream gradient contains NaN or Inf")
+
+        (gate,) = ctx.saved_tensors
+        temperature = gate.new_tensor(ctx.temperature)
+        s = gate * (1.0 - gate) / temperature
+        denominator = s.sum()
+        tiny = torch.finfo(gate.dtype).tiny
+        if not bool(torch.isfinite(denominator)):
+            raise FloatingPointError("P3 selector implicit-gradient denominator is non-finite")
+        if bool(denominator <= tiny):
+            raise FloatingPointError("P3 selector implicit-gradient denominator is too small")
+
+        weighted_upstream = (grad_gate * s).sum() / denominator
+        grad_logits = s * (grad_gate - weighted_upstream)
+        if not torch.isfinite(grad_logits).all():
+            raise FloatingPointError("P3 selector logits gradient contains NaN or Inf")
+        return grad_logits, None, None, None
+
+
 class GlobalTopKSelector(nn.Module):
     """One global learnable differentiable fixed-cardinality selector."""
 
@@ -100,70 +185,18 @@ class GlobalTopKSelector(nn.Module):
         The gate is the selected mass in a two-column entropy-regularized
         transport problem: each candidate has unit mass, the selected column
         has capacity ``K`` and the unselected column has capacity ``M-K``.
-        Solving its scalar dual gives a sigmoid at a shared threshold.  A
-        fixed bisection budget makes the operation deterministic while
-        retaining autograd connectivity to ``logits``.
+        Solving its scalar dual gives a sigmoid at a shared threshold.  The
+        fixed bisection budget makes the numerical forward deterministic;
+        ``_ImplicitTopKGateFunction.backward`` supplies the analytic implicit
+        derivative instead of differentiating through the solver iterations.
         """
 
-        if not torch.isfinite(self.logits).all():
-            raise FloatingPointError("P3 selector logits contain NaN or Inf")
-
-        # When every candidate is selected, the exact relaxation is the all-
-        # ones gate.  Keep a zero-valued logits term so backward still returns
-        # a finite zero gradient instead of ``None`` for this degenerate but
-        # valid cardinality.
-        if self.top_k == self.candidate_count:
-            return torch.ones_like(self.logits) + self.logits * 0.0
-
-        dtype = self.logits.dtype
-        finfo = torch.finfo(dtype)
-        temperature = self.logits.new_tensor(self.temperature)
-        # The dual threshold is guaranteed to lie in this interval for a
-        # sigmoid mass target between 1 and M-1.  Detaching the bounds keeps
-        # the finite numerical bracket from adding a spurious max/min path to
-        # the selector gradient.
-        margin = temperature * 80.0
-        low = torch.clamp(
-            self.logits.detach().amin() - margin,
-            min=finfo.min,
-            max=finfo.max,
+        return _ImplicitTopKGateFunction.apply(
+            self.logits,
+            self.top_k,
+            self.temperature,
+            self.bisection_iterations,
         )
-        high = torch.clamp(
-            self.logits.detach().amax() + margin,
-            min=finfo.min,
-            max=finfo.max,
-        )
-        target = self.logits.new_tensor(float(self.top_k))
-        for _ in range(self.bisection_iterations):
-            midpoint = (low + high) * 0.5
-            scaled = torch.clamp(
-                (self.logits - midpoint) / temperature,
-                min=-80.0,
-                max=80.0,
-            )
-            mass = torch.sigmoid(scaled).sum()
-            too_much_selected = mass > target
-            low = torch.where(too_much_selected, midpoint, low)
-            high = torch.where(too_much_selected, high, midpoint)
-
-        midpoint = (low + high) * 0.5
-        gate = torch.sigmoid(
-            torch.clamp(
-                (self.logits - midpoint) / temperature,
-                min=-80.0,
-                max=80.0,
-            )
-        )
-        if not torch.isfinite(gate).all():
-            raise FloatingPointError("P3 selector relaxed gate contains NaN or Inf")
-        # Sigmoid already enforces the per-candidate bounds.  This explicit
-        # cardinality correction only removes the last bisection round-off;
-        # it is differentiable and keeps the contract true even in float32.
-        gate = gate * (target / gate.sum().clamp_min(torch.finfo(dtype).tiny))
-        gate = gate.clamp(0.0, 1.0)
-        if not torch.isfinite(gate).all():
-            raise FloatingPointError("P3 selector relaxed gate contains NaN or Inf")
-        return gate
 
     def mixture_weights(self, relaxed_gate: torch.Tensor | None = None) -> torch.Tensor:
         """Normalize a relaxed gate for propagation-only aggregation."""

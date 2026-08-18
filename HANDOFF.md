@@ -5,7 +5,7 @@
 PhDPaper3 是可复现的 SDWPF 时间序列预测科研实验工程。`main` 是长期承载
 自定义模型的分支，当前维护范围包括共享路径上的 LSTM、Crossformer、STCN，
 以及 RA-DS-PFD Crossformer 的 P1/P2、冻结的 R0-R7 suite 和 P3-A
-Global Top-K Auto-PFD Foundation；P3-A2 architecture closure 已完成。公共实验协议、
+Global Top-K Auto-PFD Foundation；P3-A2.1 architecture closure 已完成。公共实验协议、
 模型数学实现、R0-R7
 variant 定义、P3 propagation seam、GPU 策略和已有结果都属于当前兼容边界。
 
@@ -48,7 +48,8 @@ loader seed，不保留第二个 worker seeding 实现。
 scripts/run_ra_ds_pfd_p3.py 是 P3-A 的同类 thin wrapper：它从
 configs/experiments/ra_ds_pfd_p3.yaml 解析 frozen R2，生成临时 model YAML，
 最终调用 scripts/run.py train；它不拥有第二套 Trainer、Evaluator、数据流程
-或结果系统。本轮只执行 CPU/静态验收和 dry-run，未启动训练。
+或结果系统。本轮 B0 复用同一 resolver 生成临时 model YAML，再调用现有
+scripts/run.py check --full-shape；未启动 epoch training 或 Discovery。
 
 ## 3. RA-DS-PFD 当前状态
 
@@ -84,9 +85,12 @@ ra_ds_pfd_crossformer 和 full_spatiotemporal：
   两个 history-only 候选，默认共 26 个；Wdir、Ndir、Wdir_w 因当前
   model-visible x 已标准化且公共数据接口不变，暂不进入候选空间。
 - Selector 是全局共享的一组 [M] learnable logits，使用
-  entropy-regularized OT-dual differentiable Top-K relaxation；它共享于所有
+  entropy-regularized fixed-cardinality Top-K relaxation；它共享于所有
   turbines、samples、timestamps、edges 和两个尺度。默认 K=2，架构支持
-  1 <= K <= M；传播使用 relaxed gate 归一化后的 mixture weights。
+  1 <= K <= M。forward 通过 no-grad scalar dual threshold bisection 求
+  relaxed gate，backward 使用 fixed-cardinality constraint 的 analytic
+  implicit differentiation；raw gate 的 sum 由 threshold solve 满足，传播仍使用
+  relaxed gate 归一化后的 mixture weights。
 - 当前 selector 参数为 model-owned `selector_temperature=0.1` 和
   `selector_bisection_iterations=64`，随 resolved model config 进入现有
   checkpoint compatibility。Hard Top-K 只用于 deterministic ranking/readout，
@@ -105,13 +109,22 @@ ra_ds_pfd_crossformer 和 full_spatiotemporal：
 
 ## 4. 当前已验证结果
 
-P3-A2 focused tests：50 passed。所有 RA-DS-PFD 相关测试：133 passed。
-当前 CPU-only regression：309 passed, 3 skipped；skip 是既有正式 tsl 环境
-条件，不是失败。`python scripts\generate_command_reference.py --check`
-通过；P3 runner CPU dry-run 展示了 selector type、K、operator list、candidate
-count 和 candidate names，且未写正式结果。
+P3 selector focused tests：36 passed；其中 gradcheck（K=1/2/3）3 项、central
+finite-difference（K=1/2/3）3 项、constraint-gradient（K=1/2/3）3 项、
+translation-invariance、monotonic ranking 和 K=M zero-gradient 均通过。所有
+RA-DS-PFD 相关测试：155 passed。当前 CPU-only regression：321 passed, 3 skipped；
+skip 是既有正式 tsl 环境条件，不是失败。`python scripts\generate_command_reference.py
+--check` 通过；P3 runner CPU dry-run 展示了 selector type、K、operator list、
+candidate count 和 candidate names，且未写正式结果。
 
-GPU 只读检查显示目标卡仍被其他进程占用；本轮没有启动任何 CUDA workload。
+P3-B0 GPU Feasibility = PASS。目标 GPU 为 NVIDIA GeForce RTX 4070 Ti SUPER
+(16376 MiB)；公共 `check --full-shape` 使用 formal default shape、
+`full_spatiotemporal` 和 resolved AMP float16，完成 forward/loss/backward：
+输入 `[32,144,134,16]`，输出 `[32,134,10]`，M=26、K=2，输出、loss、selector
+logits、candidate projections、shared Scale0/Scale1 temporal encoder 与
+relation/spatial trainable gradients 均 finite，无 CUDA OOM。公共 allocator
+记录为 peak allocated 18105.886 MB、peak reserved 18274.000 MB，GPU total
+16375.500 MB。
 
 R0-R7 的当前明确状态是：
 
@@ -124,20 +137,22 @@ Stage A、P3 dry-run 或 CPU foundation 均不得改写为 Formal Full。
 
 ## 5. P3-A2 状态与下一步
 
-P3-A2 architecture closure = COMPLETE。Global K-configurable Differentiable
-Top-K Selector 已实现并完成 CPU/结构验收：默认 K=2，K configurable 1..M；
-operator registry 已实现，当前注册 operators 为 level、diff1；default candidate
-bank 为 level + diff1；selector remains propagation-only。
+P3-A2.1 STATUS = PASS；P3-B0 STATUS = PASS。P3-A2 formal architecture closure
+已完成：Global K-configurable Selector 保持 entropy-regularized fixed-cardinality
+relaxation，forward 为 scalar threshold numerical solve，backward 为 implicit
+differentiation，且已通过 numerical gradient validation。默认 K=2，K configurable
+1..M；operator registry 当前为 level、diff1；default candidate bank 为
+level + diff1；selector remains propagation-only。
 
 P3-B Discovery 尚未运行，未导出正式 feature scores、rank 或 Top-K，也未使用
 test set 做选择。P3 Formal Full、multi-seed、PredictionTopK、RandomTopK、
 AllPropagation、physics loss、dynamic graph 和 variable-specific temporal
 response 均未实现或未运行。R0-R7 仍冻结且未被本轮修改。
 
-GPU validation = PENDING_GPU，因为 GPU 被其他进程占用；本轮没有启动 CUDA
-workload。Discovery = NOT RUN；Formal Full = NOT RUN。
+GPU validation = PASS（P3-B0 formal default shape）；Discovery = NOT RUN；
+Formal Full = NOT RUN。
 
-Next：P3-B0 GPU Feasibility。
+Next：P3-B1 — Default-K Discovery + Operator Basis Check。
 
 ## 6. 当前兼容约束与不可踩的坑
 
@@ -157,6 +172,6 @@ Next：P3-B0 GPU Feasibility。
 - P3-A 只允许从 frozen R2 派生；pfd_mode=pfd0 的 R0-R7 路径继续使用
   self.pfd0，P3 使用 self.p3_propagation，不得 mask Self 输入或改变关系图。
 - Candidate Bank 只读取 ModelInput.x 和 DataInfoView.feature_columns，不得读取
-  target、mask、future weather 或预测窗口；GPU validation 当前为
-  PENDING_GPU，因为 GPU 被其他进程占用，本轮没有启动 CUDA workload。
+  target、mask、future weather 或预测窗口；P3-B0 已通过公共 formal default
+  forward/loss/backward gate，未启动 Discovery 或 Formal Full。
 - 不提交 dataset、results、logs、checkpoint 或外部库，不强制推送，不批量递归删除。

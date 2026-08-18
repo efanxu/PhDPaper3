@@ -58,6 +58,18 @@ def _propagation() -> P3GlobalTopKPropagation:
     )
 
 
+def _gate_from_logits(logits: torch.Tensor, top_k: int) -> torch.Tensor:
+    """Call the production selector with a functional parameter value."""
+
+    selector = GlobalTopKSelector(
+        ("a", "b", "c", "d"),
+        top_k=top_k,
+        temperature=0.5,
+        bisection_iterations=64,
+    ).double()
+    return torch.func.functional_call(selector, {"logits": logits}, ())
+
+
 def test_global_selector_has_one_finite_relaxed_gate_and_stable_ties() -> None:
     selector = GlobalTopKSelector(_names(), top_k=2)
     relaxed_gate = selector()
@@ -112,6 +124,107 @@ def test_relaxed_top_k_is_differentiable_for_asymmetric_logits() -> None:
     loss.backward()
     assert selector.logits.grad is not None
     assert torch.isfinite(selector.logits.grad).all()
+
+
+@pytest.mark.parametrize("top_k", [1, 2, 3])
+def test_relaxed_top_k_matches_autograd_gradcheck(top_k: int) -> None:
+    logits = torch.tensor(
+        [1.3, 0.35, -0.4, -1.2],
+        dtype=torch.float64,
+        requires_grad=True,
+    )
+    assert torch.autograd.gradcheck(
+        lambda value: _gate_from_logits(value, top_k),
+        (logits,),
+        eps=1e-6,
+        atol=1e-5,
+        rtol=1e-4,
+    )
+
+
+@pytest.mark.parametrize("top_k", [1, 2, 3])
+def test_relaxed_top_k_matches_central_finite_difference(top_k: int) -> None:
+    logits = torch.tensor(
+        [1.3, 0.35, -0.4, -1.2],
+        dtype=torch.float64,
+        requires_grad=True,
+    )
+    weights = torch.tensor([1.0, 2.0, 4.0, 8.0], dtype=torch.float64)
+    loss = (_gate_from_logits(logits, top_k) * weights).sum()
+    (autograd_gradient,) = torch.autograd.grad(loss, logits)
+
+    epsilon = 1e-6
+    finite_difference: list[float] = []
+    for index in range(logits.numel()):
+        plus = logits.detach().clone()
+        minus = logits.detach().clone()
+        plus[index] += epsilon
+        minus[index] -= epsilon
+        plus_loss = (_gate_from_logits(plus, top_k) * weights).sum()
+        minus_loss = (_gate_from_logits(minus, top_k) * weights).sum()
+        finite_difference.append(float((plus_loss - minus_loss) / (2.0 * epsilon)))
+
+    assert torch.allclose(
+        autograd_gradient,
+        torch.tensor(finite_difference, dtype=torch.float64),
+        atol=1e-5,
+        rtol=1e-4,
+    )
+
+
+@pytest.mark.parametrize("top_k", [1, 2, 3])
+def test_relaxed_top_k_constraint_gradient_is_tangent_free(top_k: int) -> None:
+    selector = GlobalTopKSelector(
+        ("a", "b", "c", "d"),
+        top_k=top_k,
+        temperature=0.5,
+        bisection_iterations=64,
+    ).double()
+    with torch.no_grad():
+        selector.logits.copy_(torch.tensor([1.3, 0.35, -0.4, -1.2], dtype=torch.float64))
+
+    selector().sum().backward()
+
+    assert selector.logits.grad is not None
+    assert torch.isfinite(selector.logits.grad).all()
+    assert torch.allclose(selector.logits.grad, torch.zeros_like(selector.logits.grad), atol=1e-12, rtol=0.0)
+
+
+def test_relaxed_top_k_is_translation_invariant() -> None:
+    logits = torch.tensor([1.3, 0.35, -0.4, -1.2], dtype=torch.float64)
+    shifted = logits + 7.3
+    assert torch.allclose(
+        _gate_from_logits(logits, 2),
+        _gate_from_logits(shifted, 2),
+        atol=1e-12,
+        rtol=1e-12,
+    )
+
+
+def test_relaxed_top_k_preserves_logit_ranking() -> None:
+    logits = torch.tensor([1.3, 0.35, -0.4, -1.2], dtype=torch.float64)
+    gate = _gate_from_logits(logits, 2)
+    assert torch.equal(
+        torch.argsort(logits, descending=True),
+        torch.argsort(gate, descending=True),
+    )
+
+
+def test_global_selector_all_selected_gate_has_zero_gradient() -> None:
+    selector = GlobalTopKSelector(
+        ("a", "b", "c", "d"),
+        top_k=4,
+        temperature=0.5,
+    ).double()
+    with torch.no_grad():
+        selector.logits.copy_(torch.tensor([1.3, 0.35, -0.4, -1.2], dtype=torch.float64))
+
+    gate = selector()
+    assert torch.equal(gate, torch.ones_like(gate))
+    (gate * torch.tensor([1.0, 2.0, 4.0, 8.0], dtype=torch.float64)).sum().backward()
+    assert selector.logits.grad is not None
+    assert torch.isfinite(selector.logits.grad).all()
+    assert torch.equal(selector.logits.grad, torch.zeros_like(selector.logits.grad))
 
 
 @pytest.mark.parametrize("temperature", [0, -1, float("nan"), True, "0.1"])
