@@ -1,0 +1,27 @@
+suite: ra_ds_pfd_p3
+model: ra_ds_pfd_crossformer
+
+base:
+  suite_file: configs/experiments/ra_ds_pfd_r0_r7.yaml
+  variant: R2
+
+p3:
+  mode: global_topk
+  top_k: 2
+  candidate_features:
+    - Wspd
+    - Etmp
+    - Itmp
+    - Pab1
+    - Pab2
+    - Pab3
+    - Prtv
+    - T2m
+    - Sp
+    - RelH
+    - Wspd_w
+    - Tp
+    - Patv_clean_for_input
+  candidate_transforms:
+    - level
+    - diff1

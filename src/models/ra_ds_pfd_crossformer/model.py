@@ -13,6 +13,8 @@ from models.base import DataInfoView, ForecastModel, ModelInput, NodeSharedForec
 
 from .backbone import CanonicalBackbone, CanonicalTrace
 from .pfd0 import build_pfd0_propagation
+from .p3_feature_bank import validate_p3_model_config
+from .p3_propagation import P3GlobalTopKPropagation
 from .relation_resource import RelationResource, load_relation_resource
 from .relation_spatial import (
     RelationBiasProvider,
@@ -45,6 +47,7 @@ CONFIG_FIELDS = frozenset(
         "turbine_embedding_mode",
         "bias_scaling_mode",
         "base_turbine_dim",
+        "p3",
     }
 )
 CANONICAL_CONFIG_FIELDS = frozenset(
@@ -97,6 +100,7 @@ class _RADSPFDCrossformerImplementation:
         model_config: dict[str, Any],
         source_root: Path,
         wspd_index: int | None = None,
+        feature_columns: tuple[str, ...] | None = None,
         relation_resource: RelationResource | None = None,
     ) -> None:
         self.num_nodes = int(num_nodes)
@@ -114,6 +118,7 @@ class _RADSPFDCrossformerImplementation:
             # These are deliberately None rather than empty modules/buffers:
             # the legacy P1 state_dict remains exactly upstream-canonical.
             self.pfd0 = None
+            self.p3_propagation = None
             self.relation_bias_provider: RelationBiasProvider | None = None
             self.turbine_identity = None
             spatial_modules = None
@@ -147,19 +152,46 @@ class _RADSPFDCrossformerImplementation:
                 bias_scaling_mode=bias_scaling_mode,
                 turbine_identity=self.turbine_identity,
             )
-            self.pfd0 = build_pfd0_propagation(
-                propagation_encoder_mode,
-                lookback=self.lookback,
-                seg_len=int(model_config["seg_len"]),
-                win_size=int(model_config["win_size"]),
-                d_model=d_model,
-                dropout=float(model_config["spatial_dropout"]),
-                wspd_index=self.wspd_index,
-                n_heads=int(model_config["n_heads"]),
-                d_ff=int(model_config["d_ff"]),
-                factor=int(model_config["factor"]),
-                source_root=self.source_root,
-            )
+            pfd_mode = str(model_config.get("pfd_mode", "pfd0"))
+            if pfd_mode == "pfd0":
+                self.pfd0 = build_pfd0_propagation(
+                    propagation_encoder_mode,
+                    lookback=self.lookback,
+                    seg_len=int(model_config["seg_len"]),
+                    win_size=int(model_config["win_size"]),
+                    d_model=d_model,
+                    dropout=float(model_config["spatial_dropout"]),
+                    wspd_index=self.wspd_index,
+                    n_heads=int(model_config["n_heads"]),
+                    d_ff=int(model_config["d_ff"]),
+                    factor=int(model_config["factor"]),
+                    source_root=self.source_root,
+                )
+                self.p3_propagation = None
+            elif pfd_mode == "pfd3_global_topk":
+                if feature_columns is None:
+                    raise ValueError(
+                        "P3 propagation requires DataInfoView.feature_columns"
+                    )
+                self.pfd0 = None
+                p3_config = model_config["p3"]
+                self.p3_propagation = P3GlobalTopKPropagation(
+                    feature_columns=feature_columns,
+                    candidate_features=p3_config["candidate_features"],
+                    candidate_transforms=p3_config["candidate_transforms"],
+                    top_k=int(p3_config["top_k"]),
+                    lookback=self.lookback,
+                    seg_len=int(model_config["seg_len"]),
+                    win_size=int(model_config["win_size"]),
+                    d_model=d_model,
+                    n_heads=int(model_config["n_heads"]),
+                    d_ff=int(model_config["d_ff"]),
+                    factor=int(model_config["factor"]),
+                    dropout=float(model_config["dropout"]),
+                    source_root=self.source_root,
+                )
+            else:
+                raise ValueError(f"unsupported RA-DS-PFD propagation mode: {pfd_mode}")
             spatial_modules = (
                 RelationSpatialInsertion(
                     d_model=d_model,
@@ -262,11 +294,20 @@ class _RADSPFDCrossformerImplementation:
         output = full_output[..., self.input_power_index].reshape(batch, nodes, self.horizon)
         return self.validate_output(output, batch=batch, nodes=nodes, horizon=self.horizon)
 
+    def _propagation_tokens(
+        self, x: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor] | None:
+        if self.pfd0 is not None:
+            return self.pfd0(x)
+        if self.p3_propagation is not None:
+            return self.p3_propagation(x)
+        return None
+
     def forward_canonical_trace(self, inputs: ModelInput) -> CanonicalTrace:
         """Return canonical stages, using local ``[B,N,C,S,D]`` in P2 mode."""
 
         node_history, _, _ = self._node_history(inputs, 0, self.num_nodes)
-        propagation_tokens = self.pfd0(inputs.x) if self.pfd0 is not None else None
+        propagation_tokens = self._propagation_tokens(inputs.x)
         trace = self.backbone.forward_backbone(
             node_history,
             return_trace=True,
@@ -289,6 +330,18 @@ class _RADSPFDCrossformerImplementation:
             "input_power_index": self.input_power_index,
             **self.model_config,
         }
+
+    def selection_report(self) -> list[dict[str, Any]]:
+        """Return the read-only P3 ranking report, or an empty legacy report."""
+
+        if self.p3_propagation is None:
+            return []
+        return self.p3_propagation.selection_report()
+
+    def propagation_selection_report(self) -> list[dict[str, Any]]:
+        """Explicit alias for callers interested only in propagation content."""
+
+        return self.selection_report()
 
 
 class RADSPFDCrossformerP1(_RADSPFDCrossformerImplementation, NodeSharedForecastModel):
@@ -323,7 +376,27 @@ class RADSPFDCrossformerP2(_RADSPFDCrossformerImplementation, ForecastModel):
             inputs,
             0,
             self.num_nodes,
-            propagation_tokens=self.pfd0(inputs.x),
+            propagation_tokens=self._propagation_tokens(inputs.x),
+        )
+
+
+class RADSPFDCrossformerP3(_RADSPFDCrossformerImplementation, ForecastModel):
+    """P3-A full spatiotemporal adapter with propagation-only selection."""
+
+    execution_mode = "full_spatiotemporal"
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__()
+        self._init_shared(**kwargs)
+
+    def forward(self, inputs: ModelInput) -> torch.Tensor:
+        if self.p3_propagation is None or self.pfd0 is not None:
+            raise RuntimeError("RA-DS-PFD P3 requires the P3 propagation path")
+        return self._forward_canonical_range(
+            inputs,
+            0,
+            self.num_nodes,
+            propagation_tokens=self._propagation_tokens(inputs.x),
         )
 
 
@@ -362,9 +435,19 @@ def _validate_config(model_config: dict[str, Any]) -> None:
         raise ValueError("RA-DS-PFD Crossformer P1 only supports e_layers=2")
     if not isinstance(model_config["spatial_disabled"], bool):
         raise ValueError("RA-DS-PFD Crossformer spatial_disabled must be a boolean")
-    if "pfd_mode" in model_config and model_config["pfd_mode"] != "pfd0":
-        raise ValueError("RA-DS-PFD Crossformer only supports pfd_mode=pfd0 in P2")
+    if "pfd_mode" in model_config and model_config["pfd_mode"] not in {
+        "pfd0",
+        "pfd3_global_topk",
+    }:
+        raise ValueError(
+            "unsupported RA-DS-PFD Crossformer pfd_mode; "
+            "expected pfd_mode=pfd0 or pfd_mode=pfd3_global_topk"
+        )
     if model_config["spatial_disabled"]:
+        if model_config.get("pfd_mode") == "pfd3_global_topk":
+            raise ValueError("P3 propagation requires spatial_disabled=false")
+        if "p3" in model_config:
+            raise ValueError("P3 model config cannot be attached to the legacy P1 path")
         for field, allowed in (
             ("spatial_query_mode", _SPATIAL_QUERY_MODES),
             ("propagation_encoder_mode", _PROPAGATION_ENCODER_MODES),
@@ -387,8 +470,12 @@ def _validate_config(model_config: dict[str, Any]) -> None:
     missing_p2 = sorted(required_p2 - set(model_config))
     if missing_p2:
         raise ValueError(f"RA-DS-PFD Crossformer P2 config is missing field: {missing_p2[0]}")
-    if model_config["pfd_mode"] != "pfd0":
-        raise ValueError("RA-DS-PFD Crossformer only supports pfd_mode=pfd0 in P2")
+    if model_config["pfd_mode"] == "pfd0" and "p3" in model_config:
+        raise ValueError("pfd0 model config must not define P3 propagation fields")
+    if model_config["pfd_mode"] == "pfd3_global_topk":
+        if "p3" not in model_config:
+            raise ValueError("P3 model config is missing field: p3")
+        validate_p3_model_config(model_config["p3"])
     mode_fields = {
         "spatial_query_mode": _SPATIAL_QUERY_MODES,
         "propagation_encoder_mode": _PROPAGATION_ENCODER_MODES,
@@ -458,7 +545,7 @@ def _validate_data_info(data_info: DataInfoView) -> None:
 
 def build_model(
     model_config: dict[str, Any], data_info: DataInfoView
-) -> RADSPFDCrossformerP1 | RADSPFDCrossformerP2:
+) -> RADSPFDCrossformerP1 | RADSPFDCrossformerP2 | RADSPFDCrossformerP3:
     _validate_config(model_config)
     _validate_data_info(data_info)
     project_root = (
@@ -489,7 +576,11 @@ def build_model(
     adapter = (
         RADSPFDCrossformerP1
         if model_config["spatial_disabled"]
-        else RADSPFDCrossformerP2
+        else (
+            RADSPFDCrossformerP3
+            if model_config.get("pfd_mode") == "pfd3_global_topk"
+            else RADSPFDCrossformerP2
+        )
     )
     return adapter(
         num_nodes=data_info.num_nodes,
@@ -500,5 +591,6 @@ def build_model(
         model_config=model_config,
         source_root=source_root,
         wspd_index=wspd_index,
+        feature_columns=tuple(data_info.feature_columns),
         relation_resource=relation_resource,
     )

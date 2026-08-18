@@ -4,8 +4,9 @@
 
 PhDPaper3 是可复现的 SDWPF 时间序列预测科研实验工程。`main` 是长期承载
 自定义模型的分支，当前维护范围包括共享路径上的 LSTM、Crossformer、STCN，
-以及 RA-DS-PFD Crossformer 的 P1/P2 与冻结的 R0-R7 suite。公共实验协议、
-模型数学实现、R0-R7 variant 定义、GPU 策略和已有结果都属于当前兼容边界。
+以及 RA-DS-PFD Crossformer 的 P1/P2、冻结的 R0-R7 suite 和 P3-A
+Global Top-K Auto-PFD Foundation。公共实验协议、模型数学实现、R0-R7
+variant 定义、P3 propagation seam、GPU 策略和已有结果都属于当前兼容边界。
 
 正式训练需要 `dataset/` 中两个协议命名的 parquet 文件。没有对应数据或目标
 CUDA 环境时，不把 shape、smoke、CPU 回归或单步 GPU gate 解释为正式 Full。
@@ -43,6 +44,11 @@ loader seed，不保留第二个 worker seeding 实现。
 读取器兼容 schema v1。Resume、完成判断和 summarize 不依赖 worker 内部的
 `validation_status.json`。
 
+scripts/run_ra_ds_pfd_p3.py 是 P3-A 的同类 thin wrapper：它从
+configs/experiments/ra_ds_pfd_p3.yaml 解析 frozen R2，生成临时 model YAML，
+最终调用 scripts/run.py train；它不拥有第二套 Trainer、Evaluator、数据流程
+或结果系统。本批只执行过 CPU dry-run，未启动训练。
+
 ## 3. RA-DS-PFD 当前状态
 
 P1 与 P2 均为 `PASS_WITH_NOTES`：
@@ -70,13 +76,29 @@ config 重放和 result-directory relocation 已通过验收。GPU Stage A 与 R
 20-step execution foundation gate 也已通过；这些是 memory/execution evidence，
 不是 R0-R7 Formal Full。
 
+P3-A 从 frozen R2 派生，模型仍使用 ra_ds_pfd_crossformer 和
+full_spatiotemporal：
+
+- Candidate Bank 固定 13 个 scalar base features，各自生成 level 和 diff1
+  两个 history-only 候选，共 26 个；Wdir、Ndir、Wdir_w 因当前 model-visible
+  x 已标准化且公共数据接口不变，暂不进入候选空间。
+- Selector 是全局共享的 [26] learnable logits 与 differentiable softmax
+  score vector，top_k=2 只承担 ranking/readout 和后续 freeze contract，
+  不代表本批已有科学 Top-2 结果。
+- 每个候选只有一个小型 Linear(seg_len -> d_model, bias=False) 和一个
+  identity embedding；Scale0/Scale1 Cross-Time、Scale1 merging 和 position
+  embedding 均在 candidate 轴上共享。
+- Self View 继续接收完整多变量历史；P3 selector 只生成 propagation K/V。
+  relation resource、R2 的四个 architecture axes、relation bias 和 graph
+  均不变。P3 提供 model-owned read-only selection report，不写 score 文件。
+
 ## 4. 当前已验证结果
 
-本次维护相关 focused tests：`52 passed`。当前 CPU-only regression：
-`258 passed, 3 skipped`；3 个 skip 是正式 `tsl` 仅安装在 `env_tsl` 的既有条件
-skip。`python scripts\generate_command_reference.py --check` 通过，tracked
-Markdown 仍严格为 `README.md`、`MODEL_INTEGRATION_INDEX.md`、`HANDOFF.md`、
-`docs/COMMAND_REFERENCE.md` 四份。
+P3-A focused tests：18 passed。冻结 R0-R7 suite/runner regression：
+21 passed。所有 RA-DS-PFD 相关测试：111 passed。当前 CPU-only regression：
+276 passed, 4 skipped；skip 是既有 CUDA 或正式 tsl 环境条件，不是失败。
+python scripts\generate_command_reference.py --check 通过；P3 runner CPU
+dry-run 通过且未写正式结果。
 
 R0-R7 的当前明确状态是：
 
@@ -85,18 +107,17 @@ R0-R7 Formal Full = NOT RUN
 ```
 
 同样尚未运行 multi-seed 和 formal test-set comparison；已有 smoke、shape、
-Stage A 或 readiness gate 均不得改写为 Formal Full。
+Stage A、P3 dry-run 或 CPU foundation 均不得改写为 Formal Full。
 
 ## 5. 尚未实现与下一步
 
-尚未实现：P3/P4、Hybrid Self-View node chunk、activation checkpointing，以及
-P3 规划中的 7 个安全气象变量、56 个稳定因果候选、
-`CausalPropagationFeatureBank`、`learned_change12` 和 PFD1 Dense Candidate
-Propagation。下一次扩展必须先读取 `MODEL_INTEGRATION_INDEX.md`，沿公共配置、
-数据、训练、评估和调度路径接入，不得为模型新增第二套执行或结果系统。
+P3-A Discovery 尚未运行，未导出正式 feature scores、rank 或 Top-2，也未使用
+test set 做选择。P3 Formal Full、multi-seed、PredictionTop2、RandomTop2、
+AllPropagation、physics loss、dynamic graph 和 variable-specific temporal
+response 均未实现或未运行。
 
-只有在用户明确启动下一批正式实验后，才可以按既定 acceptance sequence 运行
-formal shape、repeatability、Full 或比较实验；本次维护不启动 R0-R7 Formal Full。
+Next：P3-B Discovery ——在 validation-best checkpoint 上训练并导出真实
+propagation selection scores / rank / Top-2，不使用 test set 进行选择。
 
 ## 6. 当前兼容约束与不可踩的坑
 
@@ -112,5 +133,10 @@ formal shape、repeatability、Full 或比较实验；本次维护不启动 R0-R
   默认 formal shape、正式 GPU 训练或 Formal Full；不把 NaN 指标填成 0。
 - 不重新引入 StudySpec、ModelSpec、manifest、certificate、readiness protocol、
   模型专属 Trainer/Evaluator 或新的 Markdown 文档；不要手工编辑生成的
-  `docs/COMMAND_REFERENCE.md`。
+  docs/COMMAND_REFERENCE.md。
+- P3-A 只允许从 frozen R2 派生；pfd_mode=pfd0 的 R0-R7 路径继续使用
+  self.pfd0，P3 使用 self.p3_propagation，不得 mask Self 输入或改变关系图。
+- Candidate Bank 只读取 ModelInput.x 和 DataInfoView.feature_columns，不得读取
+  target、mask、future weather 或预测窗口；GPU validation 当前为
+  PENDING_GPU，因为 GPU 被其他进程占用，本批没有启动 CUDA workload。
 - 不提交 dataset、results、logs、checkpoint 或外部库，不强制推送，不批量递归删除。
