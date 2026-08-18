@@ -14,6 +14,12 @@ from typing import Any
 import torch
 from torch import nn
 
+from .p3_selector import (
+    validate_selector_bisection_iterations,
+    validate_selector_temperature,
+    validate_top_k,
+)
+
 
 P3_BASE_FEATURES = (
     "Wspd",
@@ -30,10 +36,35 @@ P3_BASE_FEATURES = (
     "Tp",
     "Patv_clean_for_input",
 )
-P3_CANDIDATE_TRANSFORMS = ("level", "diff1")
+
+
+def _level(history: torch.Tensor) -> torch.Tensor:
+    return history
+
+
+def _diff1(history: torch.Tensor) -> torch.Tensor:
+    first = torch.zeros_like(history[:, :1])
+    return torch.cat((first, history[:, 1:] - history[:, :-1]), dim=1)
+
+
+# This registry is deliberately local to the P3 Candidate Bank.  Adding a
+# future history-only operator extends this dispatch seam without introducing
+# a project-wide model registry.
+TEMPORAL_OPERATORS = {
+    "level": _level,
+    "diff1": _diff1,
+}
+P3_CANDIDATE_TRANSFORMS = tuple(TEMPORAL_OPERATORS)
 P3_CIRCULAR_DIRECTION_FEATURES = frozenset({"Wdir", "Ndir", "Wdir_w"})
 P3_MODEL_CONFIG_FIELDS = frozenset(
-    {"mode", "top_k", "candidate_features", "candidate_transforms"}
+    {
+        "mode",
+        "top_k",
+        "candidate_features",
+        "candidate_transforms",
+        "selector_temperature",
+        "selector_bisection_iterations",
+    }
 )
 
 
@@ -66,12 +97,29 @@ def _duplicates(values: Sequence[str]) -> tuple[str, ...]:
     return tuple(duplicates)
 
 
+def _validate_transforms(value: Any) -> tuple[str, ...]:
+    transforms = _as_ordered_strings(value, field="candidate_transforms")
+    duplicate = _duplicates(transforms)
+    if duplicate:
+        raise ValueError(
+            "P3 candidate_transforms contains duplicate operator: "
+            f"{duplicate[0]}"
+        )
+    unknown = sorted(set(transforms) - set(TEMPORAL_OPERATORS))
+    if unknown:
+        raise ValueError(
+            "P3 candidate_transforms contains unknown operator: "
+            f"{unknown[0]}"
+        )
+    return transforms
+
+
 def validate_p3_model_config(value: Any) -> dict[str, Any]:
     """Validate the frozen P3-A model-owned selection document.
 
-    The model seam intentionally accepts only the complete first candidate
-    bank. A smaller or reordered bank would be a different experiment and
-    belongs in a later P3 phase.
+    The 13-feature base bank remains frozen. The temporal basis may be any
+    non-empty, ordered, duplicate-free subset of the currently registered
+    history-only operators.
     """
 
     if not isinstance(value, Mapping):
@@ -84,10 +132,6 @@ def validate_p3_model_config(value: Any) -> dict[str, Any]:
         raise ValueError(f"P3 model config p3 is missing field: {missing[0]}")
     if value["mode"] != "global_topk":
         raise ValueError("P3 model config p3.mode must be global_topk")
-    top_k = value["top_k"]
-    if not isinstance(top_k, int) or isinstance(top_k, bool) or top_k != 2:
-        raise ValueError("P3 model config p3.top_k must equal 2")
-
     features = _as_ordered_strings(value["candidate_features"], field="candidate_features")
     duplicate = _duplicates(features)
     if duplicate:
@@ -110,13 +154,11 @@ def validate_p3_model_config(value: Any) -> dict[str, Any]:
             )
         raise ValueError("P3-A candidate_features must use the canonical feature order")
 
-    transforms = _as_ordered_strings(value["candidate_transforms"], field="candidate_transforms")
-    if transforms != P3_CANDIDATE_TRANSFORMS:
-        raise ValueError(
-            "P3 candidate_transforms must be exactly [level, diff1] in that order"
-        )
-    if top_k > len(features) * len(transforms):
-        raise ValueError("P3 top_k cannot exceed candidate count")
+    transforms = _validate_transforms(value["candidate_transforms"])
+    candidate_count = len(features) * len(transforms)
+    validate_top_k(value["top_k"], candidate_count)
+    validate_selector_temperature(value["selector_temperature"])
+    validate_selector_bisection_iterations(value["selector_bisection_iterations"])
     return dict(value)
 
 
@@ -179,15 +221,12 @@ class P3CandidateBank(nn.Module):
                 "P3 Candidate Bank feature is missing from DataInfoView.feature_columns: "
                 f"{absent[0]}"
             )
-        transforms = _as_ordered_strings(candidate_transforms, field="candidate_transforms")
-        if transforms != P3_CANDIDATE_TRANSFORMS:
-            raise ValueError(
-                "P3 candidate_transforms must be exactly [level, diff1] in that order"
-            )
+        transforms = _validate_transforms(candidate_transforms)
 
-        # Resolve by the frozen base-feature order, independent of YAML list
-        # presentation, so candidate indices remain canonical and reproducible.
-        ordered_features = tuple(feature for feature in P3_BASE_FEATURES if feature in features)
+        # The supplied ordered feature and transform lists define the stable
+        # candidate order.  The formal suite keeps the frozen canonical base
+        # feature order; this also makes deliberate subset fixtures explicit.
+        ordered_features = tuple(features)
         feature_indices = {name: self.feature_columns.index(name) for name in self.feature_columns}
         candidates: list[P3Candidate] = []
         for feature in ordered_features:
@@ -222,13 +261,12 @@ class P3CandidateBank(nn.Module):
         outputs: list[torch.Tensor] = []
         for candidate in self.candidates:
             level = x[..., candidate.feature_index]
-            if candidate.transform == "level":
-                outputs.append(level)
-            elif candidate.transform == "diff1":
-                first = torch.zeros_like(level[:, :1])
-                outputs.append(torch.cat((first, level[:, 1:] - level[:, :-1]), dim=1))
-            else:  # The constructor rejects this; keep the boundary defensive.
-                raise AssertionError(f"unsupported P3 candidate transform: {candidate.transform}")
+            operator = TEMPORAL_OPERATORS.get(candidate.transform)
+            if operator is None:  # The constructor rejects this; keep defensive.
+                raise AssertionError(
+                    f"unsupported P3 candidate transform: {candidate.transform}"
+                )
+            outputs.append(operator(level))
         result = torch.stack(outputs, dim=-1)
         if not torch.isfinite(result).all():
             raise FloatingPointError("P3 Candidate Bank output contains NaN or Inf")
@@ -276,6 +314,7 @@ __all__ = [
     "P3_BASE_FEATURES",
     "P3_CANDIDATE_TRANSFORMS",
     "P3_CIRCULAR_DIRECTION_FEATURES",
+    "TEMPORAL_OPERATORS",
     "P3Candidate",
     "P3CandidateBank",
     "P3FeatureBank",

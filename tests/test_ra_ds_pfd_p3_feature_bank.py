@@ -8,8 +8,8 @@ import torch
 from models.base import DataInfoView
 from models.ra_ds_pfd_crossformer.p3_feature_bank import (
     P3_BASE_FEATURES,
-    P3_CANDIDATE_TRANSFORMS,
     P3CandidateBank,
+    TEMPORAL_OPERATORS,
 )
 
 
@@ -114,21 +114,39 @@ def test_candidate_bank_resolves_by_feature_name_and_rejects_bad_metadata() -> N
     with pytest.raises(ValueError, match="duplicate feature"):
         P3CandidateBank(_info(), candidate_features=("Wspd", "Wspd"))
 
-    with pytest.raises(ValueError, match="exactly"):
-        P3CandidateBank(_info(), candidate_transforms=("level",))
+    with pytest.raises(ValueError, match="unknown operator"):
+        P3CandidateBank(_info(), candidate_transforms=("unknown",))
+
+    with pytest.raises(ValueError, match="duplicate operator"):
+        P3CandidateBank(_info(), candidate_transforms=("level", "level"))
+
+    with pytest.raises(ValueError, match="non-empty"):
+        P3CandidateBank(_info(), candidate_transforms=())
 
 
-def test_candidate_bank_uses_canonical_order_even_if_subset_is_presented_differently() -> None:
+@pytest.mark.parametrize(
+    ("transforms", "expected_count"),
+    [(("level",), 13), (("level", "diff1"), 26)],
+)
+def test_candidate_bank_supports_registered_operator_subsets(
+    transforms: tuple[str, ...], expected_count: int
+) -> None:
+    bank = P3CandidateBank(_info(), candidate_transforms=transforms)
+    assert bank.candidate_count == expected_count
+    assert set(transforms).issubset(TEMPORAL_OPERATORS)
+
+
+def test_candidate_bank_uses_declared_feature_and_operator_order() -> None:
     bank = P3CandidateBank(
         _info(),
         candidate_features=("Tp", "Wspd", "Etmp"),
-        candidate_transforms=P3_CANDIDATE_TRANSFORMS,
+        candidate_transforms=("diff1", "level"),
     )
     assert bank.candidate_names == (
-        "Wspd.level",
-        "Wspd.diff1",
-        "Etmp.level",
-        "Etmp.diff1",
-        "Tp.level",
         "Tp.diff1",
+        "Tp.level",
+        "Wspd.diff1",
+        "Wspd.level",
+        "Etmp.diff1",
+        "Etmp.level",
     )

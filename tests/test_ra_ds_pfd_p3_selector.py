@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import torch
 
 from models.ra_ds_pfd_crossformer.p3_feature_bank import P3_BASE_FEATURES
@@ -57,13 +58,19 @@ def _propagation() -> P3GlobalTopKPropagation:
     )
 
 
-def test_global_selector_has_one_finite_global_score_vector_and_stable_ties() -> None:
+def test_global_selector_has_one_finite_relaxed_gate_and_stable_ties() -> None:
     selector = GlobalTopKSelector(_names(), top_k=2)
-    scores = selector()
+    relaxed_gate = selector()
     assert tuple(selector.logits.shape) == (26,)
-    assert tuple(scores.shape) == (26,)
+    assert tuple(relaxed_gate.shape) == (26,)
+    assert torch.isfinite(relaxed_gate).all()
+    assert torch.all(relaxed_gate >= 0)
+    assert torch.all(relaxed_gate <= 1)
+    assert torch.allclose(relaxed_gate.sum(), torch.tensor(2.0), atol=1e-5)
+
+    scores = selector.mixture_weights(relaxed_gate)
     assert torch.isfinite(scores).all()
-    assert torch.allclose(scores.sum(), torch.ones(()))
+    assert torch.allclose(scores.sum(), torch.ones(()), atol=1e-6)
 
     report = selector.selection_report()
     assert len(report) == 26
@@ -75,6 +82,55 @@ def test_global_selector_has_one_finite_global_score_vector_and_stable_ties() ->
         "Wspd.level",
         "Wspd.diff1",
     ]
+
+
+@pytest.mark.parametrize("top_k", [1, 2, 3, 4])
+def test_global_selector_accepts_every_valid_cardinality(top_k: int) -> None:
+    selector = GlobalTopKSelector(("a", "b", "c", "d"), top_k=top_k)
+    gate = selector()
+    assert torch.allclose(gate.sum(), torch.tensor(float(top_k)), atol=1e-5)
+    assert sum(item["selected"] for item in selector.selection_report()) == top_k
+
+
+@pytest.mark.parametrize("top_k", [0, -1, 5, True, 1.5])
+def test_global_selector_rejects_invalid_cardinality(top_k: object) -> None:
+    with pytest.raises(ValueError, match="top_k"):
+        GlobalTopKSelector(("a", "b", "c", "d"), top_k=top_k)  # type: ignore[arg-type]
+
+
+def test_relaxed_top_k_is_differentiable_for_asymmetric_logits() -> None:
+    selector = GlobalTopKSelector(
+        ("a", "b", "c", "d"),
+        top_k=2,
+        temperature=0.5,
+        bisection_iterations=64,
+    )
+    with torch.no_grad():
+        selector.logits.copy_(torch.tensor([1.5, 0.4, -0.2, -1.1]))
+    gate = selector()
+    loss = (gate * torch.tensor([1.0, 2.0, 4.0, 8.0])).sum()
+    loss.backward()
+    assert selector.logits.grad is not None
+    assert torch.isfinite(selector.logits.grad).all()
+
+
+@pytest.mark.parametrize("temperature", [0, -1, float("nan"), True, "0.1"])
+def test_selector_rejects_invalid_temperature(temperature: object) -> None:
+    with pytest.raises(ValueError, match="temperature"):
+        GlobalTopKSelector(("a", "b"), temperature=temperature)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("iterations", [0, -1, True, 1.5, 10_001])
+def test_selector_rejects_invalid_bisection_iterations(iterations: object) -> None:
+    with pytest.raises(ValueError, match="bisection_iterations"):
+        GlobalTopKSelector(("a", "b"), bisection_iterations=iterations)  # type: ignore[arg-type]
+
+
+def test_k_changes_only_cardinality_not_global_selector_identity() -> None:
+    selectors = [GlobalTopKSelector(_names(), top_k=top_k) for top_k in (1, 2, 3)]
+    assert all(tuple(selector.logits.shape) == (26,) for selector in selectors)
+    assert all(len(list(selector.parameters())) == 1 for selector in selectors)
+    assert all(tuple(next(selector.parameters()).shape) == (26,) for selector in selectors)
 
 
 def test_p3_uses_candidate_projections_and_shared_temporal_modules() -> None:
@@ -102,7 +158,7 @@ def test_p3_uses_candidate_projections_and_shared_temporal_modules() -> None:
     assert tuple(candidates1.shape) == (2, 3, 26, 1, 16)
     assert tuple(scale0.shape) == (2, 3, 2, 16)
     assert tuple(scale1.shape) == (2, 3, 1, 16)
-    scores = propagation.selector()
+    scores = propagation.selector.mixture_weights(propagation.selector())
     assert torch.allclose(
         scale0,
         (candidates0 * scores.view(1, 1, 26, 1, 1)).sum(dim=2),

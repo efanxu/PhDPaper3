@@ -77,6 +77,8 @@ def test_p3_resolves_only_from_frozen_r2_and_has_the_frozen_candidate_contract()
     assert suite["base"]["variant"] == "R2"
     assert resolved["pfd_mode"] == "pfd3_global_topk"
     assert resolved["p3"]["top_k"] == 2
+    assert resolved["p3"]["selector_temperature"] == 0.1
+    assert resolved["p3"]["selector_bisection_iterations"] == 64
     assert resolved["p3"]["candidate_features"] == list(P3_BASE_FEATURES)
     assert resolved["p3"]["candidate_transforms"] == ["level", "diff1"]
     assert len(P3_BASE_FEATURES) * 2 == 26
@@ -108,7 +110,9 @@ def test_p3_resolves_only_from_frozen_r2_and_has_the_frozen_candidate_contract()
         (lambda p3: p3["candidate_features"].remove("Tp"), "missing"),
         (lambda p3: p3["candidate_features"].append("not_a_feature"), "illegal"),
         (lambda p3: p3["candidate_features"].append("Wdir"), "circular direction"),
-        (lambda p3: p3.__setitem__("candidate_transforms", ["level"]), "exactly"),
+        (lambda p3: p3.__setitem__("candidate_transforms", ["diff6"]), "unknown operator"),
+        (lambda p3: p3.__setitem__("candidate_transforms", ["level", "level"]), "duplicate operator"),
+        (lambda p3: p3.__setitem__("candidate_transforms", []), "non-empty"),
         (lambda p3: p3.__setitem__("batch_size", 1), "public experiment parameter"),
     ],
 )
@@ -118,6 +122,50 @@ def test_p3_suite_rejects_invalid_candidate_or_public_configuration(change, mess
     change(invalid["p3"])
     with pytest.raises(ValueError, match=message):
         resolve_p3_model_config(invalid, project_root=ROOT)
+
+
+@pytest.mark.parametrize("top_k", [0, -1, 27, True, 1.5])
+def test_p3_suite_rejects_invalid_top_k(top_k: object) -> None:
+    suite = load_p3_suite(P3_SUITE_PATH)
+    invalid = deepcopy(suite)
+    invalid["p3"]["top_k"] = top_k
+    with pytest.raises(ValueError, match="top_k"):
+        resolve_p3_model_config(invalid, project_root=ROOT)
+
+
+def test_p3_suite_supports_level_only_with_dynamic_candidate_count() -> None:
+    suite = load_p3_suite(P3_SUITE_PATH)
+    level_only = deepcopy(suite)
+    level_only["p3"]["candidate_transforms"] = ["level"]
+    level_only["p3"]["top_k"] = 13
+    resolved = resolve_p3_model_config(level_only, project_root=ROOT)
+    assert resolved["p3"]["candidate_transforms"] == ["level"]
+    assert resolved["p3"]["top_k"] == 13
+    assert len(resolved["p3"]["candidate_features"]) == 13
+    model = build_model(
+        "ra_ds_pfd_crossformer",
+        _fixture(resolved),
+        _info(),
+    )
+    assert isinstance(model, RADSPFDCrossformerP3)
+    assert model.p3_propagation is not None
+    assert model.p3_propagation.candidate_count == 13
+    assert tuple(model.p3_propagation.selector.logits.shape) == (13,)
+
+
+def test_p3_propagation_inherits_spatial_dropout_not_backbone_dropout() -> None:
+    p3_config = resolve_p3_model_config(P3_SUITE_PATH, project_root=ROOT)
+    p3_config = _fixture(p3_config)
+    p3_config["dropout"] = 0.07
+    p3_config["spatial_dropout"] = 0.23
+    model = build_model("ra_ds_pfd_crossformer", p3_config, _info())
+    assert isinstance(model, RADSPFDCrossformerP3)
+    assert model.backbone.dropout == 0.07
+    assert model.p3_propagation is not None
+    assert model.p3_propagation.spatial_dropout == 0.23
+    assert model.p3_propagation.dropout.p == 0.23
+    assert model.p3_propagation.scale0_cross_time.dropout.p == 0.23
+    assert model.p3_propagation.scale1_cross_time.dropout.p == 0.23
 
 
 def test_p3_build_keeps_self_full_and_legacy_r2_keeps_pfd0() -> None:

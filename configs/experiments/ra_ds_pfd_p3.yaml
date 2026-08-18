@@ -8,6 +8,8 @@ base:
 p3:
   mode: global_topk
   top_k: 2
+  selector_temperature: 0.1
+  selector_bisection_iterations: 64
   candidate_features:
     - Wspd
     - Etmp

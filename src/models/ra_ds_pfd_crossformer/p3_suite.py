@@ -207,12 +207,6 @@ def resolve_p3_model_config(
             raise ValueError(
                 f"RA-DS-PFD P3 resolver changed frozen R2 field: {field}"
             )
-    if resolved["p3"]["top_k"] != 2:
-        raise ValueError("RA-DS-PFD P3 resolver requires top_k=2")
-    if len(resolved["p3"]["candidate_features"]) * len(
-        resolved["p3"]["candidate_transforms"]
-    ) != 26:
-        raise ValueError("RA-DS-PFD P3 resolver requires candidate_count=26")
     return resolved
 
 

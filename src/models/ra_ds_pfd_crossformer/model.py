@@ -187,7 +187,11 @@ class _RADSPFDCrossformerImplementation:
                     n_heads=int(model_config["n_heads"]),
                     d_ff=int(model_config["d_ff"]),
                     factor=int(model_config["factor"]),
-                    dropout=float(model_config["dropout"]),
+                    spatial_dropout=float(model_config["spatial_dropout"]),
+                    selector_temperature=float(p3_config["selector_temperature"]),
+                    selector_bisection_iterations=int(
+                        p3_config["selector_bisection_iterations"]
+                    ),
                     source_root=self.source_root,
                 )
             else:

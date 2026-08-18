@@ -20,6 +20,7 @@ from models.ra_ds_pfd_crossformer.p3_suite import (
     load_p3_suite,
     resolve_p3_model_config,
 )
+from models.ra_ds_pfd_crossformer.p3_selector import SELECTOR_TYPE
 from runtime.config import load_experiment_config, load_model_config_document
 from runtime.paths import effective_run_id, validate_run_id
 
@@ -130,7 +131,12 @@ def build_plan(args: argparse.Namespace) -> list[dict[str, Any]]:
         "suite": suite["suite"],
         "base_variant": BASE_VARIANT,
         "pfd_mode": resolved["pfd_mode"],
+        "selector_type": SELECTOR_TYPE,
         "top_k": int(p3_config["top_k"]),
+        "selector_temperature": float(p3_config["selector_temperature"]),
+        "selector_bisection_iterations": int(
+            p3_config["selector_bisection_iterations"]
+        ),
         "candidate_base_features": list(p3_config["candidate_features"]),
         "candidate_transforms": list(p3_config["candidate_transforms"]),
         "candidate_count": len(candidate_names),
@@ -230,7 +236,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "suite": plan[0]["suite"],
                 "base_variant": plan[0]["base_variant"],
                 "pfd_mode": plan[0]["pfd_mode"],
+                "selector_type": plan[0]["selector_type"],
                 "top_k": plan[0]["top_k"],
+                "candidate_transforms": plan[0]["candidate_transforms"],
                 "candidate_count": plan[0]["candidate_count"],
                 "candidate_names": plan[0]["candidate_names"],
                 "execution_mode": plan[0]["execution_mode"],

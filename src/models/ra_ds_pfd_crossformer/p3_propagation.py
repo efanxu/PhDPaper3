@@ -12,15 +12,20 @@ from torch import nn
 
 from .pfd0 import CanonicalCrossTime, PFD0SegmentMerging
 from .p3_feature_bank import P3CandidateBank
-from .p3_selector import GlobalTopKSelector
+from .p3_selector import (
+    DEFAULT_SELECTOR_BISECTION_ITERATIONS,
+    DEFAULT_SELECTOR_TEMPERATURE,
+    GlobalTopKSelector,
+)
 
 
 class P3GlobalTopKPropagation(nn.Module):
     """Produce the same two-scale propagation contract as frozen R2.
 
     Candidate-specific value projections are followed by candidate-shared
-    Cross-Time modules. Soft global scores are applied only after both scales
-    have been encoded, so every candidate remains differentiable in P3-A.
+    Cross-Time modules. The differentiable fixed-cardinality gate is converted
+    to normalized mixture weights only after both scales have been encoded, so
+    every candidate remains differentiable in P3-A2.
     """
 
     def __init__(
@@ -37,8 +42,13 @@ class P3GlobalTopKPropagation(nn.Module):
         n_heads: int,
         d_ff: int,
         factor: int,
-        dropout: float,
+        spatial_dropout: float | None = None,
         source_root: Path | None = None,
+        selector_temperature: float = DEFAULT_SELECTOR_TEMPERATURE,
+        selector_bisection_iterations: int = DEFAULT_SELECTOR_BISECTION_ITERATIONS,
+        # Compatibility alias for direct callers of the P3-A foundation. The
+        # production model passes the frozen R2 spatial_dropout explicitly.
+        dropout: float | None = None,
     ) -> None:
         super().__init__()
         self.lookback = int(lookback)
@@ -51,6 +61,13 @@ class P3GlobalTopKPropagation(nn.Module):
             raise ValueError("P3 propagation lookback, seg_len and win_size must be positive")
         if self.scale0_segments < 1 or self.scale1_segments < 1:
             raise ValueError("P3 propagation requires positive segment counts")
+        if spatial_dropout is None:
+            if dropout is None:
+                raise ValueError("P3 propagation requires spatial_dropout")
+            spatial_dropout = dropout
+        elif dropout is not None and float(spatial_dropout) != float(dropout):
+            raise ValueError("P3 propagation dropout aliases disagree")
+        self.spatial_dropout = float(spatial_dropout)
 
         self.candidate_bank = P3CandidateBank(
             feature_columns,
@@ -59,7 +76,12 @@ class P3GlobalTopKPropagation(nn.Module):
         )
         self.candidate_names = self.candidate_bank.candidate_names
         self.candidate_count = self.candidate_bank.candidate_count
-        self.selector = GlobalTopKSelector(self.candidate_names, top_k=top_k)
+        self.selector = GlobalTopKSelector(
+            self.candidate_names,
+            top_k=top_k,
+            temperature=selector_temperature,
+            bisection_iterations=selector_bisection_iterations,
+        )
 
         self.candidate_projections = nn.ModuleList(
             [nn.Linear(self.seg_len, self.d_model, bias=False) for _ in range(self.candidate_count)]
@@ -69,7 +91,7 @@ class P3GlobalTopKPropagation(nn.Module):
             torch.randn(1, 1, 1, self.scale0_segments, self.d_model) * 0.02
         )
         self.candidate_identity = nn.Embedding(self.candidate_count, self.d_model)
-        self.dropout = nn.Dropout(float(dropout))
+        self.dropout = nn.Dropout(self.spatial_dropout)
 
         root = (
             Path(source_root).resolve()
@@ -84,7 +106,7 @@ class P3GlobalTopKPropagation(nn.Module):
             n_heads=int(n_heads),
             d_ff=int(d_ff),
             factor=int(factor),
-            dropout=float(dropout),
+            dropout=self.spatial_dropout,
         )
         self.scale1_merging = PFD0SegmentMerging(self.d_model, self.win_size)
         self.scale1_cross_time = CanonicalCrossTime(
@@ -93,7 +115,7 @@ class P3GlobalTopKPropagation(nn.Module):
             n_heads=int(n_heads),
             d_ff=int(d_ff),
             factor=int(factor),
-            dropout=float(dropout),
+            dropout=self.spatial_dropout,
         )
 
     def _project_candidates(self, candidates: torch.Tensor) -> torch.Tensor:
@@ -168,8 +190,9 @@ class P3GlobalTopKPropagation(nn.Module):
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         scale0_candidates, scale1_candidates = self.encode_candidates(x)
-        scores = self.selector()
-        weights = scores.view(1, 1, self.candidate_count, 1, 1)
+        relaxed_gate = self.selector()
+        mixture_weights = self.selector.mixture_weights(relaxed_gate)
+        weights = mixture_weights.view(1, 1, self.candidate_count, 1, 1)
         scale0 = (scale0_candidates * weights).sum(dim=2)
         scale1 = (scale1_candidates * weights).sum(dim=2)
         if tuple(scale0.shape) != (x.shape[0], x.shape[2], self.scale0_segments, self.d_model):

@@ -76,7 +76,9 @@ def test_p3_dry_run_reports_foundation_plan_without_results(tmp_path: Path) -> N
     assert payload["dry_run"] is True
     assert payload["base_variant"] == "R2"
     assert payload["pfd_mode"] == "pfd3_global_topk"
+    assert payload["selector_type"] == "entropy_regularized_ot_topk"
     assert payload["top_k"] == 2
+    assert payload["candidate_transforms"] == ["level", "diff1"]
     assert payload["candidate_count"] == 26
     assert payload["execution_mode"] == "full_spatiotemporal"
     assert payload["candidate_names"][0] == "Wspd.level"
