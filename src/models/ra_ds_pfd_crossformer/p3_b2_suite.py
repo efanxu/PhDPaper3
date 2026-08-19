@@ -497,21 +497,60 @@ def _incomplete_summary(
     missing_variants: list[str],
     selection_metric: str,
     lower_is_better: bool,
+    suite_run_id: str | None,
 ) -> dict[str, Any]:
     return {
         "schema_version": 1,
         "suite": SUITE_NAME,
+        "suite_run_id": suite_run_id,
         "operator_basis": list(FROZEN_OPERATOR_BASIS),
         "candidate_count": CANDIDATE_COUNT,
         "selection_metric": selection_metric,
         "selection_uses_test": False,
         "lower_is_better": bool(lower_is_better),
+        "validation_selection_mode": "min" if lower_is_better else "max",
         "selection_status": "INCOMPLETE",
         "missing_variants": list(missing_variants),
         "runs": runs,
+        "provisional_best_k": None,
+        "provisional_best_variant": None,
+        "runner_up_k": None,
+        "runner_up_variant": None,
+        "validation_gap": None,
         "selected_k": None,
         "selected_variant": None,
     }
+
+
+def _resolved_suite_run_id(
+    suite_run_id: str | None,
+    entries: list[dict[str, Any]],
+) -> str | None:
+    if suite_run_id is not None:
+        if not isinstance(suite_run_id, str) or not suite_run_id:
+            raise ValueError("P3-B2 suite_run_id must be a non-empty string")
+        return suite_run_id
+
+    prefixes: list[str] = []
+    for entry in entries:
+        run_id = entry.get("run_id")
+        if not isinstance(run_id, str):
+            return None
+        variant_marker = next(
+            (
+                f"__{variant_id}"
+                for variant_id in VARIANT_IDS
+                if f"__{variant_id}" in run_id
+            ),
+            None,
+        )
+        if variant_marker is None:
+            return None
+        base, suffix = run_id.split(variant_marker, 1)
+        prefixes.append(f"{base}{suffix}")
+    if prefixes and len(set(prefixes)) == 1 and prefixes[0]:
+        return prefixes[0]
+    return None
 
 
 def aggregate_p3_b2_k_selection(
@@ -520,12 +559,12 @@ def aggregate_p3_b2_k_selection(
     selection_metric: str = SELECTION_METRIC_DEFAULT,
     lower_is_better: bool = LOWER_IS_BETTER_DEFAULT,
     strict: bool = True,
+    suite_run_id: str | None = None,
 ) -> dict[str, Any]:
     """Aggregate B2 validation monitors without using test metrics.
 
-    ``strict=True`` fails closed for a partial K grid.  ``strict=False`` is
-    used by the runner while arms are arriving and writes an explicit
-    ``INCOMPLETE`` summary without declaring a winner.
+    ``strict=True`` fails closed for a partial K grid.  ``strict=False``
+    returns an explicit ``INCOMPLETE`` payload without declaring a winner.
     """
 
     if not isinstance(selection_metric, str) or not selection_metric:
@@ -600,9 +639,11 @@ def aggregate_p3_b2_k_selection(
             missing_variants=missing,
             selection_metric=selection_metric,
             lower_is_better=lower_is_better,
+            suite_run_id=_resolved_suite_run_id(suite_run_id, entries),
         )
 
     entries.sort(key=lambda item: VARIANT_IDS.index(str(item["variant"])))
+    resolved_suite_run_id = _resolved_suite_run_id(suite_run_id, entries)
     ordered = sorted(
         entries,
         key=lambda item: (
@@ -618,40 +659,61 @@ def aggregate_p3_b2_k_selection(
         return {
             "schema_version": 1,
             "suite": SUITE_NAME,
+            "suite_run_id": resolved_suite_run_id,
             "operator_basis": list(FROZEN_OPERATOR_BASIS),
             "candidate_count": CANDIDATE_COUNT,
             "selection_metric": selection_metric,
             "selection_uses_test": False,
             "lower_is_better": bool(lower_is_better),
+            "validation_selection_mode": expected_mode,
             "selection_status": "AMBIGUOUS",
-            "ambiguous_variants": [best["variant"], second["variant"]],
+            "ambiguous_variants": [
+                item["variant"]
+                for item in ordered
+                if float(item["validation_monitor"])
+                == float(best["validation_monitor"])
+            ],
             "ambiguous_reason": (
                 "exact validation-monitor tie; confirmation seed is required"
             ),
             "runs": entries,
+            "provisional_best_k": None,
+            "provisional_best_variant": None,
+            "runner_up_k": None,
+            "runner_up_variant": None,
+            "validation_gap": 0.0,
             "selected_k": None,
             "selected_variant": None,
         }
     return {
         "schema_version": 1,
         "suite": SUITE_NAME,
+        "suite_run_id": resolved_suite_run_id,
         "operator_basis": list(FROZEN_OPERATOR_BASIS),
         "candidate_count": CANDIDATE_COUNT,
         "selection_metric": selection_metric,
         "selection_uses_test": False,
         "lower_is_better": bool(lower_is_better),
-        "selection_status": "SELECTED",
         "validation_selection_mode": expected_mode,
+        "selection_status": "PROVISIONAL",
         "runs": entries,
-        "selected_k": int(best["k"]),
-        "selected_variant": str(best["variant"]),
+        "provisional_best_k": int(best["k"]),
+        "provisional_best_variant": str(best["variant"]),
+        "runner_up_k": int(second["k"]),
+        "runner_up_variant": str(second["variant"]),
+        "validation_gap": abs(
+            float(second["validation_monitor"])
+            - float(best["validation_monitor"])
+        ),
+        "selected_k": None,
+        "selected_variant": None,
     }
 
 
-def p3_b2_summary_path(output_root: str | Path) -> Path:
-    """Return the deterministic suite-summary location under an output root."""
+def p3_b2_summary_path(run_directory: str | Path) -> Path:
+    """Return the summary location inside one concrete B2 run directory."""
 
-    return Path(output_root).resolve() / MODEL_NAME / SUMMARY_ARTIFACT_NAME
+    return Path(run_directory).resolve() / SUMMARY_ARTIFACT_NAME
 
 
 def write_p3_b2_k_selection(
@@ -661,6 +723,7 @@ def write_p3_b2_k_selection(
     selection_metric: str = SELECTION_METRIC_DEFAULT,
     lower_is_better: bool = LOWER_IS_BETTER_DEFAULT,
     strict: bool = True,
+    suite_run_id: str | None = None,
 ) -> dict[str, Any]:
     """Write the small B2 suite artifact and return its payload."""
 
@@ -669,6 +732,7 @@ def write_p3_b2_k_selection(
         selection_metric=selection_metric,
         lower_is_better=lower_is_better,
         strict=strict,
+        suite_run_id=suite_run_id,
     )
     write_json(Path(summary_path).resolve(), summary)
     return summary

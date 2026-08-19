@@ -20,6 +20,7 @@ from models.ra_ds_pfd_crossformer.p3_b2_suite import (
     K_GRID,
     MODEL_NAME,
     VARIANT_IDS,
+    aggregate_p3_b2_k_selection,
     load_p3_b2_suite,
     p3_b2_summary_path,
     resolve_p3_b2_variants,
@@ -172,6 +173,7 @@ def build_plan(args: argparse.Namespace) -> list[dict[str, Any]]:
     public_config = load_experiment_config(PUBLIC_CONFIG_PATH)
     selection = public_config.evaluation["checkpoint_selection"]
     run_base = base_run_id(args.run_id)
+    suite_run_id = effective_run_id(run_base, args.id_suffix)
     plan: list[dict[str, Any]] = []
     for variant in selected_variants(args):
         resolved = resolved_variants[variant]
@@ -213,6 +215,7 @@ def build_plan(args: argparse.Namespace) -> list[dict[str, Any]]:
                 "lower_is_better": selection["mode"] == "min",
                 "node_shared_chunk_size": "not applicable",
                 "planned_run_identity": variant_run_id(run_base, variant, args.id_suffix),
+                "suite_run_id": suite_run_id,
                 "dry_run_summary": f"{variant} K={top_k} M={len(candidate_names)}",
                 "planned_public_command": public_command(
                     variant=variant,
@@ -319,7 +322,6 @@ def execute_plan(args: argparse.Namespace, plan: list[dict[str, Any]]) -> int:
     resolved_variants = resolve_p3_b2_variants(SUITE_PATH, project_root=ROOT)
     runtime = _base_runtime_document()
     output_root = resolve_output_root(ROOT, args.output_root)
-    summary_path = p3_b2_summary_path(output_root)
     run_directories: dict[str, Path] = {}
     temporary_root = Path(tempfile.mkdtemp(prefix="ra_ds_pfd_p3_b2_"))
     try:
@@ -381,12 +383,37 @@ def execute_plan(args: argparse.Namespace, plan: list[dict[str, Any]]) -> int:
             )
             run_directories[variant] = result_dir
             print_p3_b2_selection_report(variant, artifact)
-            write_p3_b2_k_selection(
-                summary_path,
+
+        # Smoke is an execution/readout gate only.  A formal K summary is
+        # emitted only after the complete non-smoke grid is present, and it
+        # lives beside the provisional-best (or deterministic ambiguous)
+        # arm so that it cannot be shared by unrelated suite runs.
+        if not args.smoke and set(run_directories) == set(VARIANT_IDS):
+            first = plan[0]
+            summary = aggregate_p3_b2_k_selection(
                 run_directories,
-                selection_metric=str(item["selection_metric"]),
-                lower_is_better=bool(item["lower_is_better"]),
-                strict=False,
+                selection_metric=str(first["selection_metric"]),
+                lower_is_better=bool(first["lower_is_better"]),
+                strict=True,
+                suite_run_id=str(first["suite_run_id"]),
+            )
+            host_variant = summary.get("provisional_best_variant")
+            if host_variant is None:
+                ambiguous = summary.get("ambiguous_variants")
+                if not isinstance(ambiguous, list) or not ambiguous:
+                    raise ValueError(
+                        "P3-B2 complete grid produced no summary host variant"
+                    )
+                host_variant = ambiguous[0]
+            if not isinstance(host_variant, str) or host_variant not in run_directories:
+                raise ValueError("P3-B2 summary host variant is not a completed arm")
+            write_p3_b2_k_selection(
+                p3_b2_summary_path(run_directories[host_variant]),
+                run_directories,
+                selection_metric=str(first["selection_metric"]),
+                lower_is_better=bool(first["lower_is_better"]),
+                strict=True,
+                suite_run_id=str(first["suite_run_id"]),
             )
         return 0
     finally:

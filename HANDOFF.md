@@ -62,7 +62,9 @@ configs/experiments/ra_ds_pfd_p3_b2.yaml 解析 canonical P3，生成 B2_K1、
 B2_K2、B2_K3、B2_K4、B2_K6、B2_K8 的临时 model YAML，调用同一
 scripts/run.py train，并在训练成功后复用 best.pt -> p3_selection_best.json
 的 selection readout。每个 arm 只允许改变 p3.top_k；runner 不拥有第二套
-Trainer、Evaluator、数据流程或结果系统。
+Trainer、Evaluator、数据流程或结果系统。`--smoke` 只允许各 K arm 的
+selection readout，永不执行 K-selection 或写入 K winner summary；完整的
+非 smoke 六臂网格才会生成 validation-only 的 run-scoped summary。
 
 ## 3. RA-DS-PFD 当前状态
 
@@ -136,25 +138,30 @@ Discovery 尚未运行，尚未冻结任何 operator basis。
 
 P3-B2 infrastructure = PASS。B2 resolver 从 canonical P3 派生并 fail closed
 锁定用户指定的 Level + Diff1 basis：13 x 2，M=26；K grid 为
-`[1,2,3,4,6,8]`，唯一实验变量是 `p3.top_k`。candidate features、operator
+`[1,2,3,4,6,8]`，唯一实验变量是 `p3.top_k`。Level+Diff1 是 current B2
+fixed/default basis。candidate features、operator
 basis、selector temperature/iterations、R2 architecture、relation、公共
 训练参数和其他 model fields 均保持一致。每个未来真实 B2 run 都复用
 `best.pt -> p3_selection_best.json`，并打印 selected propagation features、
 score、rank、base-variable scores 和 operator scores。`p3_b2_k_selection.json`
-只使用公共 validation checkpoint monitor；test set 永不参与 K selection，
-缺少任一 K arm 时只能报告 INCOMPLETE，不能声明 winner。不同 K 的 normalized
-score 只用于该 run 内的 readout，不直接解释为跨 K 的 feature importance。
+只使用公共 validation checkpoint monitor；test set 永不参与 K selection，且
+summary 写在对应 B2 run directory 内，不再使用 model-global 路径。Smoke 不写
+summary；完整非 smoke 网格输出 `PROVISIONAL`、exact tie 输出 `AMBIGUOUS`；
+aggregator 对缺少任一 K arm 报告 `INCOMPLETE`，runner 不写 partial formal
+summary；所有状态均不产生 final `selected_k`。不同 K 的 normalized score 只
+用于该 run 内的 readout，不直接解释为跨 K 的 feature importance。
 
 ## 4. 当前已验证结果
 
 P3 selector focused tests：36 passed；B1 focused tests：13 passed；B2 focused
-tests：23 passed；其中
+tests：26 passed；其中
 gradcheck（K=1/2/3）3 项、central finite-difference（K=1/2/3）3 项、
 constraint-gradient（K=1/2/3）3 项、translation-invariance、monotonic ranking、
 K=M zero-gradient、best.pt-only selection、model-config provenance、B2 K grid、
-validation-only aggregation 和 incomplete-grid gate 均通过。所有 P3 CPU 测试：
-98 passed；所有 RA-DS-PFD 相关测试：191 passed。当前 CPU-only regression：
-356 passed, 3 skipped；skip 是既有正式 tsl 环境条件，不是失败。唯一真实
+validation-only provisional aggregation、exact-tie ambiguity、smoke guard、
+run isolation 和 incomplete-grid gate 均通过。所有 P3 CPU 测试：
+101 passed；所有 RA-DS-PFD 相关测试：194 passed。当前 CPU-only regression：
+359 passed, 3 skipped；skip 是既有正式 tsl 环境条件，不是失败。唯一真实
 CUDA/full-shape 测试 `tests/test_full_shape.py` 按本轮 GPU 禁令排除。
 `python scripts\generate_command_reference.py --check` 通过；P3-B2 的六臂
 CPU dry-run 通过，且未写正式结果。
@@ -197,11 +204,12 @@ response 均未实现或未运行。R0-R7 仍冻结且未被本轮修改。
 GPU validation for P3-B0 = PASS（formal default shape）；P3-B1 GPU smoke =
 NOT RUN；B1-LD/B1-L Formal Discovery = NOT RUN；B1 operator decision =
 NOT RUN。P3-B2 GPU smoke = NOT RUN；P3-B2 Formal K-selection = NOT RUN；
-selected K* = NOT DECIDED。上述状态均因 GPU occupied，本轮只完成 CPU-only
-infrastructure implementation。
+provisional K = NOT RUN；final K* = NOT DECIDED。上述状态均因 GPU occupied，
+本轮只完成 CPU-only infrastructure closeout。
 
-Next：GPU 空闲后建议先运行 P3-B2 六臂 smoke；本轮没有启动该命令，也没有自动
-启动六个 Formal Full：
+Next：GPU 空闲后建议先运行 P3-B2 六臂 smoke。该 smoke 只验证 feasibility、
+per-K readout 和 feature score/rank，不产生 K-selection summary；本轮没有
+启动该命令，也没有自动启动六个 Formal Full：
 
 ```powershell
 python scripts\run_ra_ds_pfd_p3_b2.py --all --run-id ra_ds_pfd_p3_b2_smoke_seed2026 --device cuda --smoke

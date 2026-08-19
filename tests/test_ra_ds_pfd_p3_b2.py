@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -22,6 +23,7 @@ from models.ra_ds_pfd_crossformer.p3_b2_suite import (
     VARIANT_IDS,
     aggregate_p3_b2_k_selection,
     load_p3_b2_suite,
+    p3_b2_summary_path,
     resolve_p3_b2_variants,
     write_p3_b2_k_selection,
 )
@@ -338,6 +340,64 @@ def test_b2_runner_dry_run_is_cpu_only_and_has_no_result_directories(tmp_path: P
     assert not output_root.exists()
 
 
+def test_b2_smoke_complete_grid_writes_readouts_but_no_k_selection(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    output_root = tmp_path / "smoke-results"
+    args = RUNNER.build_parser().parse_args(
+        [
+            "--all",
+            "--device",
+            "cpu",
+            "--run-id",
+            "seed2026",
+            "--output-root",
+            str(output_root),
+            "--smoke",
+        ]
+    )
+    plan = RUNNER.build_plan(args)
+    writer_calls: list[tuple[object, ...]] = []
+
+    def fake_train(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(returncode=0)
+
+    def fake_selection_writer(
+        run_directory: str | Path,
+        *,
+        variant: str,
+        project_root: str | Path,
+    ) -> dict[str, Any]:
+        del project_root
+        run_path = Path(run_directory)
+        run_path.mkdir(parents=True, exist_ok=True)
+        top_k = int(variant.removeprefix("B2_K"))
+        artifact = {"variant": variant, "top_k": top_k, "readout": "synthetic"}
+        (run_path / "p3_selection_best.json").write_text(
+            json.dumps(artifact),
+            encoding="utf-8",
+        )
+        return artifact
+
+    monkeypatch.setattr(RUNNER.subprocess, "run", fake_train)
+    monkeypatch.setattr(RUNNER, "write_p3_selection_best", fake_selection_writer)
+    monkeypatch.setattr(RUNNER, "print_p3_b2_selection_report", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        RUNNER,
+        "write_p3_b2_k_selection",
+        lambda *call_args, **call_kwargs: writer_calls.append(
+            (call_args, call_kwargs)
+        ),
+    )
+
+    assert RUNNER.execute_plan(args, plan) == 0
+    assert len(list(output_root.rglob("p3_selection_best.json"))) == len(VARIANT_IDS)
+    assert writer_calls == []
+    assert list(output_root.rglob("p3_b2_k_selection.json")) == []
+
+
+
 @pytest.mark.parametrize("top_k", [1, 4, 8])
 def test_b2_selection_reuses_best_checkpoint_for_each_cardinality(
     monkeypatch: pytest.MonkeyPatch,
@@ -380,7 +440,7 @@ def test_b2_selection_keeps_model_config_provenance_gate(
     assert not (run_dir / "p3_selection_best.json").exists()
 
 
-def test_b2_summary_selects_k4_from_validation_only_and_blocks_incomplete_grid(
+def test_b2_summary_reports_provisional_k4_from_validation_only_and_blocks_incomplete_grid(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -404,28 +464,133 @@ def test_b2_summary_selects_k4_from_validation_only_and_blocks_incomplete_grid(
         )
         runs[variant] = path
 
-    summary = aggregate_p3_b2_k_selection(runs)
-    assert summary["selected_k"] == 4
-    assert summary["selected_variant"] == "B2_K4"
+    for path in runs.values():
+        (path / "metrics_test_h3.json").write_text(
+            json.dumps({"monitor": -999.0}),
+            encoding="utf-8",
+        )
+
+    summary = aggregate_p3_b2_k_selection(runs, suite_run_id="seed2026")
+    assert summary["suite_run_id"] == "seed2026"
+    assert summary["selection_status"] == "PROVISIONAL"
+    assert summary["provisional_best_k"] == 4
+    assert summary["provisional_best_variant"] == "B2_K4"
+    assert summary["runner_up_k"] == 3
+    assert summary["runner_up_variant"] == "B2_K3"
+    assert summary["validation_gap"] == pytest.approx(0.2)
+    assert summary["selected_k"] is None
+    assert summary["selected_variant"] is None
     assert summary["selection_uses_test"] is False
     assert summary["selection_metric"] == "SDWPF Official Score"
     assert [entry["k"] for entry in summary["runs"]] == [1, 2, 3, 4, 6, 8]
     assert all(entry["validation_monitor_source"] == "best.pt:manifest.monitor" for entry in summary["runs"])
     assert all(len(entry["selected_features"]) == entry["k"] for entry in summary["runs"])
 
-    summary_path = tmp_path / "p3_b2_k_selection.json"
-    written = write_p3_b2_k_selection(summary_path, runs)
-    assert json.loads(summary_path.read_text(encoding="utf-8"))["selected_k"] == 4
-    assert written["selected_variant"] == "B2_K4"
+    summary_path = p3_b2_summary_path(runs["B2_K4"])
+    written = write_p3_b2_k_selection(
+        summary_path,
+        runs,
+        suite_run_id="seed2026",
+    )
+    written_payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert written_payload["selection_status"] == "PROVISIONAL"
+    assert written_payload["provisional_best_k"] == 4
+    assert written["selected_k"] is None
 
     del runs["B2_K6"]
     incomplete = aggregate_p3_b2_k_selection(runs, strict=False)
     assert incomplete["selection_status"] == "INCOMPLETE"
+    assert incomplete["provisional_best_k"] is None
     assert incomplete["selected_k"] is None
     assert incomplete["selected_variant"] is None
     assert incomplete["missing_variants"] == ["B2_K6"]
     with pytest.raises(ValueError, match="K grid is incomplete"):
         aggregate_p3_b2_k_selection(runs)
+
+
+def test_b2_summary_exact_validation_tie_is_ambiguous(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    validation = {
+        "B2_K1": 20.0,
+        "B2_K2": 18.5,
+        "B2_K3": 17.8,
+        "B2_K4": 17.8,
+        "B2_K6": 18.1,
+        "B2_K8": 18.4,
+    }
+    runs: dict[str, Path] = {}
+    for variant in VARIANT_IDS:
+        k = int(variant.removeprefix("B2_K"))
+        path = tmp_path / variant
+        _write_selection_artifact(
+            monkeypatch,
+            path,
+            top_k=k,
+            validation_monitor=validation[variant],
+        )
+        runs[variant] = path
+
+    summary = aggregate_p3_b2_k_selection(runs, suite_run_id="seed2026")
+    assert summary["selection_status"] == "AMBIGUOUS"
+    assert summary["ambiguous_variants"] == ["B2_K3", "B2_K4"]
+    assert summary["provisional_best_k"] is None
+    assert summary["provisional_best_variant"] is None
+    assert summary["selected_k"] is None
+    assert summary["selected_variant"] is None
+
+
+def test_b2_summary_path_isolated_between_suite_runs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    validation = {
+        "B2_K1": 20.0,
+        "B2_K2": 18.5,
+        "B2_K3": 18.0,
+        "B2_K4": 17.8,
+        "B2_K6": 18.1,
+        "B2_K8": 18.4,
+    }
+    suites: dict[str, dict[str, Path]] = {}
+    for seed, offset in (("seed2026", 0.0), ("seed2027", 10.0)):
+        runs: dict[str, Path] = {}
+        for variant in VARIANT_IDS:
+            k = int(variant.removeprefix("B2_K"))
+            path = tmp_path / seed / f"{seed}__{variant}"
+            _write_selection_artifact(
+                monkeypatch,
+                path,
+                top_k=k,
+                validation_monitor=validation[variant] + offset,
+            )
+            runs[variant] = path
+        suites[seed] = runs
+
+    summary_2026 = p3_b2_summary_path(suites["seed2026"]["B2_K4"])
+    summary_2027 = p3_b2_summary_path(suites["seed2027"]["B2_K4"])
+    assert summary_2026 != summary_2027
+
+    write_p3_b2_k_selection(
+        summary_2026,
+        suites["seed2026"],
+        suite_run_id="seed2026",
+    )
+    write_p3_b2_k_selection(
+        summary_2027,
+        suites["seed2027"],
+        suite_run_id="seed2027",
+    )
+
+    payload_2026 = json.loads(summary_2026.read_text(encoding="utf-8"))
+    payload_2027 = json.loads(summary_2027.read_text(encoding="utf-8"))
+    assert payload_2026["suite_run_id"] == "seed2026"
+    assert payload_2027["suite_run_id"] == "seed2027"
+    assert payload_2026["provisional_best_k"] == 4
+    assert payload_2027["provisional_best_k"] == 4
+    assert payload_2026["runs"][3]["validation_monitor"] == pytest.approx(17.8)
+    assert payload_2027["runs"][3]["validation_monitor"] == pytest.approx(27.8)
 
 
 def test_b2_stdout_report_contains_selected_name_score_rank_k_and_best_checkpoint(
