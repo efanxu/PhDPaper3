@@ -1,0 +1,24 @@
+suite: ra_ds_pfd_p3_b2
+model: ra_ds_pfd_crossformer
+
+base:
+  suite_file: configs/experiments/ra_ds_pfd_p3.yaml
+
+variants:
+  B2_K1:
+    top_k: 1
+
+  B2_K2:
+    top_k: 2
+
+  B2_K3:
+    top_k: 3
+
+  B2_K4:
+    top_k: 4
+
+  B2_K6:
+    top_k: 6
+
+  B2_K8:
+    top_k: 8

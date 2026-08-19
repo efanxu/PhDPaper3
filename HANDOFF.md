@@ -57,6 +57,13 @@ configs/experiments/ra_ds_pfd_p3_b1.yaml 解析 canonical P3，生成 B1-LD/B1-L
 目录的 best.pt 生成 p3_selection_best.json。它不拥有第二套 Trainer、
 Evaluator、数据流程或结果系统；dry-run 只解析配置和打印公共 train command。
 
+scripts/run_ra_ds_pfd_p3_b2.py 是 P3-B2 的 thin wrapper：它从
+configs/experiments/ra_ds_pfd_p3_b2.yaml 解析 canonical P3，生成 B2_K1、
+B2_K2、B2_K3、B2_K4、B2_K6、B2_K8 的临时 model YAML，调用同一
+scripts/run.py train，并在训练成功后复用 best.pt -> p3_selection_best.json
+的 selection readout。每个 arm 只允许改变 p3.top_k；runner 不拥有第二套
+Trainer、Evaluator、数据流程或结果系统。
+
 ## 3. RA-DS-PFD 当前状态
 
 P1 与 P2 均为 `PASS_WITH_NOTES`：
@@ -127,15 +134,30 @@ model YAML 的 runtime 均为 `environment: tslib`。selection readout 固定只
 结构一致；缺失或不一致时 fail closed，不写出 selection artifact。正式
 Discovery 尚未运行，尚未冻结任何 operator basis。
 
+P3-B2 infrastructure = PASS。B2 resolver 从 canonical P3 派生并 fail closed
+锁定用户指定的 Level + Diff1 basis：13 x 2，M=26；K grid 为
+`[1,2,3,4,6,8]`，唯一实验变量是 `p3.top_k`。candidate features、operator
+basis、selector temperature/iterations、R2 architecture、relation、公共
+训练参数和其他 model fields 均保持一致。每个未来真实 B2 run 都复用
+`best.pt -> p3_selection_best.json`，并打印 selected propagation features、
+score、rank、base-variable scores 和 operator scores。`p3_b2_k_selection.json`
+只使用公共 validation checkpoint monitor；test set 永不参与 K selection，
+缺少任一 K arm 时只能报告 INCOMPLETE，不能声明 winner。不同 K 的 normalized
+score 只用于该 run 内的 readout，不直接解释为跨 K 的 feature importance。
+
 ## 4. 当前已验证结果
 
-P3 selector focused tests：36 passed；B1 focused tests：13 passed；其中
+P3 selector focused tests：36 passed；B1 focused tests：13 passed；B2 focused
+tests：23 passed；其中
 gradcheck（K=1/2/3）3 项、central finite-difference（K=1/2/3）3 项、
 constraint-gradient（K=1/2/3）3 项、translation-invariance、monotonic ranking、
-K=M zero-gradient、best.pt-only selection 和 model-config provenance 均通过。所有
-RA-DS-PFD 相关测试：168 passed。当前 CPU-only regression：333 passed, 3 skipped；skip 是既有正式
-tsl 环境条件，不是失败。`python scripts\generate_command_reference.py --check`
-通过；P3-B1 的 B1-LD/B1-L dry-run 均通过，且未写正式结果。
+K=M zero-gradient、best.pt-only selection、model-config provenance、B2 K grid、
+validation-only aggregation 和 incomplete-grid gate 均通过。所有 P3 CPU 测试：
+98 passed；所有 RA-DS-PFD 相关测试：191 passed。当前 CPU-only regression：
+356 passed, 3 skipped；skip 是既有正式 tsl 环境条件，不是失败。唯一真实
+CUDA/full-shape 测试 `tests/test_full_shape.py` 按本轮 GPU 禁令排除。
+`python scripts\generate_command_reference.py --check` 通过；P3-B2 的六臂
+CPU dry-run 通过，且未写正式结果。
 
 P3-B0 GPU Feasibility = PASS。目标 GPU 为 NVIDIA GeForce RTX 4070 Ti SUPER
 (16376 MiB)；公共 `check --full-shape` 使用 formal default shape、
@@ -155,7 +177,7 @@ R0-R7 Formal Full = NOT RUN
 同样尚未运行 multi-seed 和 formal test-set comparison；已有 smoke、shape、
 Stage A、P3 dry-run 或 CPU foundation 均不得改写为 Formal Full。
 
-## 5. P3-A2/P3-B1 状态与下一步
+## 5. P3-A2/P3-B1/P3-B2 状态与下一步
 
 P3-A2.1 STATUS = PASS；P3-B0 STATUS = PASS；P3-B1 infrastructure STATUS = PASS。
 P3-A2 formal architecture closure
@@ -166,17 +188,24 @@ differentiation，且已通过 numerical gradient validation。默认 K=2，K co
 level + diff1；selector remains propagation-only。
 
 P3-B1 formal Discovery 尚未运行，未导出正式 feature scores、rank 或 Top-K，也
-未使用 test set 做选择。P3 Formal Full、multi-seed、PredictionTopK、RandomTopK、
+未使用 test set 做选择。P3-B2 infrastructure 已完成，但没有真实 K-selection
+结果；Level+Diff1 是当前 B2 的 frozen default operator basis，不是 B1 的实验胜出
+结论。P3 Formal Full、multi-seed、PredictionTopK、RandomTopK、
 AllPropagation、physics loss、dynamic graph 和 variable-specific temporal
 response 均未实现或未运行。R0-R7 仍冻结且未被本轮修改。
 
-GPU validation for P3-B0 = PASS（formal default shape）；GPU validation for
-P3-B1 = NOT RUN（GPU occupied，本轮按 CPU-only constraint 执行）；B1-LD/B1-L
-B1-LD smoke = NOT RUN；B1-L smoke = NOT RUN；B1-LD 20-epoch Discovery = NOT RUN；
-B1-L 20-epoch Discovery = NOT RUN；operator basis decision = NOT RUN。
+GPU validation for P3-B0 = PASS（formal default shape）；P3-B1 GPU smoke =
+NOT RUN；B1-LD/B1-L Formal Discovery = NOT RUN；B1 operator decision =
+NOT RUN。P3-B2 GPU smoke = NOT RUN；P3-B2 Formal K-selection = NOT RUN；
+selected K* = NOT DECIDED。上述状态均因 GPU occupied，本轮只完成 CPU-only
+infrastructure implementation。
 
-Next：GPU 空闲后仅依次运行 B1-LD smoke、B1-L smoke；两者 PASS 后才允许
-进入 Formal Discovery。这些命令不得在当前 GPU 占用期间执行。
+Next：GPU 空闲后建议先运行 P3-B2 六臂 smoke；本轮没有启动该命令，也没有自动
+启动六个 Formal Full：
+
+```powershell
+python scripts\run_ra_ds_pfd_p3_b2.py --all --run-id ra_ds_pfd_p3_b2_smoke_seed2026 --device cuda --smoke
+```
 
 ## 6. 当前兼容约束与不可踩的坑
 
