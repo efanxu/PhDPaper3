@@ -51,6 +51,12 @@ configs/experiments/ra_ds_pfd_p3.yaml 解析 frozen R2，生成临时 model YAML
 或结果系统。本轮 B0 复用同一 resolver 生成临时 model YAML，再调用现有
 scripts/run.py check --full-shape；未启动 epoch training 或 Discovery。
 
+scripts/run_ra_ds_pfd_p3_b1.py 是 P3-B1 的 thin wrapper：它从
+configs/experiments/ra_ds_pfd_p3_b1.yaml 解析 canonical P3，生成 B1-LD/B1-L
+临时 model YAML，调用同一 scripts/run.py train，并在训练成功后从同一 run
+目录的 best.pt 生成 p3_selection_best.json。它不拥有第二套 Trainer、
+Evaluator、数据流程或结果系统；dry-run 只解析配置和打印公共 train command。
+
 ## 3. RA-DS-PFD 当前状态
 
 P1 与 P2 均为 `PASS_WITH_NOTES`：
@@ -107,15 +113,22 @@ ra_ds_pfd_crossformer 和 full_spatiotemporal：
   Cross-Time 均继承 frozen R2 的 `spatial_dropout`；Self/backbone 仍使用
   `dropout`。P3 提供 model-owned read-only selection report，不写 score 文件。
 
+P3-B1 infrastructure = PASS。B1 resolver 只允许从 canonical P3 改变
+`p3.candidate_transforms`：B1-LD 为 13 x {level,diff1}，M=26、K=2；B1-L
+为 13 x {level}，M=13、K=2。两个 arm 的唯一实验变量是 candidate temporal
+operator basis；top_k、selector settings、candidate_features、R2 axes、
+relation resource、spatial edge chunk 和其他 model fields 均 fail closed。
+正式 Discovery 尚未运行，尚未冻结任何 operator basis。
+
 ## 4. 当前已验证结果
 
-P3 selector focused tests：36 passed；其中 gradcheck（K=1/2/3）3 项、central
-finite-difference（K=1/2/3）3 项、constraint-gradient（K=1/2/3）3 项、
-translation-invariance、monotonic ranking 和 K=M zero-gradient 均通过。所有
-RA-DS-PFD 相关测试：155 passed。当前 CPU-only regression：321 passed, 3 skipped；
-skip 是既有正式 tsl 环境条件，不是失败。`python scripts\generate_command_reference.py
---check` 通过；P3 runner CPU dry-run 展示了 selector type、K、operator list、
-candidate count 和 candidate names，且未写正式结果。
+P3 selector focused tests：36 passed；B1 focused tests：11 passed；其中
+gradcheck（K=1/2/3）3 项、central finite-difference（K=1/2/3）3 项、
+constraint-gradient（K=1/2/3）3 项、translation-invariance、monotonic ranking、
+K=M zero-gradient 和 best.pt provenance 均通过。所有 RA-DS-PFD 相关测试：
+166 passed。当前 CPU-only regression：331 passed, 3 skipped；skip 是既有正式
+tsl 环境条件，不是失败。`python scripts\generate_command_reference.py --check`
+通过；P3-B1 的 B1-LD/B1-L dry-run 均通过，且未写正式结果。
 
 P3-B0 GPU Feasibility = PASS。目标 GPU 为 NVIDIA GeForce RTX 4070 Ti SUPER
 (16376 MiB)；公共 `check --full-shape` 使用 formal default shape、
@@ -135,24 +148,27 @@ R0-R7 Formal Full = NOT RUN
 同样尚未运行 multi-seed 和 formal test-set comparison；已有 smoke、shape、
 Stage A、P3 dry-run 或 CPU foundation 均不得改写为 Formal Full。
 
-## 5. P3-A2 状态与下一步
+## 5. P3-A2/P3-B1 状态与下一步
 
-P3-A2.1 STATUS = PASS；P3-B0 STATUS = PASS。P3-A2 formal architecture closure
+P3-A2.1 STATUS = PASS；P3-B0 STATUS = PASS；P3-B1 infrastructure STATUS = PASS。
+P3-A2 formal architecture closure
 已完成：Global K-configurable Selector 保持 entropy-regularized fixed-cardinality
 relaxation，forward 为 scalar threshold numerical solve，backward 为 implicit
 differentiation，且已通过 numerical gradient validation。默认 K=2，K configurable
 1..M；operator registry 当前为 level、diff1；default candidate bank 为
 level + diff1；selector remains propagation-only。
 
-P3-B Discovery 尚未运行，未导出正式 feature scores、rank 或 Top-K，也未使用
-test set 做选择。P3 Formal Full、multi-seed、PredictionTopK、RandomTopK、
+P3-B1 formal Discovery 尚未运行，未导出正式 feature scores、rank 或 Top-K，也
+未使用 test set 做选择。P3 Formal Full、multi-seed、PredictionTopK、RandomTopK、
 AllPropagation、physics loss、dynamic graph 和 variable-specific temporal
 response 均未实现或未运行。R0-R7 仍冻结且未被本轮修改。
 
-GPU validation = PASS（P3-B0 formal default shape）；Discovery = NOT RUN；
-Formal Full = NOT RUN。
+GPU validation for P3-B0 = PASS（formal default shape）；GPU validation for
+P3-B1 = NOT RUN（GPU occupied，本轮按 CPU-only constraint 执行）；B1-LD/B1-L
+formal Discovery = NOT RUN；operator decision = NOT RUN。
 
-Next：P3-B1 — Default-K Discovery + Operator Basis Check。
+Next：GPU 空闲后依次运行 B1-LD smoke、B1-L smoke、B1-LD Formal Discovery、
+再运行 B1-L Formal Discovery；这些命令不得在当前 GPU 占用期间执行。
 
 ## 6. 当前兼容约束与不可踩的坑
 
@@ -173,5 +189,6 @@ Next：P3-B1 — Default-K Discovery + Operator Basis Check。
   self.pfd0，P3 使用 self.p3_propagation，不得 mask Self 输入或改变关系图。
 - Candidate Bank 只读取 ModelInput.x 和 DataInfoView.feature_columns，不得读取
   target、mask、future weather 或预测窗口；P3-B0 已通过公共 formal default
-  forward/loss/backward gate，未启动 Discovery 或 Formal Full。
+  forward/loss/backward gate；P3-B1 只完成 infrastructure 和 CPU 验收，未启动
+  Discovery 或 Formal Full。
 - 不提交 dataset、results、logs、checkpoint 或外部库，不强制推送，不批量递归删除。

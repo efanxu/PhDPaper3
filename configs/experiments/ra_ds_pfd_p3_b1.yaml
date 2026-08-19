@@ -1,0 +1,15 @@
+suite: ra_ds_pfd_p3_b1
+model: ra_ds_pfd_crossformer
+
+base:
+  suite_file: configs/experiments/ra_ds_pfd_p3.yaml
+
+variants:
+  B1_LD:
+    candidate_transforms:
+      - level
+      - diff1
+
+  B1_L:
+    candidate_transforms:
+      - level
