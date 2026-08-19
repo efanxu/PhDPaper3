@@ -118,15 +118,22 @@ P3-B1 infrastructure = PASS。B1 resolver 只允许从 canonical P3 改变
 为 13 x {level}，M=13、K=2。两个 arm 的唯一实验变量是 candidate temporal
 operator basis；top_k、selector settings、candidate_features、R2 axes、
 relation resource、spatial edge chunk 和其他 model fields 均 fail closed。
-正式 Discovery 尚未运行，尚未冻结任何 operator basis。
+B1 execution preparation 已覆盖完整解析链：B1 suite -> canonical P3 ->
+R0-R7 -> `base_model_config.file` ->
+`configs/models/ra_ds_pfd_crossformer.yaml` -> runtime/model YAML；两个临时
+model YAML 的 runtime 均为 `environment: tslib`。selection readout 固定只使用
+`best.pt`，并要求 checkpoint manifest 的 `model_config`（兼容已有
+`model_config_identity`）与 run directory 的 `model_config.yaml` model mapping
+结构一致；缺失或不一致时 fail closed，不写出 selection artifact。正式
+Discovery 尚未运行，尚未冻结任何 operator basis。
 
 ## 4. 当前已验证结果
 
-P3 selector focused tests：36 passed；B1 focused tests：11 passed；其中
+P3 selector focused tests：36 passed；B1 focused tests：13 passed；其中
 gradcheck（K=1/2/3）3 项、central finite-difference（K=1/2/3）3 项、
 constraint-gradient（K=1/2/3）3 项、translation-invariance、monotonic ranking、
-K=M zero-gradient 和 best.pt provenance 均通过。所有 RA-DS-PFD 相关测试：
-166 passed。当前 CPU-only regression：331 passed, 3 skipped；skip 是既有正式
+K=M zero-gradient、best.pt-only selection 和 model-config provenance 均通过。所有
+RA-DS-PFD 相关测试：168 passed。当前 CPU-only regression：333 passed, 3 skipped；skip 是既有正式
 tsl 环境条件，不是失败。`python scripts\generate_command_reference.py --check`
 通过；P3-B1 的 B1-LD/B1-L dry-run 均通过，且未写正式结果。
 
@@ -165,10 +172,11 @@ response 均未实现或未运行。R0-R7 仍冻结且未被本轮修改。
 
 GPU validation for P3-B0 = PASS（formal default shape）；GPU validation for
 P3-B1 = NOT RUN（GPU occupied，本轮按 CPU-only constraint 执行）；B1-LD/B1-L
-formal Discovery = NOT RUN；operator decision = NOT RUN。
+B1-LD smoke = NOT RUN；B1-L smoke = NOT RUN；B1-LD 20-epoch Discovery = NOT RUN；
+B1-L 20-epoch Discovery = NOT RUN；operator basis decision = NOT RUN。
 
-Next：GPU 空闲后依次运行 B1-LD smoke、B1-L smoke、B1-LD Formal Discovery、
-再运行 B1-L Formal Discovery；这些命令不得在当前 GPU 占用期间执行。
+Next：GPU 空闲后仅依次运行 B1-LD smoke、B1-L smoke；两者 PASS 后才允许
+进入 Formal Discovery。这些命令不得在当前 GPU 占用期间执行。
 
 ## 6. 当前兼容约束与不可踩的坑
 
@@ -191,4 +199,7 @@ Next：GPU 空闲后依次运行 B1-LD smoke、B1-L smoke、B1-LD Formal Discove
   target、mask、future weather 或预测窗口；P3-B0 已通过公共 formal default
   forward/loss/backward gate；P3-B1 只完成 infrastructure 和 CPU 验收，未启动
   Discovery 或 Formal Full。
+- P3 selection readout 只读取 `best.pt`；checkpoint manifest 中的 model config
+  必须与 run directory 的 `model_config.yaml` 一致，不为此扩展公共 checkpoint
+  compatibility 或增加 hash/certificate。
 - 不提交 dataset、results、logs、checkpoint 或外部库，不强制推送，不批量递归删除。

@@ -230,6 +230,19 @@ def extract_p3_selection_best(
     # This is intentionally the only checkpoint path used by the formal
     # discovery readout. In particular, last.pt is never consulted here.
     checkpoint_manifest = load_checkpoint(best_path, model, device="cpu")
+    saved_model_config = checkpoint_manifest.get("model_config")
+    if saved_model_config is None:
+        saved_model_config = checkpoint_manifest.get("model_config_identity")
+    if not isinstance(saved_model_config, Mapping):
+        raise ValueError(
+            "best.pt checkpoint manifest has no model_config; refusing to generate "
+            "propagation feature selection artifact"
+        )
+    if dict(saved_model_config) != model_config:
+        raise ValueError(
+            "best.pt model_config does not match run/model_config.yaml; refusing to "
+            "generate propagation feature selection artifact"
+        )
     best_epoch = checkpoint_manifest.get("epoch")
     if not isinstance(best_epoch, int) or isinstance(best_epoch, bool) or best_epoch < 1:
         raise ValueError("best.pt checkpoint manifest must contain a positive epoch")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import importlib.util
 import json
 from pathlib import Path
 import subprocess
@@ -10,6 +11,7 @@ from typing import Any
 import pytest
 import torch
 from torch import nn
+import yaml
 
 from engine.checkpoint import save_checkpoint
 from models.base import ForecastModel
@@ -21,10 +23,12 @@ from models.ra_ds_pfd_crossformer.p3_b1_suite import (
 from models.ra_ds_pfd_crossformer.p3_feature_bank import P3_BASE_FEATURES, P3CandidateBank
 from models.ra_ds_pfd_crossformer.p3_selector import GlobalTopKSelector
 from models.ra_ds_pfd_crossformer.p3_selection import write_p3_selection_best
+from runtime.config import load_model_config_document
 
 
 ROOT = Path(__file__).resolve().parents[1]
 B1_SUITE_PATH = ROOT / "configs" / "experiments" / "ra_ds_pfd_p3_b1.yaml"
+B1_SCRIPT = ROOT / "scripts" / "run_ra_ds_pfd_p3_b1.py"
 FEATURE_COLUMNS = (
     "Wspd",
     "Wdir",
@@ -45,6 +49,20 @@ FEATURE_COLUMNS = (
 )
 
 
+def _load_b1_runner():
+    scripts = str(ROOT / "scripts")
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    spec = importlib.util.spec_from_file_location("ra_ds_pfd_p3_b1_runner", B1_SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+RUNNER = _load_b1_runner()
+
+
 def test_b1_resolves_ld_and_l_from_canonical_p3() -> None:
     suite = load_p3_b1_suite(B1_SUITE_PATH)
     resolved = resolve_p3_b1_variants(B1_SUITE_PATH, project_root=ROOT)
@@ -62,6 +80,53 @@ def test_b1_resolves_ld_and_l_from_canonical_p3() -> None:
     level_only = deepcopy(canonical)
     level_only["p3"]["candidate_transforms"] = ["level"]
     assert resolved["B1_L"] == level_only
+
+
+def test_b1_execution_preparation_resolves_runtime_and_model_yaml(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    loaded_paths: list[Path] = []
+
+    def load_document(path: Path):  # type: ignore[no-untyped-def]
+        resolved_path = Path(path).resolve()
+        loaded_paths.append(resolved_path)
+        return load_model_config_document(resolved_path)
+
+    monkeypatch.setattr(RUNNER, "load_model_config_document", load_document)
+    runtime = RUNNER._base_runtime_document()
+    expected_model_path = (
+        ROOT / "configs" / "models" / "ra_ds_pfd_crossformer.yaml"
+    ).resolve()
+    assert loaded_paths == [expected_model_path]
+    assert expected_model_path != (
+        ROOT / "configs" / "experiments" / "ra_ds_pfd_r0_r7.yaml"
+    ).resolve()
+    assert runtime == {"environment": "tslib"}
+
+    resolved = resolve_p3_b1_variants(B1_SUITE_PATH, project_root=ROOT)
+    temporary_root = tmp_path / "runtime-model-yaml"
+    temporary_root.mkdir()
+    expected_counts = {"B1_LD": 26, "B1_L": 13}
+    for variant in VARIANT_IDS:
+        model_path = temporary_root / f"{variant}.yaml"
+        model_path.write_text(
+            yaml.safe_dump(
+                RUNNER.resolved_model_document(resolved[variant], runtime),
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        document = load_model_config_document(model_path)
+        assert document["runtime"] == {"environment": "tslib"}
+        assert document["model"] == resolved[variant]
+        p3_config = document["model"]["p3"]
+        assert (
+            len(p3_config["candidate_features"])
+            * len(p3_config["candidate_transforms"])
+            == expected_counts[variant]
+        )
+        assert p3_config["top_k"] == 2
 
 
 @pytest.mark.parametrize(
@@ -135,13 +200,10 @@ def _write_synthetic_run(run_dir: Path, transforms: tuple[str, ...]) -> None:
         },
     }
     (run_dir / "model_config.yaml").write_text(
-        "runtime: {}\nmodel:\n" + "  pfd_mode: pfd3_global_topk\n"
-        "  p3:\n    mode: global_topk\n    top_k: 2\n"
-        "    selector_temperature: 0.1\n    selector_bisection_iterations: 64\n"
-        "    candidate_features:\n"
-        + "".join(f"      - {feature}\n" for feature in features)
-        + "    candidate_transforms:\n"
-        + "".join(f"      - {transform}\n" for transform in transforms),
+        yaml.safe_dump(
+            {"runtime": {}, "model": model_config},
+            sort_keys=False,
+        ),
         encoding="utf-8",
     )
     data_info = {
@@ -172,12 +234,22 @@ def _write_synthetic_run(run_dir: Path, transforms: tuple[str, ...]) -> None:
     save_checkpoint(
         run_dir / "best.pt",
         best,
-        manifest={"epoch": 3, "is_last": False, "model": "ra_ds_pfd_crossformer"},
+        manifest={
+            "epoch": 3,
+            "is_last": False,
+            "model": "ra_ds_pfd_crossformer",
+            "model_config": model_config,
+        },
     )
     save_checkpoint(
         run_dir / "last.pt",
         last,
-        manifest={"epoch": 4, "is_last": True, "model": "ra_ds_pfd_crossformer"},
+        manifest={
+            "epoch": 4,
+            "is_last": True,
+            "model": "ra_ds_pfd_crossformer",
+            "model_config": model_config,
+        },
     )
 
 
@@ -242,13 +314,49 @@ def test_level_only_selection_artifact_marks_diff1_not_applicable(
     assert artifact["operator_scores"]["diff1"]["not_applicable"] is True
 
 
+def test_selection_artifact_rejects_same_shape_candidate_order_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import models.ra_ds_pfd_crossformer.p3_selection as selection_module
+
+    run_dir = tmp_path / "run"
+    _write_synthetic_run(run_dir, ("level", "diff1"))
+    document = yaml.safe_load(
+        (run_dir / "model_config.yaml").read_text(encoding="utf-8")
+    )
+    document["model"]["p3"]["candidate_transforms"] = ["diff1", "level"]
+    (run_dir / "model_config.yaml").write_text(
+        yaml.safe_dump(document, sort_keys=False),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        selection_module,
+        "build_model",
+        lambda _name, config, _info: _SyntheticP3Model(
+            tuple(
+                f"{feature}.{transform}"
+                for feature in config["p3"]["candidate_features"]
+                for transform in config["p3"]["candidate_transforms"]
+            ),
+            int(config["p3"]["top_k"]),
+        ),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="best\\.pt model_config does not match run/model_config\\.yaml",
+    ):
+        write_p3_selection_best(run_dir, variant="B1_LD", project_root=tmp_path)
+    assert not (run_dir / "p3_selection_best.json").exists()
+
+
 def test_b1_runner_dry_run_is_cpu_only_and_reports_both_arms(tmp_path: Path) -> None:
-    script = ROOT / "scripts" / "run_ra_ds_pfd_p3_b1.py"
     output_root = tmp_path / "must-not-exist"
     result = subprocess.run(
         [
             sys.executable,
-            str(script),
+            str(B1_SCRIPT),
             "--all",
             "--device",
             "cpu",

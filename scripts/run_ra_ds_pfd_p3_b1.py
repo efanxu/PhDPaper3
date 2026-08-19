@@ -222,9 +222,9 @@ def build_plan(args: argparse.Namespace) -> list[dict[str, Any]]:
 def _base_runtime_document() -> dict[str, Any]:
     b1_suite = load_p3_b1_suite(SUITE_PATH)
     canonical_suite = load_p3_suite(ROOT / b1_suite["base"]["suite_file"])
-    model_file = ROOT / canonical_suite["base"]["suite_file"]
-    # The canonical P3 suite intentionally inherits the runtime document from
-    # the frozen R0-R7 base model YAML.
+    base_suite_path = ROOT / canonical_suite["base"]["suite_file"]
+    base_suite = yaml.safe_load(base_suite_path.read_text(encoding="utf-8"))
+    model_file = ROOT / base_suite["base_model_config"]["file"]
     document = load_model_config_document(model_file)
     return dict(document["runtime"])
 
