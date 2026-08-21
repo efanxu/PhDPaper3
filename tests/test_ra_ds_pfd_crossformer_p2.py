@@ -15,6 +15,7 @@ from models.ra_ds_pfd_crossformer.relation_spatial import (
     RelationBiasProvider,
     RelationSpatialAttention,
     RelationSpatialInsertion,
+    _group_reduce_node,
     ordered_relation_pair_representation,
 )
 
@@ -302,6 +303,27 @@ def test_multiple_edge_chunk_sizes_are_mathematically_equivalent() -> None:
 
     assert max_output_error <= 1e-6
     assert max_gradient_error <= 1e-6
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for CUDA accumulation regression")
+def test_relation_group_add_is_repeatable_with_duplicate_cuda_targets() -> None:
+    torch.manual_seed(2026)
+    torch.cuda.manual_seed_all(2026)
+    nodes = 134
+    edges = 1340
+    values = torch.randn(256, edges, 1, 1, dtype=torch.float16, device="cuda")
+    target = torch.arange(edges, device="cuda", dtype=torch.long).remainder(nodes)
+    previous = torch.are_deterministic_algorithms_enabled()
+    try:
+        torch.use_deterministic_algorithms(False)
+        outputs = [
+            _group_reduce_node(values, target, num_nodes=nodes, reduce="add")
+            for _ in range(5)
+        ]
+        for output in outputs[1:]:
+            torch.testing.assert_close(output, outputs[0], atol=0.0, rtol=0.0)
+    finally:
+        torch.use_deterministic_algorithms(previous)
 
 
 def test_edge_permutation_preserves_node_output_and_biases_are_logits_only() -> None:

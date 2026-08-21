@@ -379,3 +379,38 @@ def test_b1_runner_dry_run_is_cpu_only_and_reports_both_arms(tmp_path: Path) -> 
     assert [item["candidate_count"] for item in payload["arms"]] == [26, 13]
     assert [item["top_k"] for item in payload["arms"]] == [2, 2]
     assert not output_root.exists()
+
+
+def test_b1_stdout_report_contains_selected_name_score_rank_k_and_best_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import models.ra_ds_pfd_crossformer.p3_selection as selection_module
+
+    run_dir = tmp_path / "B1_LD"
+    _write_synthetic_run(run_dir, ("level", "diff1"))
+    monkeypatch.setattr(
+        selection_module,
+        "build_model",
+        lambda _name, config, _info: _SyntheticP3Model(
+            tuple(
+                f"{feature}.{transform}"
+                for feature in config["p3"]["candidate_features"]
+                for transform in config["p3"]["candidate_transforms"]
+            ),
+            int(config["p3"]["top_k"]),
+        ),
+    )
+    artifact = write_p3_selection_best(run_dir, variant="B1_LD", project_root=tmp_path)
+    RUNNER.print_p3_b1_selection_report("B1_LD", artifact)
+    output = capsys.readouterr().out
+    assert "P3-B1 B1_LD" in output
+    assert "M = 26" in output
+    assert "K = 2" in output
+    assert "best.pt" in output
+    assert "Wspd.level" in output
+    assert "score=" in output
+    assert "rank=" in output
+    assert "selected=True" in output
+    assert "Operator scores" in output

@@ -9,7 +9,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
-from typing import Any, Sequence
+from typing import Any, Sequence, TextIO
 
 import yaml
 
@@ -233,6 +233,66 @@ def resolved_model_document(resolved: dict[str, Any], runtime: dict[str, Any]) -
     return {"runtime": dict(runtime), "model": dict(resolved)}
 
 
+def print_p3_b1_selection_report(
+    variant: str,
+    artifact: dict[str, Any],
+    *,
+    stream: TextIO | None = None,
+) -> None:
+    """Print the compact propagation readout for one B1 arm."""
+
+    output = stream or sys.stdout
+    selected = sorted(
+        (
+            item
+            for item in artifact["propagation_feature_scores"]
+            if item["selected"]
+        ),
+        key=lambda item: int(item["rank"]),
+    )
+    ranking = sorted(
+        artifact["propagation_feature_scores"],
+        key=lambda item: int(item["rank"]),
+    )[: min(10, int(artifact["candidate_count"]))]
+    operator_scores = artifact["operator_scores"]
+
+    print("=" * 50, file=output)
+    print(f"P3-B1 {variant}", file=output)
+    print(f"M = {artifact['candidate_count']}", file=output)
+    print(f"K = {artifact['top_k']}", file=output)
+    print(f"checkpoint = {artifact['checkpoint_source']}", file=output)
+    print(f"best_epoch = {artifact['best_epoch']}", file=output)
+    print("=" * 50, file=output)
+    print("Selected propagation features:", file=output)
+    for item in selected:
+        print(
+            f"{item['rank']}. {item['candidate_name']} "
+            f"score={float(item['score']):.6f} rank={item['rank']} "
+            f"selected={item['selected']}",
+            file=output,
+        )
+    print("Top propagation ranking:", file=output)
+    for item in ranking:
+        print(
+            f"{item['rank']}. {item['candidate_name']} "
+            f"score={float(item['score']):.6f} rank={item['rank']} "
+            f"selected={item['selected']}",
+            file=output,
+        )
+    if operator_scores.get("diff1_score") is None:
+        print(
+            f"Operator scores: level = {float(operator_scores['level_score']):.6f}; "
+            "diff1 = not applicable",
+            file=output,
+        )
+    else:
+        print(
+            f"Operator scores: level = {float(operator_scores['level_score']):.6f}; "
+            f"diff1 = {float(operator_scores['diff1_score']):.6f}",
+            file=output,
+        )
+
+
 def execute_plan(args: argparse.Namespace, plan: list[dict[str, Any]]) -> int:
     resolved_variants = resolve_p3_b1_variants(SUITE_PATH, project_root=ROOT)
     runtime = _base_runtime_document()
@@ -298,6 +358,7 @@ def execute_plan(args: argparse.Namespace, plan: list[dict[str, Any]]) -> int:
                 ),
                 flush=True,
             )
+            print_p3_b1_selection_report(variant, artifact)
         return 0
     finally:
         temporary_root.rmdir()

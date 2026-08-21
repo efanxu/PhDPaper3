@@ -153,27 +153,47 @@ summary；所有状态均不产生 final `selected_k`。不同 K 的 normalized 
 
 ## 4. 当前已验证结果
 
-P3 selector focused tests：36 passed；B1 focused tests：13 passed；B2 focused
-tests：26 passed；其中
-gradcheck（K=1/2/3）3 项、central finite-difference（K=1/2/3）3 项、
-constraint-gradient（K=1/2/3）3 项、translation-invariance、monotonic ranking、
-K=M zero-gradient、best.pt-only selection、model-config provenance、B2 K grid、
-validation-only provisional aggregation、exact-tie ambiguity、smoke guard、
-run isolation 和 incomplete-grid gate 均通过。所有 P3 CPU 测试：
-101 passed；所有 RA-DS-PFD 相关测试：194 passed。当前 CPU-only regression：
-359 passed, 3 skipped；skip 是既有正式 tsl 环境条件，不是失败。唯一真实
-CUDA/full-shape 测试 `tests/test_full_shape.py` 按本轮 GPU 禁令排除。
-`python scripts\generate_command_reference.py --check` 通过；P3-B2 的六臂
-CPU dry-run 通过，且未写正式结果。
+本轮最终 CPU 回归（在 production fix 后）：P3 focused `76 passed`；所有 P3
+测试 `102 passed`；所有 RA-DS-PFD 相关测试 `196 passed`；repository regression
+`362 passed, 3 skipped`。3 个 skip 是既有正式 tsl 环境条件，不是失败。
+`python scripts\generate_command_reference.py --check` 通过。
 
-P3-B0 GPU Feasibility = PASS。目标 GPU 为 NVIDIA GeForce RTX 4070 Ti SUPER
-(16376 MiB)；公共 `check --full-shape` 使用 formal default shape、
-`full_spatiotemporal` 和 resolved AMP float16，完成 forward/loss/backward：
-输入 `[32,144,134,16]`，输出 `[32,134,10]`，M=26、K=2，输出、loss、selector
-logits、candidate projections、shared Scale0/Scale1 temporal encoder 与
-relation/spatial trainable gradients 均 finite，无 CUDA OOM。公共 allocator
-记录为 peak allocated 18105.886 MB、peak reserved 18274.000 MB，GPU total
-16375.500 MB。
+本轮最终 GPU 环境：NVIDIA GeForce RTX 4070 Ti SUPER，GPU total
+`16375.5 MiB`；PyTorch `2.5.1+cu124`，CUDA `12.4`，formal GPU available。
+7 个 unique resolved model config 的真实数据 preflight 全部 PASS；数据边界为
+134 nodes、16 features、lookback 144、max prediction horizon 10。
+
+P3-B1/B2 pre-Full GPU evidence（2026-08-21）全部完成：
+
+- B1 `B1_LD` 与 `B1_L` Smoke 均 `PASS / SMOKE`；`M/K` 分别为 `26/2`、
+  `13/2`，两者均有 best.pt、last.pt、metrics_validation.json、
+  p3_selection_best.json，且 stdout 实际打印 candidate、score、rank、selected。
+- B2 `K1/K2/K3/K4/K6/K8` Smoke 全部 `PASS / SMOKE`；每个 arm 的
+  `M=26`、selected count 与 K 一致，score 全 finite 且总和约为 1。
+- 所有 7 个 unique config 的 `FORMAL_DEFAULT_SHAPE` 均 PASS，未使用 shape
+  override；profile 为 `FORMAL_DEFAULT_SHAPE`，输入 `[32,144,134,16]`，
+  输出 `[32,134,10]`。最终记录的最大 peak allocated 为 `18396.468 MB`、
+  peak reserved `18568.000 MB`。
+- 所有 7 个 unique config 的公共 repeatability 均 PASS，保留默认
+  `prediction_atol/rtol=5e-3`、`metric_atol/rtol=2e-4`；different worker、
+  config、initial weights、data split、batch order、updates、loss curve、
+  validation/test metrics 和 predictions 均通过，A/B 最大 prediction 与
+  metric difference 均为 `0.0`。
+- 对每个 repeatability pair，均从 A/B 的 `best.pt` 调用
+  `write_p3_selection_best()`；candidate list、transforms、M、K、selected count
+  和 selected Top-K set 全部 exact match，完整 ranking 也一致，最大绝对
+  feature-score difference 为 `0.0`。B1_LD 与 B2_K2 是完全相同的 resolved
+  model configuration，因此 B2_K2 的 formal-shape/repeatability evidence
+  覆盖该共同 config。
+- B2 Smoke 未生成 `p3_b2_k_selection.json`，也未出现
+  `PROVISIONAL`、`AMBIGUOUS`、`selected_k` 或 `provisional_best_k`。
+
+repeatability 期间定位到真实 CUDA bug：关系空间重复 target 的 atomic
+`scatter_add_` 及其训练反向会造成跨 worker 的浮点 reduction order 差异。最小
+修复是使用固定 edge 顺序的 segmented aggregation，并仅在 P3 CUDA training
+forward/backward scope 临时选择 strict deterministic kernels；公共
+`controlled_nonstrict` 状态、AMP、batch、seed、loss、optimizer 和模型参数均未改动。
+新增 CUDA accumulation regression 与 scope regression 均通过。
 
 R0-R7 的当前明确状态是：
 
@@ -186,41 +206,41 @@ Stage A、P3 dry-run 或 CPU foundation 均不得改写为 Formal Full。
 
 ## 5. P3-A2/P3-B1/P3-B2 状态与下一步
 
-P3-A2.1 STATUS = PASS；P3-B0 STATUS = PASS；P3-B1 infrastructure STATUS = PASS。
-P3-A2 formal architecture closure
-已完成：Global K-configurable Selector 保持 entropy-regularized fixed-cardinality
-relaxation，forward 为 scalar threshold numerical solve，backward 为 implicit
-differentiation，且已通过 numerical gradient validation。默认 K=2，K configurable
-1..M；operator registry 当前为 level、diff1；default candidate bank 为
-level + diff1；selector remains propagation-only。
+`P3 PRE-FULL GPU EVIDENCE = PASS`。
 
-P3-B1 formal Discovery 尚未运行，未导出正式 feature scores、rank 或 Top-K，也
-未使用 test set 做选择。P3-B2 infrastructure 已完成，但没有真实 K-selection
-结果；Level+Diff1 是当前 B2 的 frozen default operator basis，不是 B1 的实验胜出
-结论。P3 Formal Full、multi-seed、PredictionTopK、RandomTopK、
-AllPropagation、physics loss、dynamic graph 和 variable-specific temporal
-response 均未实现或未运行。R0-R7 仍冻结且未被本轮修改。
+- P3-B1 GPU Smoke = `PASS`；B1_LD = `PASS`；B1_L = `PASS`。
+- P3-B1 FORMAL_DEFAULT_SHAPE = `PASS`；B1_LD 与 B2_K2 共享 exact-config evidence。
+- P3-B1 Repeatability = `PASS`；P3-B1 selected-set repeatability = `PASS`。
+- P3-B2 GPU Smoke = `PASS`；K1/K2/K3/K4/K6/K8 均 `PASS`。
+- P3-B2 FORMAL_DEFAULT_SHAPE = `PASS`；P3-B2 Repeatability = `PASS`。
+- P3 selector selected-set repeatability = `PASS`。
 
-GPU validation for P3-B0 = PASS（formal default shape）；P3-B1 GPU smoke =
-NOT RUN；B1-LD/B1-L Formal Discovery = NOT RUN；B1 operator decision =
-NOT RUN。P3-B2 GPU smoke = NOT RUN；P3-B2 Formal K-selection = NOT RUN；
-provisional K = NOT RUN；final K* = NOT DECIDED。上述状态均因 GPU occupied，
-本轮只完成 CPU-only infrastructure closeout。
+科学状态保持未决：Level+Diff1 remains the current B2 fixed/default basis；不得
+解释为 B1 winner。B1 Formal Discovery = `NOT RUN`；B1 operator decision =
+`NOT DECIDED`；B2 Formal K-selection = `NOT RUN`；provisional K = `NOT RUN`；
+final K* = `NOT DECIDED`。
 
-Next：GPU 空闲后建议先运行 P3-B2 六臂 smoke。该 smoke 只验证 feasibility、
-per-K readout 和 feature score/rank，不产生 K-selection summary；本轮没有
-启动该命令，也没有自动启动六个 Formal Full：
+`NO FORMAL FULL WAS RUN BY CODEX.` B1/B2 Formal Full、multi-seed 和正式
+test-set comparison 均留给用户手工执行。以下命令只打印在交接中，
+`DO NOT EXECUTE BY CODEX — USER WILL RUN MANUALLY`：
 
 ```powershell
-python scripts\run_ra_ds_pfd_p3_b2.py --all --run-id ra_ds_pfd_p3_b2_smoke_seed2026 --device cuda --smoke
+$PYTHON = 'D:\Apps\Miniconda3\envs\env_tslib\python.exe'
+
+# DO NOT EXECUTE BY CODEX — USER WILL RUN MANUALLY
+& $PYTHON scripts\run_ra_ds_pfd_p3_b1.py --all --run-id p3-b1-full-seed2026 --device cuda
+
+# DO NOT EXECUTE BY CODEX — USER WILL RUN MANUALLY
+& $PYTHON scripts\run_ra_ds_pfd_p3_b2.py --all --run-id p3-b2-full-seed2026 --device cuda
 ```
 
 ## 6. 当前兼容约束与不可踩的坑
 
-- 不修改公共 batch、lookback、horizon、seed、AMP、loss、optimizer、graph `k`、
-  `node_shared_chunk_size`、`spatial_edge_chunk_size`、R0-R7 axes、Trainer、
-  Evaluator、loss accumulation、checkpoint compatibility、repeatability tolerance、
-  status schema 或 result layout。
+- 公共 batch、lookback、horizon、seed、AMP、loss、optimizer、graph `k`、
+  `node_shared_chunk_size`、`spatial_edge_chunk_size`、R0-R7 axes、Evaluator、
+  loss accumulation、checkpoint compatibility、repeatability tolerance、status
+  schema 和 result layout 均保持不变；shared Trainer 仅包含本轮记录的 P3 CUDA
+  training deterministic scope。
 - 公共图保持 `adjacency[source,target]`、`edge_index[0]=source`、
   `edge_index[1]=target`、`k=5`；NodeShared 与 full-spatiotemporal 的边界不能互换。
 - Resume 比较 resolved model-config 内容而不是临时 YAML 路径；不得把不同 Rk 的

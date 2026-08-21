@@ -14,6 +14,7 @@ from engine.model_execution import build_execution_plan
 from runtime.config import ConfigError, load_experiment_config, load_model_config
 from runtime.environments import ResolvedEnvironment, build_worker_environment
 from engine.reproducibility import set_seed
+from engine.trainer import Trainer
 from models.base import ModelInput, NodeSharedForecastModel
 
 
@@ -67,6 +68,20 @@ def test_seed_records_controlled_nonstrict_and_disables_global_strict(monkeypatc
     assert details["cuda_matmul_allow_tf32"] is False
     assert details["cudnn_allow_tf32"] is False
     assert torch.are_deterministic_algorithms_enabled() is False
+
+
+def test_p3_cuda_training_scope_temporarily_enables_strict_algorithms() -> None:
+    trainer = object.__new__(Trainer)
+    trainer.device = torch.device("cuda")
+    trainer.model_name = "ra_ds_pfd_crossformer"
+    previous = torch.are_deterministic_algorithms_enabled()
+    try:
+        torch.use_deterministic_algorithms(False)
+        with trainer._training_algorithm_context():
+            assert torch.are_deterministic_algorithms_enabled() is True
+        assert torch.are_deterministic_algorithms_enabled() is False
+    finally:
+        torch.use_deterministic_algorithms(previous)
 
 
 def test_worker_seed_mismatch_fails_closed(monkeypatch) -> None:

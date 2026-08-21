@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 import time
 from typing import Any, Iterable, Mapping
@@ -99,6 +100,26 @@ class Trainer:
     def _autocast(self):
         return self.precision.autocast()
 
+    @contextmanager
+    def _training_algorithm_context(self):
+        """Use deterministic CUDA kernels for the P3 relation backward path.
+
+        The public ``controlled_nonstrict`` policy remains unchanged outside
+        this narrow scope. P3 relation attention gathers repeated graph edges;
+        strict CUDA algorithm selection is required while its training graph
+        is built and backwarded so duplicate-index gradients cannot race.
+        """
+
+        enabled_for_model = self.device.type == "cuda" and self.model_name == "ra_ds_pfd_crossformer"
+        previous = torch.are_deterministic_algorithms_enabled()
+        if enabled_for_model:
+            torch.use_deterministic_algorithms(True)
+        try:
+            yield
+        finally:
+            if enabled_for_model:
+                torch.use_deterministic_algorithms(previous)
+
     def _update(self, batches: list[ForecastBatch]) -> float:
         if not batches:
             raise ValueError("optimizer update requires at least one micro-batch")
@@ -114,15 +135,16 @@ class Trainer:
             if self.scaler is not None
             else (lambda contribution: contribution.backward())
         )
-        execution = execute_training_backward(
-            self.model,
-            batches,
-            device=self.device,
-            plan=self.execution_plan,
-            loss_name=loss_name,
-            autocast=self._autocast,
-            backward=backward,
-        )
+        with self._training_algorithm_context():
+            execution = execute_training_backward(
+                self.model,
+                batches,
+                device=self.device,
+                plan=self.execution_plan,
+                loss_name=loss_name,
+                autocast=self._autocast,
+                backward=backward,
+            )
         if self.scaler is not None:
             self.scaler.unscale_(self.optimizer)
         training = self.config.training

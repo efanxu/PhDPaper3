@@ -191,8 +191,8 @@ def _group_reduce(
 
     batch, edges, channels, segments, heads = values.shape
     rows = values.permute(0, 2, 3, 4, 1).reshape(-1, edges)
-    index = target.view(1, edges).expand(rows.shape[0], edges)
     if reduce == "amax":
+        index = target.view(1, edges).expand(rows.shape[0], edges)
         result = torch.full(
             (rows.shape[0], int(num_nodes)),
             -torch.inf,
@@ -201,15 +201,63 @@ def _group_reduce(
         )
         result.scatter_reduce_(1, index, rows, reduce="amax", include_self=True)
     elif reduce == "add":
-        result = torch.zeros(
-            (rows.shape[0], int(num_nodes)),
-            dtype=rows.dtype,
-            device=rows.device,
-        )
-        result.scatter_add_(1, index, rows)
+        result = _deterministic_group_add_rows(rows, target, num_nodes=num_nodes)
     else:
         raise ValueError(f"unsupported relation group reduction: {reduce}")
     return result.reshape(batch, channels, segments, heads, int(num_nodes))
+
+
+def _deterministic_group_add_rows(
+    rows: torch.Tensor,
+    target: torch.Tensor,
+    *,
+    num_nodes: int,
+) -> torch.Tensor:
+    """Sum duplicate target rows in a fixed edge order on every device.
+
+    CUDA ``scatter_add_`` uses atomic accumulation for duplicate indices, so
+    its floating-point reduction order can vary between otherwise identical
+    forwards. Sorting the fixed relation edge list and taking a segmented sum
+    gives each target a stable input-order reduction while preserving autograd.
+    """
+
+    edge_count = int(rows.shape[1])
+    if target.ndim != 1 or int(target.shape[0]) != edge_count:
+        raise ValueError("group-add target must be a vector aligned with rows")
+    order = torch.argsort(target, stable=True)
+    sorted_target = target.index_select(0, order)
+    counts = torch.bincount(sorted_target, minlength=int(num_nodes))
+    sorted_rows = rows.index_select(1, order)
+    segment_reduce = getattr(torch, "segment_reduce", None)
+    if segment_reduce is not None:
+        return segment_reduce(
+            sorted_rows.transpose(0, 1),
+            "sum",
+            lengths=counts,
+            axis=0,
+        ).transpose(0, 1)
+    groups = []
+    start = 0
+    for count in counts:
+        count_value = int(count)
+        groups.append(sorted_rows[:, start : start + count_value].sum(dim=1))
+        start += count_value
+    return torch.stack(groups, dim=1)
+
+
+def _group_add(
+    values: torch.Tensor,
+    target: torch.Tensor,
+    *,
+    edge_dim: int,
+    num_nodes: int,
+) -> torch.Tensor:
+    """Aggregate one edge dimension into one target-node dimension."""
+
+    moved = values.movedim(edge_dim, -1)
+    rows = moved.reshape(-1, moved.shape[-1])
+    reduced = _deterministic_group_add_rows(rows, target, num_nodes=num_nodes)
+    return reduced.reshape(*moved.shape[:-1], int(num_nodes)).movedim(-1, edge_dim)
 
 
 class RelationSpatialAttention(nn.Module):
@@ -368,8 +416,7 @@ class RelationSpatialAttention(nn.Module):
             dropped_weights = self.dropout(weights)
             weighted = dropped_weights.unsqueeze(-1) * source_values.unsqueeze(2)
             rows = weighted.permute(0, 2, 3, 4, 1, 5)
-            scatter_index = target.view(1, 1, 1, 1, end - start, 1).expand_as(rows)
-            message.scatter_add_(4, scatter_index, rows)
+            message = message + _group_add(rows, target, edge_dim=4, num_nodes=nodes)
             if return_diagnostics:
                 weight_chunks.append(weights)
                 content_chunks.append(content)
@@ -413,8 +460,8 @@ def _group_reduce_node(
     batch, edges = values.shape[:2]
     tail = values.shape[2:]
     rows = values.permute(0, *range(2, values.ndim), 1).reshape(-1, edges)
-    index = target.view(1, edges).expand(rows.shape[0], edges)
     if reduce == "amax":
+        index = target.view(1, edges).expand(rows.shape[0], edges)
         result = torch.full(
             (rows.shape[0], int(num_nodes)),
             -torch.inf,
@@ -423,12 +470,7 @@ def _group_reduce_node(
         )
         result.scatter_reduce_(1, index, rows, reduce="amax", include_self=True)
     elif reduce == "add":
-        result = torch.zeros(
-            (rows.shape[0], int(num_nodes)),
-            dtype=values.dtype,
-            device=values.device,
-        )
-        result.scatter_add_(1, index, rows)
+        result = _deterministic_group_add_rows(rows, target, num_nodes=num_nodes)
     else:
         raise ValueError(f"unsupported relation group reduction: {reduce}")
     return result.reshape(batch, *tail, int(num_nodes))
@@ -584,8 +626,7 @@ class NodePooledRelationSpatialAttention(nn.Module):
             dropped_weights = self.dropout(weights)
             weighted = dropped_weights.unsqueeze(-1) * source_values
             rows = weighted.permute(0, 2, 3, 1, 4)
-            scatter_index = target.view(1, 1, 1, end - start, 1).expand_as(rows)
-            message.scatter_add_(3, scatter_index, rows)
+            message = message + _group_add(rows, target, edge_dim=3, num_nodes=nodes)
             if return_diagnostics:
                 weight_chunks.append(weights)
                 content_chunks.append(content)
