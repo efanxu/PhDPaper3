@@ -95,6 +95,7 @@ class ForecastModel(nn.Module):
     """Marker base class for models that return ``(B, N, H)`` forecasts."""
 
     output_layout = "batch_nodes_horizon"
+    requires_deterministic_cuda_training = False
 
     def validate_output(self, value: torch.Tensor, *, batch: int, nodes: int, horizon: int) -> torch.Tensor:
         if tuple(value.shape) != (batch, nodes, horizon):

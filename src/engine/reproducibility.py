@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import random
+from contextlib import contextmanager
 from typing import Any
 
 import numpy as np
@@ -13,6 +14,35 @@ import torch
 
 CONTROLLED_NONSTRICT = "controlled_nonstrict"
 CUBLAS_WORKSPACE_CONFIG = ":4096:8"
+
+
+@contextmanager
+def training_algorithm_context(
+    model: torch.nn.Module,
+    device: torch.device | str,
+):
+    """Apply a model-owned strict CUDA training requirement for one scope.
+
+    ``controlled_nonstrict`` remains the process-wide default.  A model can
+    opt into a temporary strict algorithm scope when its concrete CUDA
+    forward/backward graph requires it; callers outside CUDA or models that
+    do not declare the capability are left untouched.
+    """
+
+    selected_device = torch.device(device)
+    required = (
+        selected_device.type == "cuda"
+        and bool(getattr(model, "requires_deterministic_cuda_training", False))
+    )
+    previous = torch.are_deterministic_algorithms_enabled()
+    changed = required and not previous
+    if changed:
+        torch.use_deterministic_algorithms(True)
+    try:
+        yield
+    finally:
+        if changed:
+            torch.use_deterministic_algorithms(False)
 
 
 def _validate_worker_environment(seed: int) -> None:

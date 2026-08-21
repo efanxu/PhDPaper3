@@ -111,6 +111,7 @@ class _RADSPFDCrossformerImplementation:
         self.model_config = dict(model_config)
         self.source_root = Path(source_root).resolve()
         self.spatial_disabled = bool(model_config["spatial_disabled"])
+        self.requires_deterministic_cuda_training = not self.spatial_disabled
         self.wspd_index = None if wspd_index is None else int(wspd_index)
         self.relation_resource = relation_resource
 

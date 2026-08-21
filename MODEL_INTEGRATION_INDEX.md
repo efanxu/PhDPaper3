@@ -94,9 +94,15 @@ YAML-default formal batch. Report batch-1 and default-batch results separately.
 
 All commands use `runtime.reproducibility_mode: controlled_nonstrict`: seeds and
 DataLoader generators remain fixed, cuDNN algorithm selection remains fixed,
-and global deterministic CUDA algorithms are disabled. Repeatability keeps
-structural fields exact and compares floating-point losses, metrics and
-predictions with the recorded absolute/relative tolerances.
+and global/default deterministic CUDA algorithms remain disabled. A model may
+declare a narrowly scoped deterministic CUDA training/shape-validation
+requirement when a concrete CUDA forward/backward nondeterminism has been
+demonstrated; the current RA-DS-PFD relation-spatial adapters use this local
+scope, while spatial-disabled RA-DS-PFD and unrelated models remain
+non-strict. The local scope restores the previous global state immediately
+afterward. Repeatability keeps structural fields exact and compares
+floating-point losses, metrics and predictions with the recorded
+absolute/relative tolerances.
 
 Environment preflight does not validate the real data node order. Data
 preflight, resolved/formal shape checks and Smoke validate node IDs against

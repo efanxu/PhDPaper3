@@ -14,7 +14,7 @@ import torch
 from data.dataset import ForecastBatch
 from data.loader import load_data
 from engine.model_execution import build_execution_plan, execute_training_backward
-from engine.reproducibility import set_seed
+from engine.reproducibility import set_seed, training_algorithm_context
 from engine.precision import resolve_precision_policy
 from models.base import DataInfoView, ModelInput
 from models.loader import build_model
@@ -197,16 +197,17 @@ def run_shape_validation(
             target_mask=target_mask,
             starts=torch.arange(batch_size, dtype=torch.int64),
         )
-        execution = execute_training_backward(
-            model,
-            [batch],
-            device=selected_device,
-            plan=execution_plan,
-            loss_name=str(config.training["loss"]),
-            autocast=precision.autocast,
-            backward=lambda contribution: contribution.backward(),
-            capture_prediction=True,
-        )
+        with training_algorithm_context(model, selected_device):
+            execution = execute_training_backward(
+                model,
+                [batch],
+                device=selected_device,
+                plan=execution_plan,
+                loss_name=str(config.training["loss"]),
+                autocast=precision.autocast,
+                backward=lambda contribution: contribution.backward(),
+                capture_prediction=True,
+            )
         output = execution.prediction
         if output is None:
             raise RuntimeError("execution did not return a validation prediction")

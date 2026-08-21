@@ -11,6 +11,7 @@ from engine.reproducibility import set_seed
 from models.base import DataInfoView, ModelInput, NodeSharedForecastModel
 from models.loader import build_model
 from models.ra_ds_pfd_crossformer.pfd0 import build_wspd_level_diff1
+from models.ra_ds_pfd_crossformer.p3_feature_bank import P3_BASE_FEATURES
 from models.ra_ds_pfd_crossformer.relation_spatial import (
     RelationBiasProvider,
     RelationSpatialAttention,
@@ -70,6 +71,51 @@ def _build() -> torch.nn.Module:
     return build_model("ra_ds_pfd_crossformer", _config(), _info())
 
 
+def _p3_info() -> DataInfoView:
+    return DataInfoView(
+        num_nodes=3,
+        num_features=16,
+        lookback=24,
+        max_pred_len=3,
+        feature_columns=(
+            "Wspd",
+            "Wdir",
+            "Etmp",
+            "Itmp",
+            "Ndir",
+            "Pab1",
+            "Pab2",
+            "Pab3",
+            "Prtv",
+            "T2m",
+            "Sp",
+            "RelH",
+            "Wspd_w",
+            "Wdir_w",
+            "Tp",
+            "Patv_clean_for_input",
+        ),
+        input_power_column="Patv_clean_for_input",
+        input_power_index=15,
+        node_ids=(1, 2, 3),
+        project_root=ROOT,
+    )
+
+
+def _p3_config() -> dict[str, object]:
+    config = _config()
+    config["pfd_mode"] = "pfd3_global_topk"
+    config["p3"] = {
+        "mode": "global_topk",
+        "top_k": 2,
+        "selector_temperature": 0.1,
+        "selector_bisection_iterations": 64,
+        "candidate_features": list(P3_BASE_FEATURES),
+        "candidate_transforms": ["level", "diff1"],
+    }
+    return config
+
+
 def test_p2_keeps_full_spatiotemporal_execution_plan() -> None:
     model = _build()
     assert not isinstance(model, NodeSharedForecastModel)
@@ -80,6 +126,29 @@ def test_p2_keeps_full_spatiotemporal_execution_plan() -> None:
     assert plan.node_chunk_count == 1
     assert plan.node_ranges() == ((0, 3),)
     assert plan.uses_node_microbatch is False
+
+
+def test_deterministic_cuda_training_capability_follows_resolved_spatial_config() -> None:
+    legacy = {
+        "d_model": 8,
+        "n_heads": 2,
+        "d_ff": 16,
+        "e_layers": 2,
+        "dropout": 0.0,
+        "factor": 2,
+        "seg_len": 12,
+        "win_size": 2,
+        "spatial_disabled": True,
+        "pfd_mode": "pfd0",
+        "relation_resource": {"file": "does/not/exist.npz"},
+    }
+    r0 = build_model("ra_ds_pfd_crossformer", legacy, _info())
+    r2 = _build()
+    p3 = build_model("ra_ds_pfd_crossformer", _p3_config(), _p3_info())
+
+    assert r0.requires_deterministic_cuda_training is False
+    assert r2.requires_deterministic_cuda_training is True
+    assert p3.requires_deterministic_cuda_training is True
 
 
 def _dense_reference(

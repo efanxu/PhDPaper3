@@ -1,21 +1,25 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from contextlib import nullcontext
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import pytest
 import torch
 import yaml
+from torch import nn
 
+from data.dataset import ForecastBatch
 from cli.repeatability import _values_close
 from cli.train import _check_checkpoint_compatibility
 from engine.model_execution import build_execution_plan
 from runtime.config import ConfigError, load_experiment_config, load_model_config
 from runtime.environments import ResolvedEnvironment, build_worker_environment
-from engine.reproducibility import set_seed
+from engine.reproducibility import set_seed, training_algorithm_context
 from engine.trainer import Trainer
-from models.base import ModelInput, NodeSharedForecastModel
+from models.base import ForecastModel, ModelInput, NodeSharedForecastModel
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -70,15 +74,146 @@ def test_seed_records_controlled_nonstrict_and_disables_global_strict(monkeypatc
     assert torch.are_deterministic_algorithms_enabled() is False
 
 
-def test_p3_cuda_training_scope_temporarily_enables_strict_algorithms() -> None:
-    trainer = object.__new__(Trainer)
-    trainer.device = torch.device("cuda")
-    trainer.model_name = "ra_ds_pfd_crossformer"
+def test_forecast_model_default_deterministic_cuda_training_capability_is_false() -> None:
+    assert ForecastModel().requires_deterministic_cuda_training is False
+
+
+def test_disabled_capability_does_not_change_deterministic_algorithm_state() -> None:
+    model = ForecastModel()
     previous = torch.are_deterministic_algorithms_enabled()
     try:
         torch.use_deterministic_algorithms(False)
-        with trainer._training_algorithm_context():
+        with training_algorithm_context(model, torch.device("cuda")):
+            assert torch.are_deterministic_algorithms_enabled() is False
+        assert torch.are_deterministic_algorithms_enabled() is False
+    finally:
+        torch.use_deterministic_algorithms(previous)
+
+
+def test_relation_capability_temporarily_enables_deterministic_algorithms() -> None:
+    model = ForecastModel()
+    model.requires_deterministic_cuda_training = True
+    previous = torch.are_deterministic_algorithms_enabled()
+    try:
+        torch.use_deterministic_algorithms(False)
+        with training_algorithm_context(model, torch.device("cuda")):
             assert torch.are_deterministic_algorithms_enabled() is True
+        assert torch.are_deterministic_algorithms_enabled() is False
+    finally:
+        torch.use_deterministic_algorithms(previous)
+
+
+def test_deterministic_algorithm_context_restores_preexisting_true_state() -> None:
+    model = ForecastModel()
+    model.requires_deterministic_cuda_training = True
+    previous = torch.are_deterministic_algorithms_enabled()
+    try:
+        torch.use_deterministic_algorithms(True)
+        with training_algorithm_context(model, torch.device("cuda")):
+            assert torch.are_deterministic_algorithms_enabled() is True
+        assert torch.are_deterministic_algorithms_enabled() is True
+    finally:
+        torch.use_deterministic_algorithms(previous)
+
+
+def test_deterministic_algorithm_context_restores_state_after_exception() -> None:
+    model = ForecastModel()
+    model.requires_deterministic_cuda_training = True
+    previous = torch.are_deterministic_algorithms_enabled()
+    try:
+        torch.use_deterministic_algorithms(False)
+        with pytest.raises(RuntimeError, match="scope failure"):
+            with training_algorithm_context(model, torch.device("cuda")):
+                assert torch.are_deterministic_algorithms_enabled() is True
+                raise RuntimeError("scope failure")
+        assert torch.are_deterministic_algorithms_enabled() is False
+    finally:
+        torch.use_deterministic_algorithms(previous)
+
+
+def test_deterministic_algorithm_context_never_enables_strict_mode_on_cpu() -> None:
+    model = ForecastModel()
+    model.requires_deterministic_cuda_training = True
+    previous = torch.are_deterministic_algorithms_enabled()
+    try:
+        torch.use_deterministic_algorithms(False)
+        with training_algorithm_context(model, torch.device("cpu")):
+            assert torch.are_deterministic_algorithms_enabled() is False
+        assert torch.are_deterministic_algorithms_enabled() is False
+    finally:
+        torch.use_deterministic_algorithms(previous)
+
+
+class _TrainerCapabilityToy(ForecastModel):
+    def __init__(self, requires_deterministic_cuda_training: bool) -> None:
+        super().__init__()
+        self.weight = nn.Parameter(torch.tensor(1.0))
+        self.requires_deterministic_cuda_training = requires_deterministic_cuda_training
+
+    def forward(self, inputs: ModelInput) -> torch.Tensor:
+        return inputs.x.mean(dim=(1, 3)).unsqueeze(-1).expand(-1, inputs.x.shape[2], 1) * self.weight
+
+
+def _scope_probe_trainer(model: ForecastModel, model_name: str) -> Trainer:
+    trainer = object.__new__(Trainer)
+    trainer.model = model
+    trainer.device = torch.device("cuda")
+    trainer.model_name = model_name
+    trainer.config = SimpleNamespace(
+        training={
+            "loss": "masked_score_aligned_hybrid",
+            "gradient_clip": 5.0,
+            "gradient_clip_norm_type": 2.0,
+            "gradient_clip_error_if_nonfinite": False,
+            "gradient_clip_foreach": False,
+        }
+    )
+    trainer.execution_plan = None
+    trainer.optimizer = torch.optim.SGD(model.parameters(), lr=0.0)
+    trainer.scaler = None
+    trainer.precision = SimpleNamespace(autocast=lambda: nullcontext())
+    trainer.train_batch_order = []
+    trainer.first_step_loss = None
+    trainer.last_step_loss = None
+    trainer.update_seconds = []
+    return trainer
+
+
+@pytest.mark.parametrize(
+    ("model_name", "capability", "expected"),
+    [
+        ("ra_ds_pfd_crossformer", False, False),
+        ("dummy", True, True),
+    ],
+)
+def test_trainer_scope_uses_model_capability_not_model_name(
+    monkeypatch: pytest.MonkeyPatch,
+    model_name: str,
+    capability: bool,
+    expected: bool,
+) -> None:
+    model = _TrainerCapabilityToy(capability)
+    trainer = _scope_probe_trainer(model, model_name)
+    batch = ForecastBatch(
+        x=torch.zeros(1, 1, 1, 1),
+        target=torch.zeros(1, 1, 1),
+        target_mask=torch.ones(1, 1, 1, dtype=torch.bool),
+        starts=torch.tensor([0]),
+    )
+    observed: list[bool] = []
+
+    def fake_executor(*args, **kwargs):  # type: ignore[no-untyped-def]
+        observed.append(torch.are_deterministic_algorithms_enabled())
+        return SimpleNamespace(loss=0.0)
+
+    import engine.trainer as trainer_module
+
+    monkeypatch.setattr(trainer_module, "execute_training_backward", fake_executor)
+    previous = torch.are_deterministic_algorithms_enabled()
+    try:
+        torch.use_deterministic_algorithms(False)
+        trainer._update([batch])
+        assert observed == [expected]
         assert torch.are_deterministic_algorithms_enabled() is False
     finally:
         torch.use_deterministic_algorithms(previous)

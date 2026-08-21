@@ -154,14 +154,22 @@ summary；所有状态均不产生 final `selected_k`。不同 K 的 normalized 
 ## 4. 当前已验证结果
 
 本轮最终 CPU 回归（在 production fix 后）：P3 focused `76 passed`；所有 P3
-测试 `102 passed`；所有 RA-DS-PFD 相关测试 `196 passed`；repository regression
-`362 passed, 3 skipped`。3 个 skip 是既有正式 tsl 环境条件，不是失败。
+测试 `102 passed`；所有 RA-DS-PFD 相关测试 `196 passed, 1 skipped`（skip 为
+CUDA accumulation regression）；repository CPU regression（设置
+`CUDA_VISIBLE_DEVICES=-1`，并排除真实 CUDA-only 的 `tests/test_full_shape.py`）为
+`371 passed, 4 skipped`。其余 3 个 skip 是既有正式 tsl 环境条件，不是失败。
 `python scripts\generate_command_reference.py --check` 通过。
 
 本轮最终 GPU 环境：NVIDIA GeForce RTX 4070 Ti SUPER，GPU total
 `16375.5 MiB`；PyTorch `2.5.1+cu124`，CUDA `12.4`，formal GPU available。
 7 个 unique resolved model config 的真实数据 preflight 全部 PASS；数据边界为
 134 nodes、16 features、lookback 144、max prediction horizon 10。
+
+本轮 deterministic-scope closeout 的 representative GPU regression 也全部 PASS：
+R0、R2、B2_K2 的 `FORMAL_DEFAULT_SHAPE`，B1_LD/B1_L Smoke，以及 R0、R2、
+B2_K2 的默认 tolerance Repeatability；B2_K2 A/B selected Top-K set exact match。
+实际模型 probe 确认 R0 为 `False -> False -> False`，R2/B2_K2 为
+`False -> True -> False`（scope 内 deterministic algorithms 状态）。
 
 P3-B1/B2 pre-Full GPU evidence（2026-08-21）全部完成：
 
@@ -172,8 +180,7 @@ P3-B1/B2 pre-Full GPU evidence（2026-08-21）全部完成：
   `M=26`、selected count 与 K 一致，score 全 finite 且总和约为 1。
 - 所有 7 个 unique config 的 `FORMAL_DEFAULT_SHAPE` 均 PASS，未使用 shape
   override；profile 为 `FORMAL_DEFAULT_SHAPE`，输入 `[32,144,134,16]`，
-  输出 `[32,134,10]`。最终记录的最大 peak allocated 为 `18396.468 MB`、
-  peak reserved `18568.000 MB`。
+  输出 `[32,134,10]`。
 - 所有 7 个 unique config 的公共 repeatability 均 PASS，保留默认
   `prediction_atol/rtol=5e-3`、`metric_atol/rtol=2e-4`；different worker、
   config、initial weights、data split、batch order、updates、loss curve、
@@ -190,10 +197,13 @@ P3-B1/B2 pre-Full GPU evidence（2026-08-21）全部完成：
 
 repeatability 期间定位到真实 CUDA bug：关系空间重复 target 的 atomic
 `scatter_add_` 及其训练反向会造成跨 worker 的浮点 reduction order 差异。最小
-修复是使用固定 edge 顺序的 segmented aggregation，并仅在 P3 CUDA training
-forward/backward scope 临时选择 strict deterministic kernels；公共
-`controlled_nonstrict` 状态、AMP、batch、seed、loss、optimizer 和模型参数均未改动。
-新增 CUDA accumulation regression 与 scope regression 均通过。
+修复是保留固定 edge 顺序的 deterministic segmented aggregation，并由
+RA-DS-PFD relation-spatial model capability 在 CUDA training/shape-validation
+scope 内临时选择 strict deterministic kernels；公共 `controlled_nonstrict`
+状态、AMP、batch、seed、loss、optimizer 和模型参数均未改动。R0/P1 的
+`spatial_disabled=true` capability 为 false，R1-R7 relation-spatial 与 P3 为
+true；scope 退出立即恢复调用前全局状态。Trainer 与 `run_shape_validation()`
+共用同一 context helper，CUDA accumulation regression 与 scope regression 均通过。
 
 R0-R7 的当前明确状态是：
 
@@ -239,8 +249,9 @@ $PYTHON = 'D:\Apps\Miniconda3\envs\env_tslib\python.exe'
 - 公共 batch、lookback、horizon、seed、AMP、loss、optimizer、graph `k`、
   `node_shared_chunk_size`、`spatial_edge_chunk_size`、R0-R7 axes、Evaluator、
   loss accumulation、checkpoint compatibility、repeatability tolerance、status
-  schema 和 result layout 均保持不变；shared Trainer 仅包含本轮记录的 P3 CUDA
-  training deterministic scope。
+  schema 和 result layout 均保持不变；shared Trainer 与 shape validation
+  仅在 relation-spatial model capability 要求时使用本轮记录的局部 CUDA
+  training deterministic scope，R0/P1 与 unrelated models 保持 non-strict。
 - 公共图保持 `adjacency[source,target]`、`edge_index[0]=source`、
   `edge_index[1]=target`、`k=5`；NodeShared 与 full-spatiotemporal 的边界不能互换。
 - Resume 比较 resolved model-config 内容而不是临时 YAML 路径；不得把不同 Rk 的
@@ -254,8 +265,8 @@ $PYTHON = 'D:\Apps\Miniconda3\envs\env_tslib\python.exe'
   self.pfd0，P3 使用 self.p3_propagation，不得 mask Self 输入或改变关系图。
 - Candidate Bank 只读取 ModelInput.x 和 DataInfoView.feature_columns，不得读取
   target、mask、future weather 或预测窗口；P3-B0 已通过公共 formal default
-  forward/loss/backward gate；P3-B1 只完成 infrastructure 和 CPU 验收，未启动
-  Discovery 或 Formal Full。
+  forward/loss/backward gate；P3-B1 的 Smoke、FORMAL_DEFAULT_SHAPE 与
+  Repeatability 均已通过，Discovery 与 Formal Full 仍未启动。
 - P3 selection readout 只读取 `best.pt`；checkpoint manifest 中的 model config
   必须与 run directory 的 `model_config.yaml` 一致，不为此扩展公共 checkpoint
   compatibility 或增加 hash/certificate。
