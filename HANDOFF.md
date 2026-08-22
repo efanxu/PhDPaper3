@@ -5,8 +5,9 @@
 PhDPaper3 是可复现的 SDWPF 时间序列预测科研实验工程。`main` 是长期承载
 自定义模型的分支，当前维护范围包括共享路径上的 LSTM、Crossformer、STCN，
 以及 RA-DS-PFD Crossformer 的 P1/P2、冻结的 R0-R7 suite、P3-A
-Global Top-K Auto-PFD Foundation 和 P3-IA-1 Selected-Only Propagation Foundation；
-P3-A2.1 architecture closure 已完成。公共实验协议、
+Global Top-K Auto-PFD Foundation、P3-IA-1 Selected-Only Propagation Foundation
+和 P3-IA-1.1 Temporal Encoding Closure；P3-A2.1 architecture closure 已完成。
+公共实验协议、
 模型数学实现、R0-R7
 variant 定义、P3 propagation seam、GPU 策略和已有结果都属于当前兼容边界。
 
@@ -66,6 +67,11 @@ scripts/run.py train，并在训练成功后复用 best.pt -> p3_selection_best.
 Trainer、Evaluator、数据流程或结果系统。`--smoke` 只允许各 K arm 的
 selection readout，永不执行 K-selection 或写入 K winner summary；完整的
 非 smoke 六臂网格才会生成 validation-only 的 run-scoped summary。
+
+scripts/run_ra_ds_pfd_p3_ia11.py 是 P3-IA-1.1 的 thin wrapper：它从
+`configs/experiments/ra_ds_pfd_p3_ia11.yaml` 解析两个固定 Wspd 候选 arm，生成
+临时 model YAML，调用同一 `scripts/run.py train`，支持 dry-run、Smoke、resume
+和公共执行控制；它不拥有第二套 Trainer、Evaluator、数据流程或结果系统。
 
 ## 3. RA-DS-PFD 当前状态
 
@@ -154,14 +160,14 @@ summary；所有状态均不产生 final `selected_k`。不同 K 的 normalized 
 
 ## 4. 当前已验证结果
 
-本轮最终 repository 回归 `python -m pytest -q` 为 `392 passed, 3 skipped in
-30.76s`；3 个 skip 均为既有正式 tsl 环境条件，不是失败。新增 IA-1 focused
-tests、旧 P3 回归和共享 CLI schema 均包含在该结果内。
+本轮最终 repository 回归 `python -m pytest -q` 为 `406 passed, 3 skipped in
+41.89s`；3 个 skip 均为既有正式 tsl 环境条件，不是失败。新增 IA-1.1 focused
+tests、旧 IA-1/P3 回归和共享 CLI schema 均包含在该结果内。
 `python scripts\generate_command_reference.py --check` 与 `git diff --check` 均通过。
 
 本轮最终 GPU 环境：NVIDIA GeForce RTX 4070 Ti SUPER，GPU total
 `16375.5 MiB`；PyTorch `2.5.1+cu124`，CUDA `12.4`，formal GPU available。
-7 个 unique resolved model config 的真实数据 preflight 全部 PASS；数据边界为
+9 个 unique resolved model config 的真实数据 preflight 全部 PASS；数据边界为
 134 nodes、16 features、lookback 144、max prediction horizon 10。
 
 本轮 deterministic-scope closeout 的 representative GPU regression 也全部 PASS：
@@ -243,7 +249,7 @@ R0-R7 Formal Full = NOT RUN
 同样尚未运行 multi-seed 和 formal test-set comparison；已有 smoke、shape、
 Stage A、P3 dry-run 或 CPU foundation 均不得改写为 Formal Full。
 
-## 5. P3-A2/P3-B1/P3-B2/P3-IA-1 状态与下一步
+## 5. P3-A2/P3-B1/P3-B2/P3-IA-1/P3-IA-1.1 状态与下一步
 
 `P3 PRE-FULL GPU EVIDENCE = PASS`。
 
@@ -262,13 +268,49 @@ Stage A、P3 dry-run 或 CPU foundation 均不得改写为 Formal Full。
   `16375.5 MiB`。
 - P3-IA-1 两臂 Repeatability = `PASS / EXACT`；独立 worker 的 predictions、
   metrics 和 curves 最大差异均为 `0.0`。
+- P3-IA-1.1 两臂 environment/model preflight、`INTERFACE_SMALL`、
+  `RESOLVED_SHAPE`、`FORMAL_DEFAULT_SHAPE` 和 GPU Smoke 均 `PASS`；默认 shape
+  为 `[32,144,134,16] -> [32,134,10]`。
+- P3-IA-1.1 `IA11_INDEPENDENT_CT` / `IA11_OPERATOR_ADAPTER` 的 1-epoch
+  controlled-nonstrict Repeatability 均 `PASS / EXACT`；两臂参数量分别为
+  `761776` / `703092`。
+
+P3-IA-1.1 Temporal Encoding Closure pre-Full evidence = `PASS`。新模式为
+`pfd_mode=pfd3_ia_temporal`，suite 为
+`configs/experiments/ra_ds_pfd_p3_ia11.yaml`，固定 selected candidates 为
+`Wspd.level`、`Wspd.diff1`；两个 arm 均保持完整 16-variable Self View、frozen
+R2 relation/spatial/backbone/training contract 和 `full_spatiotemporal` execution：
+
+- `IA11_INDEPENDENT_CT` 只为 K=2 建立 candidate-specific projection/position
+  path、2 个 Scale0 Cross-Time 和 2 个 Scale1 Cross-Time，再 concat + MLP fusion；
+  parameter count `761776`。
+- `IA11_OPERATOR_ADAPTER` 只建立 `level`/`diff1` 两类 operator adapter，Scale0
+  与 Scale1 各一套，Cross-Time 每个尺度各一个 shared module，K=2 后再 concat +
+  MLP fusion；parameter count `703092`。
+- Semantic identity 为 `base-variable embedding + operator embedding`，不含
+  selection-slot embedding；candidate bank 为 26，effective/temporal path count
+  为 2。两臂的结构、causality、selected-only、permutation identity、synthetic
+  adapter 和 finite gradient tests 均 PASS。
+- 两臂 environment/model preflight、`INTERFACE_SMALL`、`RESOLVED_SHAPE` 和
+  `FORMAL_DEFAULT_SHAPE` 均 PASS；默认输入/输出为 `[32,144,134,16] ->
+  [32,134,10]`。GPU Smoke 均为 `PASS / SMOKE`，1 epoch / 2 updates；峰值
+  allocated 分别约 `13170.73 MiB` 与 `13254.36 MiB`。
+- controlled-nonstrict 1-epoch Repeatability 两臂均 `PASS / EXACT`，默认
+  prediction/metric tolerances 下 A/B 最大差异为 `0.0`。
+- 同一公共 eval-only test profiling（160 batches）记录：R2
+  `28.255s / 139.28 samples/s`，IA1_R2_PAIR `29.128s / 134.69 samples/s`，
+  IA11_INDEPENDENT_CT `29.469s / 138.76 samples/s`，IA11_OPERATOR_ADAPTER
+  `30.053s / 131.99 samples/s`；各 eval-only peak allocated 约 `3007–3008 MiB`。
+  旧 IA1 full-run 的 `100.935s` 历史异常在该同一 eval-only worker 中未复现；
+  现有 candidate-axis `permute -> reshape` layout materialization 作为诊断证据
+  保留报告，本轮未做性能重构。
 
 科学状态保持未决：Level+Diff1 remains the current B2 fixed/default basis；不得
 解释为 B1 winner。B1 Formal Discovery = `NOT RUN`；B1 operator decision =
 `NOT DECIDED`；B2 Formal K-selection = `NOT RUN`；provisional K = `NOT RUN`；
 final K* = `NOT DECIDED`。
 
-`NO FORMAL FULL WAS RUN BY CODEX.` B1/B2/IA-1 Formal Full、multi-seed 和正式
+`NO FORMAL FULL WAS RUN BY CODEX.` B1/B2/IA-1/IA-1.1 Formal Full、multi-seed 和正式
 test-set comparison 均留给用户手工执行。以下命令只打印在交接中，
 `DO NOT EXECUTE BY CODEX — USER WILL RUN MANUALLY`：
 
@@ -282,10 +324,10 @@ $PYTHON = 'D:\Apps\Miniconda3\envs\env_tslib\python.exe'
 & $PYTHON scripts\run_ra_ds_pfd_p3_b2.py --all --run-id p3-b2-full-seed2026 --device cuda
 
 # DO NOT EXECUTE BY CODEX — USER WILL RUN MANUALLY
-& $PYTHON scripts\run_ra_ds_pfd_p3_ia1.py --variant IA1_R2_PAIR --run-id ia1-r2-pair-full-seed2026 --device cuda
+& $PYTHON scripts\run_ra_ds_pfd_p3_ia11.py --variant IA11_INDEPENDENT_CT --run-id ia11-independent-ct-full-seed2026 --device cuda
 
 # DO NOT EXECUTE BY CODEX — USER WILL RUN MANUALLY
-& $PYTHON scripts\run_ra_ds_pfd_p3_ia1.py --variant IA1_AUTO_K2_PAIR --run-id ia1-auto-k2-pair-full-seed2026 --device cuda
+& $PYTHON scripts\run_ra_ds_pfd_p3_ia11.py --variant IA11_OPERATOR_ADAPTER --run-id ia11-operator-adapter-full-seed2026 --device cuda
 ```
 
 ## 6. 当前兼容约束与不可踩的坑
@@ -305,14 +347,16 @@ $PYTHON = 'D:\Apps\Miniconda3\envs\env_tslib\python.exe'
 - 不重新引入 StudySpec、ModelSpec、manifest、certificate、readiness protocol、
   模型专属 Trainer/Evaluator 或新的 Markdown 文档；不要手工编辑生成的
   docs/COMMAND_REFERENCE.md。
-- P3-A 与 P3-IA-1 只允许从 frozen R2 派生；pfd_mode=pfd0 的 R0-R7 路径继续
-  使用 self.pfd0，global P3 使用 self.p3_propagation，IA-1 使用
-  self.ia_propagation；两条 P3 路径都不得 mask Self 输入或改变关系图。
+- P3-A、P3-IA-1 与 P3-IA-1.1 只允许从 frozen R2 派生；pfd_mode=pfd0 的 R0-R7
+  路径继续使用 self.pfd0，global P3 使用 self.p3_propagation，IA-1 使用
+  self.ia_propagation，IA-1.1 使用 self.ia11_propagation；这些 propagation 路径
+  都不得 mask Self 输入或改变关系图。
 - Candidate Bank 只读取 ModelInput.x 和 DataInfoView.feature_columns，不得读取
   target、mask、future weather 或预测窗口；P3-B0 已通过公共 formal default
   forward/loss/backward gate；P3-B1 的 Smoke、FORMAL_DEFAULT_SHAPE 与
   Repeatability，以及 P3-IA-1 的 selected-only K=2、Smoke、默认 shape 和
-  Repeatability 均已通过，Discovery 与 Formal Full 仍未启动。
+  Repeatability、P3-IA-1.1 两臂的 selected-only/Smoke/default-shape/Repeatability
+  均已通过；Discovery 与所有 Formal Full 仍未启动。
 - P3 selection readout 只读取 `best.pt`；checkpoint manifest 中的 model config
   必须与 run directory 的 `model_config.yaml` 一致，不为此扩展公共 checkpoint
   compatibility 或增加 hash/certificate。

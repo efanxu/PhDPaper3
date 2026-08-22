@@ -1,0 +1,19 @@
+suite: ra_ds_pfd_p3_ia11
+model: ra_ds_pfd_crossformer
+
+base:
+  suite_file: configs/experiments/ra_ds_pfd_r0_r7.yaml
+  variant: R2
+
+variants:
+  IA11_INDEPENDENT_CT:
+    selected_candidates:
+      - Wspd.level
+      - Wspd.diff1
+    temporal_encoder_mode: independent_cross_time
+
+  IA11_OPERATOR_ADAPTER:
+    selected_candidates:
+      - Wspd.level
+      - Wspd.diff1
+    temporal_encoder_mode: operator_adapter_shared_cross_time

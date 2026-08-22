@@ -15,6 +15,11 @@ from .backbone import CanonicalBackbone, CanonicalTrace
 from .pfd0 import build_pfd0_propagation
 from .p3_feature_bank import validate_p3_model_config
 from .p3_ia_propagation import IAFixedPropagation, validate_p3_ia_model_config
+from .p3_ia_temporal import (
+    IAIndependentTemporalPropagation,
+    IAOperatorAdapterPropagation,
+    validate_p3_ia_temporal_model_config,
+)
 from .p3_propagation import P3GlobalTopKPropagation
 from .relation_resource import RelationResource, load_relation_resource
 from .relation_spatial import (
@@ -50,6 +55,7 @@ CONFIG_FIELDS = frozenset(
         "base_turbine_dim",
         "p3",
         "p3_ia",
+        "p3_ia_temporal",
     }
 )
 CANONICAL_CONFIG_FIELDS = frozenset(
@@ -123,6 +129,7 @@ class _RADSPFDCrossformerImplementation:
             self.pfd0 = None
             self.p3_propagation = None
             self.ia_propagation = None
+            self.ia11_propagation = None
             self.relation_bias_provider: RelationBiasProvider | None = None
             self.turbine_identity = None
             spatial_modules = None
@@ -173,6 +180,7 @@ class _RADSPFDCrossformerImplementation:
                 )
                 self.p3_propagation = None
                 self.ia_propagation = None
+                self.ia11_propagation = None
             elif pfd_mode == "pfd3_global_topk":
                 if feature_columns is None:
                     raise ValueError(
@@ -200,6 +208,7 @@ class _RADSPFDCrossformerImplementation:
                     source_root=self.source_root,
                 )
                 self.ia_propagation = None
+                self.ia11_propagation = None
             elif pfd_mode == "pfd3_ia_fixed":
                 if feature_columns is None:
                     raise ValueError(
@@ -222,6 +231,38 @@ class _RADSPFDCrossformerImplementation:
                     spatial_dropout=float(model_config["spatial_dropout"]),
                     source_root=self.source_root,
                 )
+                self.ia11_propagation = None
+            elif pfd_mode == "pfd3_ia_temporal":
+                if feature_columns is None:
+                    raise ValueError(
+                        "IA-1.1 propagation requires DataInfoView.feature_columns"
+                    )
+                self.pfd0 = None
+                self.p3_propagation = None
+                self.ia_propagation = None
+                ia11_config = model_config["p3_ia_temporal"]
+                temporal_mode = str(ia11_config["temporal_encoder_mode"])
+                common_kwargs = {
+                    "feature_columns": feature_columns,
+                    "selected_candidates": ia11_config["selected_candidates"],
+                    "lookback": self.lookback,
+                    "seg_len": int(model_config["seg_len"]),
+                    "win_size": int(model_config["win_size"]),
+                    "d_model": d_model,
+                    "n_heads": int(model_config["n_heads"]),
+                    "d_ff": int(model_config["d_ff"]),
+                    "factor": int(model_config["factor"]),
+                    "spatial_dropout": float(model_config["spatial_dropout"]),
+                    "source_root": self.source_root,
+                }
+                if temporal_mode == "independent_cross_time":
+                    self.ia11_propagation = IAIndependentTemporalPropagation(**common_kwargs)
+                elif temporal_mode == "operator_adapter_shared_cross_time":
+                    self.ia11_propagation = IAOperatorAdapterPropagation(**common_kwargs)
+                else:  # _validate_config() rejects this; keep the construction seam defensive.
+                    raise ValueError(
+                        "unsupported IA-1.1 temporal_encoder_mode: " f"{temporal_mode}"
+                    )
             else:
                 raise ValueError(f"unsupported RA-DS-PFD propagation mode: {pfd_mode}")
             spatial_modules = (
@@ -335,6 +376,8 @@ class _RADSPFDCrossformerImplementation:
             return self.p3_propagation(x)
         if self.ia_propagation is not None:
             return self.ia_propagation(x)
+        if self.ia11_propagation is not None:
+            return self.ia11_propagation(x)
         return None
 
     def forward_canonical_trace(self, inputs: ModelInput) -> CanonicalTrace:
@@ -370,7 +413,9 @@ class _RADSPFDCrossformerImplementation:
 
         if self.p3_propagation is None:
             if self.ia_propagation is None:
-                return []
+                if self.ia11_propagation is None:
+                    return []
+                return self.ia11_propagation.fixed_selection_report()
             return self.ia_propagation.fixed_selection_report()
         return self.p3_propagation.selection_report()
 
@@ -460,6 +505,33 @@ class RADSPFDCrossformerIA1(_RADSPFDCrossformerImplementation, ForecastModel):
         )
 
 
+class RADSPFDCrossformerIA11(_RADSPFDCrossformerImplementation, ForecastModel):
+    """IA-1.1 full spatiotemporal adapter with temporal-closure propagation."""
+
+    execution_mode = "full_spatiotemporal"
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__()
+        self._init_shared(**kwargs)
+
+    def forward(self, inputs: ModelInput) -> torch.Tensor:
+        if (
+            self.ia11_propagation is None
+            or self.pfd0 is not None
+            or self.p3_propagation is not None
+            or self.ia_propagation is not None
+        ):
+            raise RuntimeError(
+                "RA-DS-PFD IA-1.1 requires the temporal selected-only propagation path"
+            )
+        return self._forward_canonical_range(
+            inputs,
+            0,
+            self.num_nodes,
+            propagation_tokens=self._propagation_tokens(inputs.x),
+        )
+
+
 # Keep the historical P1 class name importable for callers that used the
 # concrete adapter directly; build_model selects the explicit P1/P2 adapter.
 RADSPFDCrossformer = RADSPFDCrossformerP1
@@ -499,16 +571,21 @@ def _validate_config(model_config: dict[str, Any]) -> None:
         "pfd0",
         "pfd3_global_topk",
         "pfd3_ia_fixed",
+        "pfd3_ia_temporal",
     }:
         raise ValueError(
             "unsupported RA-DS-PFD Crossformer pfd_mode; "
             "expected pfd_mode=pfd0, pfd_mode=pfd3_global_topk, "
-            "or pfd_mode=pfd3_ia_fixed"
+            "pfd_mode=pfd3_ia_fixed, or pfd_mode=pfd3_ia_temporal"
         )
     if model_config["spatial_disabled"]:
-        if model_config.get("pfd_mode") in {"pfd3_global_topk", "pfd3_ia_fixed"}:
+        if model_config.get("pfd_mode") in {
+            "pfd3_global_topk",
+            "pfd3_ia_fixed",
+            "pfd3_ia_temporal",
+        }:
             raise ValueError("P3 propagation requires spatial_disabled=false")
-        if "p3" in model_config or "p3_ia" in model_config:
+        if {"p3", "p3_ia", "p3_ia_temporal"}.intersection(model_config):
             raise ValueError("P3 model config cannot be attached to the legacy P1 path")
         for field, allowed in (
             ("spatial_query_mode", _SPATIAL_QUERY_MODES),
@@ -532,20 +609,30 @@ def _validate_config(model_config: dict[str, Any]) -> None:
     missing_p2 = sorted(required_p2 - set(model_config))
     if missing_p2:
         raise ValueError(f"RA-DS-PFD Crossformer P2 config is missing field: {missing_p2[0]}")
-    if model_config["pfd_mode"] == "pfd0" and {"p3", "p3_ia"}.intersection(model_config):
+    if model_config["pfd_mode"] == "pfd0" and {
+        "p3",
+        "p3_ia",
+        "p3_ia_temporal",
+    }.intersection(model_config):
         raise ValueError("pfd0 model config must not define P3 propagation fields")
     if model_config["pfd_mode"] == "pfd3_global_topk":
-        if "p3_ia" in model_config:
+        if {"p3_ia", "p3_ia_temporal"}.intersection(model_config):
             raise ValueError("pfd3_global_topk model config must not define IA-1 fields")
         if "p3" not in model_config:
             raise ValueError("P3 model config is missing field: p3")
         validate_p3_model_config(model_config["p3"])
     if model_config["pfd_mode"] == "pfd3_ia_fixed":
-        if "p3" in model_config:
+        if {"p3", "p3_ia_temporal"}.intersection(model_config):
             raise ValueError("pfd3_ia_fixed model config must not define global P3 fields")
         if "p3_ia" not in model_config:
             raise ValueError("IA-1 model config is missing field: p3_ia")
         validate_p3_ia_model_config(model_config["p3_ia"])
+    if model_config["pfd_mode"] == "pfd3_ia_temporal":
+        if {"p3", "p3_ia"}.intersection(model_config):
+            raise ValueError("pfd3_ia_temporal model config must not define old P3/IA-1 fields")
+        if "p3_ia_temporal" not in model_config:
+            raise ValueError("IA-1.1 model config is missing field: p3_ia_temporal")
+        validate_p3_ia_temporal_model_config(model_config["p3_ia_temporal"])
     mode_fields = {
         "spatial_query_mode": _SPATIAL_QUERY_MODES,
         "propagation_encoder_mode": _PROPAGATION_ENCODER_MODES,
@@ -615,7 +702,13 @@ def _validate_data_info(data_info: DataInfoView) -> None:
 
 def build_model(
     model_config: dict[str, Any], data_info: DataInfoView
-) -> RADSPFDCrossformerP1 | RADSPFDCrossformerP2 | RADSPFDCrossformerP3 | RADSPFDCrossformerIA1:
+) -> (
+    RADSPFDCrossformerP1
+    | RADSPFDCrossformerP2
+    | RADSPFDCrossformerP3
+    | RADSPFDCrossformerIA1
+    | RADSPFDCrossformerIA11
+):
     _validate_config(model_config)
     _validate_data_info(data_info)
     project_root = (
@@ -652,7 +745,11 @@ def build_model(
             else (
                 RADSPFDCrossformerIA1
                 if model_config.get("pfd_mode") == "pfd3_ia_fixed"
-                else RADSPFDCrossformerP2
+                else (
+                    RADSPFDCrossformerIA11
+                    if model_config.get("pfd_mode") == "pfd3_ia_temporal"
+                    else RADSPFDCrossformerP2
+                )
             )
         )
     )
