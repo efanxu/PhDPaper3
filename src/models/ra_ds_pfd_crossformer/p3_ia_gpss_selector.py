@@ -221,7 +221,7 @@ class IAGPSSSelector(nn.Module):
 
     def __init__(
         self,
-        candidate_names: Sequence[str] | int | None = None,
+        candidate_names: Sequence[str] | None = None,
         *,
         d_model: int = DEFAULT_IA_GPSS_D_MODEL,
         top_k: int = DEFAULT_IA_GPSS_TOP_K,
@@ -229,16 +229,6 @@ class IAGPSSSelector(nn.Module):
         refinement_rounds: int = DEFAULT_IA_GPSS_REFINEMENT_ROUNDS,
     ) -> None:
         super().__init__()
-
-        # Accept ``IAGPSSSelector(16, top_k=...)`` as a compact d_model-only
-        # construction while keeping the named candidate_names API explicit.
-        if isinstance(candidate_names, int) and not isinstance(candidate_names, bool):
-            if d_model != DEFAULT_IA_GPSS_D_MODEL:
-                raise ValueError(
-                    "IA-GPSS d_model was provided both positionally and by keyword"
-                )
-            d_model = candidate_names
-            candidate_names = None
 
         self.d_model = _validate_d_model(d_model)
         self.temperature = validate_temperature(temperature)
@@ -259,10 +249,6 @@ class IAGPSSSelector(nn.Module):
         self.candidate_names = resolved_names
         self.candidate_count = len(self.candidate_names)
         self.top_k = validate_top_k(top_k, self.candidate_count)
-        # Short structural aliases make the fixed-cardinality contract clear
-        # without introducing another configurable selector dimension.
-        self.M = self.candidate_count
-        self.K = self.top_k
 
         self.semantic_identity = IAGPSSSemanticCandidateIdentity(
             self.d_model,
@@ -397,10 +383,6 @@ class IAGPSSSelector(nn.Module):
             raise FloatingPointError("IA-GPSS set utility contains NaN or Inf")
         return result
 
-    # Keep the mathematical term discoverable under the shorter name used in
-    # some downstream design notes.
-    utility = set_utility
-
     def conditional_marginal_scores(
         self,
         condition_assignment: torch.Tensor | Sequence[int | str] | None = None,
@@ -456,8 +438,6 @@ class IAGPSSSelector(nn.Module):
         if not torch.isfinite(result).all():
             raise FloatingPointError("IA-GPSS conditional scores contain NaN or Inf")
         return result
-
-    conditional_scores = conditional_marginal_scores
 
     def forward(self) -> IAGPSSSelectorOutput:
         """Select one deterministic exact-K set without dynamic model context."""

@@ -4,12 +4,12 @@
 
 PhDPaper3 是可复现的 SDWPF 时间序列预测科研实验工程。`main` 是长期承载
 自定义模型的主线；当前 IA-GPSS 开发与验证位于 `p3-ia-gpss` 分支。
-`p3-ia-gpss` 当前包含 IA-1、IA-1.1 和 IA-GPSS IA-2A；这些状态不表示已经
+`p3-ia-gpss` 当前包含 IA-1、IA-1.1 和 IA-GPSS IA-2A/IA-2B；这些状态不表示已经
 合并到 `main`。当前维护范围包括共享路径上的 LSTM、Crossformer、STCN，
 以及 RA-DS-PFD Crossformer 的 P1/P2、冻结的 R0-R7 suite、P3-A
 Global Top-K Auto-PFD Foundation、P3-IA-1 Selected-Only Propagation Foundation
 和 P3-IA-1.1 Temporal Encoding Closure、P3-A2.1 architecture closure、
-IA-GPSS v1 IA-2A global selector core。
+IA-GPSS v1 IA-2A global selector core 与 IA-2B hard-sparse propagation core。
 公共实验协议、
 模型数学实现、R0-R7
 variant 定义、P3 propagation seam、GPU 策略和已有结果都属于当前兼容边界。
@@ -163,8 +163,8 @@ summary；所有状态均不产生 final `selected_k`。不同 K 的 normalized 
 
 ## 4. 当前已验证结果
 
-当前 repository 回归 `python -m pytest -q` 为 `447 passed, 3 skipped`；3 个
-skip 均为既有正式 tsl 环境条件，不是失败。新增 IA-2A focused tests、IA-1.1
+当前 repository 回归 `python -m pytest -q` 为 `471 passed, 3 skipped`；3 个
+skip 均为既有正式 tsl 环境条件，不是失败。IA-2A/IA-2B focused tests、IA-1.1
 focused tests、旧 IA-1/P3 回归和共享 CLI schema 均包含在该结果内。
 `python scripts\generate_command_reference.py --check` 与 `git diff --check` 均通过。
 
@@ -330,12 +330,26 @@ R2 relation/spatial/backbone/training contract 和 `full_spatiotemporal` executi
 `NOT DECIDED`；B2 Formal K-selection = `NOT RUN`；provisional K = `NOT RUN`；
 final K* = `NOT DECIDED`。
 
-IA-GPSS v1 IA-2A Interaction-Aware Global Selector Core = `PASS`。当前实现仅
-包含 canonical candidate identity、symmetric pairwise set utility、deterministic
-straight-through exact-K selection 和 optional refinement 的 standalone core；
-output 将 initial sequential assignment/path 与 refinement 后的 final canonical
-assignment 分开保存，`refinement_trace` 保留真实 refinement 顺序。尚未接入
-RA-DS-PFD model forward。`NO GPU SMOKE WAS RUN.` `NO FORMAL FULL WAS RUN.`
+IA-GPSS v1 IA-2A Interaction-Aware Global Selector Core = `FROZEN / PASS`。当前
+selector 保持 canonical candidate identity、symmetric pairwise set utility、
+deterministic straight-through exact-K selection、refinement 和 final canonical
+assignment 语义；公开 API 使用 `candidate_count`、`top_k`、`set_utility` 和
+`conditional_marginal_scores`。
+
+IA-GPSS v1 IA-2B Hard-Forward / Soft-Backward Propagation Core = `PASS`。当前
+实现为 canonical candidate bank `M=26`、cheap projection `M=26`、昂贵
+Cross-Time candidate count `K`；value gather 为
+`sg(Z_hard) + Z_soft - sg(Z_soft)`，forward exact hard，soft backward 可训练
+hard-unselected cheap projection。Propagation identity 与 selector identity
+参数分离；dynamic operator routing 使用 canonical incidence 的 ST gate；Scale0
+和 Scale1 各只有一个 shared Cross-Time；IA11 fixed Wspd.level/Wspd.diff1
+forward equivalence 与 propagation-level downstream gradient 到 selector 均
+通过。`execution_trace` 诚实记录 `26 / 26 / K / K / K`。
+
+IA-GPSS 尚未接入 RA-DS-PFD model forward，也不是 public model mode。
+`NO GPU SMOKE WAS RUN.` `NO FORMAL FULL WAS RUN.`
+`FORECAST-LOSS -> SELECTOR FULL-MODEL GATE HAS NOT YET BEEN RUN.`
+`IA-2C WAS NOT STARTED.`
 
 P3-IA-1.1 Formal Full = `NOT RUN`。`NO FORMAL FULL WAS RUN BY CODEX.` B1/B2/IA-1.1
 Formal Full、multi-seed 和尚未完成的正式比较均留给用户手工执行。以下命令只打印在交接中，

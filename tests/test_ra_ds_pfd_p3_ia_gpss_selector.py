@@ -135,7 +135,7 @@ def test_empty_conditional_marginal_is_the_unary_score() -> None:
         selector.conditional_marginal_scores(), selector.unary_scores()
     )
     torch.testing.assert_close(
-        selector.conditional_marginal_scores(torch.empty(0, selector.M)),
+        selector.conditional_marginal_scores(torch.empty(0, selector.candidate_count)),
         selector.unary_scores(),
     )
 
@@ -164,7 +164,7 @@ def test_previous_st_assignment_has_gradient_path_to_later_conditional_score() -
     earlier = steps[0].st_assignment
     later = steps[1].st_assignment
     earlier.retain_grad()
-    weights = torch.arange(selector.M, dtype=later.dtype)
+    weights = torch.arange(selector.candidate_count, dtype=later.dtype)
     (later * weights).sum().backward()
     assert earlier.grad is not None
     assert torch.isfinite(earlier.grad).all()
@@ -275,7 +275,7 @@ def test_final_assignments_share_canonical_slot_alignment_and_exact_st_forward()
 def test_st_backward_reaches_all_selector_parameter_groups_with_finite_gradients() -> None:
     selector = _selector(top_k=2, refinement_rounds=1).train()
     output = selector()
-    weights = torch.arange(selector.M, dtype=output.st_assignment.dtype)
+    weights = torch.arange(selector.candidate_count, dtype=output.st_assignment.dtype)
     loss = (output.st_assignment * weights).sum()
     loss.backward()
 
@@ -408,3 +408,13 @@ def test_selector_forward_has_no_dynamic_context_api() -> None:
         name in {"x", "inputs", "batch", "node", "time", "edge", "target", "mask"}
         for name in signature.parameters
     )
+
+
+def test_selector_exposes_only_canonical_public_shape_and_construction_api() -> None:
+    selector = _selector()
+    assert not hasattr(selector, "M")
+    assert not hasattr(selector, "K")
+    assert not hasattr(selector, "utility")
+    assert not hasattr(selector, "conditional_scores")
+    with pytest.raises(ValueError, match="candidate_names"):
+        IAGPSSSelector(16)  # type: ignore[arg-type]
