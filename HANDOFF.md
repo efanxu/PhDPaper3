@@ -6,7 +6,8 @@ PhDPaper3 是可复现的 SDWPF 时间序列预测科研实验工程。`main` �
 自定义模型的分支，当前维护范围包括共享路径上的 LSTM、Crossformer、STCN，
 以及 RA-DS-PFD Crossformer 的 P1/P2、冻结的 R0-R7 suite、P3-A
 Global Top-K Auto-PFD Foundation、P3-IA-1 Selected-Only Propagation Foundation
-和 P3-IA-1.1 Temporal Encoding Closure；P3-A2.1 architecture closure 已完成。
+和 P3-IA-1.1 Temporal Encoding Closure、P3-A2.1 architecture closure、
+IA-GPSS v1 IA-2A global selector core。
 公共实验协议、
 模型数学实现、R0-R7
 variant 定义、P3 propagation seam、GPU 策略和已有结果都属于当前兼容边界。
@@ -160,9 +161,9 @@ summary；所有状态均不产生 final `selected_k`。不同 K 的 normalized 
 
 ## 4. 当前已验证结果
 
-本轮最终 repository 回归 `python -m pytest -q` 为 `407 passed, 3 skipped in
-36.06s`；3 个 skip 均为既有正式 tsl 环境条件，不是失败。新增 IA-1.1 focused
-tests、旧 IA-1/P3 回归和共享 CLI schema 均包含在该结果内。
+当前 repository 回归 `python -m pytest -q` 为 `444 passed, 3 skipped`；3 个
+skip 均为既有正式 tsl 环境条件，不是失败。新增 IA-2A focused tests、IA-1.1
+focused tests、旧 IA-1/P3 回归和共享 CLI schema 均包含在该结果内。
 `python scripts\generate_command_reference.py --check` 与 `git diff --check` 均通过。
 
 本轮最终 GPU 环境：NVIDIA GeForce RTX 4070 Ti SUPER，GPU total
@@ -249,7 +250,7 @@ R0-R7 Formal Full = NOT RUN
 同样尚未运行 multi-seed 和 formal test-set comparison；已有 smoke、shape、
 Stage A、P3 dry-run 或 CPU foundation 均不得改写为 Formal Full。
 
-## 5. P3-A2/P3-B1/P3-B2/P3-IA-1/P3-IA-1.1 状态与下一步
+## 5. P3-A2/P3-B1/P3-B2/P3-IA-1/P3-IA-1.1/IA-GPSS 状态与下一步
 
 `P3 PRE-FULL GPU EVIDENCE = PASS`。
 
@@ -282,8 +283,9 @@ P3-IA-1 Formal Full = `COMPLETE`。两个 IA-1 arm 均已完成正式运行：
 
 现有 R2 reference 的 parameter count 为 `760816`，best epoch 为 `15`，
 H3/H6/H10 Score 分别为 `6.993`、`8.907`、`10.823`。当前 IA-1 诊断结论是：
-两臂都使用 `Wspd.level + Wspd.diff1`，`IA1_R2_PAIR` 在 H6/H10 低于 R2，
-`IA1_AUTO_K2_PAIR` 仅在 H3 达到 R2 Score、H6/H10 仍低于 R2；现有证据支持
+`IA1_R2_PAIR` 使用 `Wspd.level + Wspd.diff1`，`IA1_AUTO_K2_PAIR` 使用
+`Wspd.level + Patv_clean_for_input.diff1`；前者在 H6/H10 低于 R2，后者仅在
+H3 达到 R2 Score、H6/H10 仍低于 R2；现有证据支持
 优先验证 fully shared temporal encoder 这一共同结构瓶颈，同时保留候选 pair 的
 horizon-dependent 差异。
 
@@ -325,6 +327,12 @@ R2 relation/spatial/backbone/training contract 和 `full_spatiotemporal` executi
 解释为 B1 winner。B1 Formal Discovery = `NOT RUN`；B1 operator decision =
 `NOT DECIDED`；B2 Formal K-selection = `NOT RUN`；provisional K = `NOT RUN`；
 final K* = `NOT DECIDED`。
+
+IA-GPSS v1 IA-2A Interaction-Aware Global Selector Core = `PASS`。当前实现仅
+包含 canonical candidate identity、symmetric pairwise set utility、deterministic
+straight-through exact-K selection 和 optional refinement 的 standalone core；
+尚未接入 RA-DS-PFD model forward。`NO GPU SMOKE WAS RUN.` `NO FORMAL FULL WAS
+RUN.`
 
 P3-IA-1.1 Formal Full = `NOT RUN`。`NO FORMAL FULL WAS RUN BY CODEX.` B1/B2/IA-1.1
 Formal Full、multi-seed 和尚未完成的正式比较均留给用户手工执行。以下命令只打印在交接中，
