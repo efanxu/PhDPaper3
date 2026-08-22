@@ -28,7 +28,10 @@ from models.ra_ds_pfd_crossformer.p3_ia_temporal import (
     OperatorResidualAdapter,
     SemanticCandidateIdentity,
 )
-from models.ra_ds_pfd_crossformer.pfd0 import CanonicalCrossTime
+from models.ra_ds_pfd_crossformer.pfd0 import (
+    CanonicalCrossTime,
+    CrossTimeThenFusionPFD0Propagation,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -160,6 +163,8 @@ def test_independent_ct_has_two_real_cross_time_instances_per_scale() -> None:
     module = _independent().eval()
     assert module.candidate_bank.candidate_count == 26
     assert module.effective_candidate_count == 2
+    assert not hasattr(module, "candidate_identity")
+    assert all(not key.startswith("candidate_identity.") for key in module.state_dict())
     assert len(module.candidate_projections) == 2
     assert len(module.scale0_cross_time) == 2
     assert len(module.scale1_cross_time) == 2
@@ -203,6 +208,7 @@ def test_operator_adapter_has_only_level_and_diff1_adapters_and_shared_cross_tim
     module = _adapter().eval()
     assert module.candidate_bank.candidate_count == 26
     assert module.effective_candidate_count == 2
+    assert isinstance(module.candidate_identity, SemanticCandidateIdentity)
     assert len(module.candidate_projections) == 2
     assert tuple(module.scale0_operator_adapters) == IA11_OPERATOR_TYPES
     assert tuple(module.scale1_operator_adapters) == IA11_OPERATOR_TYPES
@@ -230,6 +236,74 @@ def test_operator_adapter_has_only_level_and_diff1_adapters_and_shared_cross_tim
     assert module.execution_trace["operator_types"] == IA11_OPERATOR_TYPES
     assert tuple(scale0.shape) == (2, 3, 2, 16)
     assert tuple(scale1.shape) == (2, 3, 1, 16)
+
+
+def test_independent_ct_matches_frozen_r2_temporal_propagation_after_weight_mapping() -> None:
+    r2 = CrossTimeThenFusionPFD0Propagation(
+        lookback=24,
+        seg_len=12,
+        win_size=2,
+        d_model=16,
+        n_heads=4,
+        d_ff=32,
+        factor=10,
+        dropout=0.0,
+        wspd_index=FEATURE_COLUMNS.index("Wspd"),
+        source_root=ROOT / "Time-Series-Library",
+    )
+    independent = _independent()
+
+    assert sum(parameter.numel() for parameter in r2.parameters()) == sum(
+        parameter.numel() for parameter in independent.parameters()
+    )
+    with torch.no_grad():
+        for index in range(2):
+            r2_projection = r2.segment_embeddings[index].value_projection.weight
+            ia_projection = independent.candidate_projections[index].weight
+            assert ia_projection.shape == r2_projection.shape
+            ia_projection.copy_(r2_projection)
+
+            r2_position = r2.segment_embeddings[index].position_embedding
+            ia_position = independent.candidate_position_embeddings[index]
+            assert r2_position.shape == (
+                1,
+                1,
+                1,
+                independent.scale0_segments,
+                independent.d_model,
+            )
+            assert ia_position.shape == r2_position[:, :, 0, :, :].shape
+            ia_position.copy_(r2_position[:, :, 0, :, :])
+
+    independent.scale0_cross_time[0].load_state_dict(
+        r2.scale0_cross_time[0].state_dict(), strict=True
+    )
+    independent.scale0_cross_time[1].load_state_dict(
+        r2.scale0_cross_time[1].state_dict(), strict=True
+    )
+    independent.scale1_cross_time[0].load_state_dict(
+        r2.scale1_cross_time[0].state_dict(), strict=True
+    )
+    independent.scale1_cross_time[1].load_state_dict(
+        r2.scale1_cross_time[1].state_dict(), strict=True
+    )
+    independent.scale1_merging.load_state_dict(r2.scale1_merging.state_dict(), strict=True)
+    independent.scale0_fusion.load_state_dict(r2.wind_fusion.state_dict(), strict=True)
+    independent.scale1_fusion.load_state_dict(r2.scale1_wind_fusion.state_dict(), strict=True)
+
+    r2.eval()
+    independent.eval()
+    assert r2.segment_embeddings[0].dropout.p == independent.dropout.p
+    x = torch.randn(2, 24, 3, len(FEATURE_COLUMNS))
+
+    r2_history = r2.candidate_history(x)
+    ia_history = independent.candidate_history(x)
+    torch.testing.assert_close(r2_history, ia_history, rtol=1e-6, atol=1e-6)
+
+    r2_scale0, r2_scale1 = r2(x)
+    ia_scale0, ia_scale1 = independent(x)
+    torch.testing.assert_close(r2_scale0, ia_scale0, rtol=1e-6, atol=1e-6)
+    torch.testing.assert_close(r2_scale1, ia_scale1, rtol=1e-6, atol=1e-6)
 
 
 def test_semantic_identity_is_base_variable_plus_operator_and_not_slot_order() -> None:

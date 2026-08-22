@@ -160,8 +160,8 @@ summary；所有状态均不产生 final `selected_k`。不同 K 的 normalized 
 
 ## 4. 当前已验证结果
 
-本轮最终 repository 回归 `python -m pytest -q` 为 `406 passed, 3 skipped in
-41.89s`；3 个 skip 均为既有正式 tsl 环境条件，不是失败。新增 IA-1.1 focused
+本轮最终 repository 回归 `python -m pytest -q` 为 `407 passed, 3 skipped in
+36.06s`；3 个 skip 均为既有正式 tsl 环境条件，不是失败。新增 IA-1.1 focused
 tests、旧 IA-1/P3 回归和共享 CLI schema 均包含在该结果内。
 `python scripts\generate_command_reference.py --check` 与 `git diff --check` 均通过。
 
@@ -268,14 +268,26 @@ Stage A、P3 dry-run 或 CPU foundation 均不得改写为 Formal Full。
   `16375.5 MiB`。
 - P3-IA-1 两臂 Repeatability = `PASS / EXACT`；独立 worker 的 predictions、
   metrics 和 curves 最大差异均为 `0.0`。
-- P3-IA-1.1 两臂 environment/model preflight、`INTERFACE_SMALL`、
-  `RESOLVED_SHAPE`、`FORMAL_DEFAULT_SHAPE` 和 GPU Smoke 均 `PASS`；默认 shape
-  为 `[32,144,134,16] -> [32,134,10]`。
-- P3-IA-1.1 `IA11_INDEPENDENT_CT` / `IA11_OPERATOR_ADAPTER` 的 1-epoch
-  controlled-nonstrict Repeatability 均 `PASS / EXACT`；两臂参数量分别为
-  `761776` / `703092`。
 
-P3-IA-1.1 Temporal Encoding Closure pre-Full evidence = `PASS`。新模式为
+P3-IA-1 Formal Full = `COMPLETE`。两个 IA-1 arm 均已完成正式运行：
+
+- `IA1_R2_PAIR`：parameter count `693232`，best epoch `7`；H3
+  `MAE=67.792`、`RMSE=109.037`、`R2=0.932`、`Score=7.112`；H6
+  `MAE=85.240`、`RMSE=135.074`、`R2=0.895`、`Score=9.167`；H10
+  `MAE=100.512`、`RMSE=156.695`、`R2=0.859`、`Score=11.234`。
+- `IA1_AUTO_K2_PAIR`：parameter count `693232`，best epoch `20`；H3
+  `MAE=66.518`、`RMSE=107.069`、`R2=0.934`、`Score=6.993`；H6
+  `MAE=86.345`、`RMSE=136.903`、`R2=0.893`、`Score=9.195`；H10
+  `MAE=104.459`、`RMSE=163.745`、`R2=0.846`、`Score=11.386`。
+
+现有 R2 reference 的 parameter count 为 `760816`，best epoch 为 `15`，
+H3/H6/H10 Score 分别为 `6.993`、`8.907`、`10.823`。当前 IA-1 诊断结论是：
+两臂都使用 `Wspd.level + Wspd.diff1`，`IA1_R2_PAIR` 在 H6/H10 低于 R2，
+`IA1_AUTO_K2_PAIR` 仅在 H3 达到 R2 Score、H6/H10 仍低于 R2；现有证据支持
+优先验证 fully shared temporal encoder 这一共同结构瓶颈，同时保留候选 pair 的
+horizon-dependent 差异。
+
+P3-IA-1.1 Temporal Encoding Closure engineering pre-Full evidence = `PASS`。新模式为
 `pfd_mode=pfd3_ia_temporal`，suite 为
 `configs/experiments/ra_ds_pfd_p3_ia11.yaml`，固定 selected candidates 为
 `Wspd.level`、`Wspd.diff1`；两个 arm 均保持完整 16-variable Self View、frozen
@@ -283,20 +295,24 @@ R2 relation/spatial/backbone/training contract 和 `full_spatiotemporal` executi
 
 - `IA11_INDEPENDENT_CT` 只为 K=2 建立 candidate-specific projection/position
   path、2 个 Scale0 Cross-Time 和 2 个 Scale1 Cross-Time，再 concat + MLP fusion；
-  parameter count `761776`。
+  Independent 不再注册或调用 `SemanticCandidateIdentity`，parameter count 与
+  frozen R2 均为 `760816`。
 - `IA11_OPERATOR_ADAPTER` 只建立 `level`/`diff1` 两类 operator adapter，Scale0
   与 Scale1 各一套，Cross-Time 每个尺度各一个 shared module，K=2 后再 concat +
-  MLP fusion；parameter count `703092`。
-- Semantic identity 为 `base-variable embedding + operator embedding`，不含
-  selection-slot embedding；candidate bank 为 26，effective/temporal path count
-  为 2。两臂的结构、causality、selected-only、permutation identity、synthetic
-  adapter 和 finite gradient tests 均 PASS。
-- 两臂 environment/model preflight、`INTERFACE_SMALL`、`RESOLVED_SHAPE` 和
-  `FORMAL_DEFAULT_SHAPE` 均 PASS；默认输入/输出为 `[32,144,134,16] ->
-  [32,134,10]`。GPU Smoke 均为 `PASS / SMOKE`，1 epoch / 2 updates；峰值
-  allocated 分别约 `13170.73 MiB` 与 `13254.36 MiB`。
-- controlled-nonstrict 1-epoch Repeatability 两臂均 `PASS / EXACT`，默认
-  prediction/metric tolerances 下 A/B 最大差异为 `0.0`。
+  MLP fusion；其 `base-variable embedding + operator embedding` identity 保留，
+  parameter count 保持 `703092`。
+- candidate bank 为 26，effective/temporal path count 为 2；两个 arm 的
+  `Wspd.level`、`Wspd.diff1` causal history、selected-only seam、结构和 finite
+  gradient tests 均 PASS。Independent 与 frozen R2 的 projection、position、
+  Cross-Time、Scale1 merging 和两个 fusion 权重逐项映射后，candidate history、
+  Scale0 output、Scale1 output 均在 `atol=rtol=1e-6` 下 `allclose`。
+- identity cleanup 后，Independent 的 focused CPU tests、`INTERFACE_SMALL`、
+  `FORMAL_DEFAULT_SHAPE`、GPU Smoke 和 controlled-nonstrict Repeatability 均
+  `PASS`；默认输入/输出为 `[32,144,134,16] -> [32,134,10]`，Repeatability 为
+  `EXACT`，最大 prediction/metric 差异为 `0.0`。
+- Operator Adapter 未改变数学结构；其 focused unit/config regression 与 CPU
+  `INTERFACE_SMALL` 均 `PASS`，config/model identity 未变。无需因本次 cleanup
+  重复其昂贵 GPU gate。
 - 同一公共 eval-only test profiling（160 batches）记录：R2
   `28.255s / 139.28 samples/s`，IA1_R2_PAIR `29.128s / 134.69 samples/s`，
   IA11_INDEPENDENT_CT `29.469s / 138.76 samples/s`，IA11_OPERATOR_ADAPTER
@@ -310,8 +326,8 @@ R2 relation/spatial/backbone/training contract 和 `full_spatiotemporal` executi
 `NOT DECIDED`；B2 Formal K-selection = `NOT RUN`；provisional K = `NOT RUN`；
 final K* = `NOT DECIDED`。
 
-`NO FORMAL FULL WAS RUN BY CODEX.` B1/B2/IA-1/IA-1.1 Formal Full、multi-seed 和正式
-test-set comparison 均留给用户手工执行。以下命令只打印在交接中，
+P3-IA-1.1 Formal Full = `NOT RUN`。`NO FORMAL FULL WAS RUN BY CODEX.` B1/B2/IA-1.1
+Formal Full、multi-seed 和尚未完成的正式比较均留给用户手工执行。以下命令只打印在交接中，
 `DO NOT EXECUTE BY CODEX — USER WILL RUN MANUALLY`：
 
 ```powershell

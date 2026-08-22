@@ -206,7 +206,6 @@ class _IA11SelectedOnlyBase(nn.Module):
         )
         self.effective_candidate_count = len(self.selected_candidate_names)
         self.selected_candidate_count = self.effective_candidate_count
-        self.candidate_identity = SemanticCandidateIdentity(self.d_model)
         self.dropout = nn.Dropout(self.spatial_dropout)
         self.cross_time_candidate_counts: tuple[int, ...] = ()
         self.execution_trace: dict[str, Any] = {}
@@ -399,16 +398,11 @@ class IAIndependentTemporalPropagation(_IA11SelectedOnlyBase):
 
     def _embed_selected(self, candidates: torch.Tensor) -> torch.Tensor:
         segments = self._selected_segments(candidates)
-        identities = self.candidate_identity(self.selected_candidate_names).to(
-            device=candidates.device,
-            dtype=candidates.dtype,
-        )
         embedded: list[torch.Tensor] = []
         for index, projection in enumerate(self.candidate_projections):
             stream = projection(segments[:, :, index])
             stream = stream + self.candidate_position_embeddings[index]
             stream = self.dropout(stream)
-            stream = stream + identities[index].view(1, 1, 1, self.d_model)
             embedded.append(stream)
         return torch.stack(embedded, dim=2)
 
@@ -484,6 +478,7 @@ class IAOperatorAdapterPropagation(_IA11SelectedOnlyBase):
             if source_root is not None
             else Path(__file__).resolve().parents[3] / "Time-Series-Library"
         )
+        self.candidate_identity = SemanticCandidateIdentity(self.d_model)
         self.candidate_projections = nn.ModuleList(
             [nn.Linear(self.seg_len, self.d_model, bias=False) for _ in range(self.effective_candidate_count)]
         )
