@@ -110,6 +110,7 @@ def test_old_user_entrypoints_are_removed_and_business_modules_have_no_parser() 
         "run_ra_ds_pfd_p3.py",
         "run_ra_ds_pfd_p3_b1.py",
         "run_ra_ds_pfd_p3_b2.py",
+        "run_ra_ds_pfd_p3_ia1.py",
         "generate_command_reference.py",
         "build_ra_ds_pfd_relation.py",
     }

@@ -4,8 +4,9 @@
 
 PhDPaper3 是可复现的 SDWPF 时间序列预测科研实验工程。`main` 是长期承载
 自定义模型的分支，当前维护范围包括共享路径上的 LSTM、Crossformer、STCN，
-以及 RA-DS-PFD Crossformer 的 P1/P2、冻结的 R0-R7 suite 和 P3-A
-Global Top-K Auto-PFD Foundation；P3-A2.1 architecture closure 已完成。公共实验协议、
+以及 RA-DS-PFD Crossformer 的 P1/P2、冻结的 R0-R7 suite、P3-A
+Global Top-K Auto-PFD Foundation 和 P3-IA-1 Selected-Only Propagation Foundation；
+P3-A2.1 architecture closure 已完成。公共实验协议、
 模型数学实现、R0-R7
 variant 定义、P3 propagation seam、GPU 策略和已有结果都属于当前兼容边界。
 
@@ -153,12 +154,10 @@ summary；所有状态均不产生 final `selected_k`。不同 K 的 normalized 
 
 ## 4. 当前已验证结果
 
-本轮最终 CPU 回归（在 production fix 后）：P3 focused `76 passed`；所有 P3
-测试 `102 passed`；所有 RA-DS-PFD 相关测试 `196 passed, 1 skipped`（skip 为
-CUDA accumulation regression）；repository CPU regression（设置
-`CUDA_VISIBLE_DEVICES=-1`，并排除真实 CUDA-only 的 `tests/test_full_shape.py`）为
-`371 passed, 4 skipped`。其余 3 个 skip 是既有正式 tsl 环境条件，不是失败。
-`python scripts\generate_command_reference.py --check` 通过。
+本轮最终 repository 回归 `python -m pytest -q` 为 `392 passed, 3 skipped in
+30.76s`；3 个 skip 均为既有正式 tsl 环境条件，不是失败。新增 IA-1 focused
+tests、旧 P3 回归和共享 CLI schema 均包含在该结果内。
+`python scripts\generate_command_reference.py --check` 与 `git diff --check` 均通过。
 
 本轮最终 GPU 环境：NVIDIA GeForce RTX 4070 Ti SUPER，GPU total
 `16375.5 MiB`；PyTorch `2.5.1+cu124`，CUDA `12.4`，formal GPU available。
@@ -195,6 +194,36 @@ P3-B1/B2 pre-Full GPU evidence（2026-08-21）全部完成：
 - B2 Smoke 未生成 `p3_b2_k_selection.json`，也未出现
   `PROVISIONAL`、`AMBIGUOUS`、`selected_k` 或 `provisional_best_k`。
 
+P3-IA-1 Selected-Only Propagation Foundation = `PASS_WITH_NOTES`。IA-1 从 frozen
+R2 派生，继续使用模型名 `ra_ds_pfd_crossformer`、`full_spatiotemporal`、完整
+多变量 Self View、R2 的 relation resource、四个 spatial architecture axes、
+graph 和 shared training/evaluation path。新模式是 `pfd_mode=pfd3_ia_fixed`，
+模型配置只接受 `p3_ia.selection_mode=fixed` 和固定的
+`p3_ia.selected_candidates`。
+
+IA-1 suite 的两个且仅两个 arm 为：
+
+- `IA1_R2_PAIR`: `Wspd.level`, `Wspd.diff1`；
+- `IA1_AUTO_K2_PAIR`: `Wspd.level`, `Patv_clean_for_input.diff1`。
+
+Candidate Bank 仍复用 canonical 13 个 base features × `{level,diff1}` 的 26
+个 history-only 候选；实现允许先构建这个 cheap bank，但随后立即按 canonical
+index 选出 K=2。每个 arm 只实例化 K 个 candidate projection/identity stream，
+两个 costly Cross-Time stage 的实际输入 candidate axis 都是 K=2，之后用
+concat-over-K 的小型 MLP fusion 输出 Scale0/Scale1 propagation tokens。IA-1
+没有 selector、attention、动态权重或 `top_k` 参数；旧 P3 global Top-K 路径保持
+不变。`IA1_R2_PAIR` 是固定候选对的实验 arm，不等同于 bitwise frozen R2。
+
+IA-1 的 suite、propagation module、thin runner 和 invariant tests 分别位于
+`configs/experiments/ra_ds_pfd_p3_ia1.yaml`、
+`src/models/ra_ds_pfd_crossformer/p3_ia_propagation.py`、
+`src/models/ra_ds_pfd_crossformer/p3_ia_suite.py`、
+`scripts/run_ra_ds_pfd_p3_ia1.py`、`tests/test_ra_ds_pfd_p3_ia1.py`、
+`tests/test_ra_ds_pfd_p3_ia_propagation.py` 与
+`tests/test_ra_ds_pfd_p3_ia1_runner.py`。
+runner 只解析 arm、生成临时 model YAML 并调用现有 `scripts/run.py train`；不
+引入新的 Trainer、Evaluator、optimizer、result system 或选择器。
+
 repeatability 期间定位到真实 CUDA bug：关系空间重复 target 的 atomic
 `scatter_add_` 及其训练反向会造成跨 worker 的浮点 reduction order 差异。最小
 修复是保留固定 edge 顺序的 deterministic segmented aggregation，并由
@@ -214,7 +243,7 @@ R0-R7 Formal Full = NOT RUN
 同样尚未运行 multi-seed 和 formal test-set comparison；已有 smoke、shape、
 Stage A、P3 dry-run 或 CPU foundation 均不得改写为 Formal Full。
 
-## 5. P3-A2/P3-B1/P3-B2 状态与下一步
+## 5. P3-A2/P3-B1/P3-B2/P3-IA-1 状态与下一步
 
 `P3 PRE-FULL GPU EVIDENCE = PASS`。
 
@@ -224,13 +253,22 @@ Stage A、P3 dry-run 或 CPU foundation 均不得改写为 Formal Full。
 - P3-B2 GPU Smoke = `PASS`；K1/K2/K3/K4/K6/K8 均 `PASS`。
 - P3-B2 FORMAL_DEFAULT_SHAPE = `PASS`；P3-B2 Repeatability = `PASS`。
 - P3 selector selected-set repeatability = `PASS`。
+- P3-IA-1 environment preflight、model preflight、INTERFACE_SMALL 和
+  RESOLVED_SHAPE = `PASS`；两臂的 FORMAL_DEFAULT_SHAPE 均使用默认
+  `[32,144,134,16] -> [32,134,10]`，参数量均为 `693232`，峰值 allocated
+  约 `13133.48 MiB`。
+- P3-IA-1 `IA1_R2_PAIR` 与 `IA1_AUTO_K2_PAIR` GPU Smoke = `PASS`；均为
+  1 epoch / 2 updates，训练峰值 allocated 约 `13170.92 MiB`，GPU total
+  `16375.5 MiB`。
+- P3-IA-1 两臂 Repeatability = `PASS / EXACT`；独立 worker 的 predictions、
+  metrics 和 curves 最大差异均为 `0.0`。
 
 科学状态保持未决：Level+Diff1 remains the current B2 fixed/default basis；不得
 解释为 B1 winner。B1 Formal Discovery = `NOT RUN`；B1 operator decision =
 `NOT DECIDED`；B2 Formal K-selection = `NOT RUN`；provisional K = `NOT RUN`；
 final K* = `NOT DECIDED`。
 
-`NO FORMAL FULL WAS RUN BY CODEX.` B1/B2 Formal Full、multi-seed 和正式
+`NO FORMAL FULL WAS RUN BY CODEX.` B1/B2/IA-1 Formal Full、multi-seed 和正式
 test-set comparison 均留给用户手工执行。以下命令只打印在交接中，
 `DO NOT EXECUTE BY CODEX — USER WILL RUN MANUALLY`：
 
@@ -242,6 +280,12 @@ $PYTHON = 'D:\Apps\Miniconda3\envs\env_tslib\python.exe'
 
 # DO NOT EXECUTE BY CODEX — USER WILL RUN MANUALLY
 & $PYTHON scripts\run_ra_ds_pfd_p3_b2.py --all --run-id p3-b2-full-seed2026 --device cuda
+
+# DO NOT EXECUTE BY CODEX — USER WILL RUN MANUALLY
+& $PYTHON scripts\run_ra_ds_pfd_p3_ia1.py --variant IA1_R2_PAIR --run-id ia1-r2-pair-full-seed2026 --device cuda
+
+# DO NOT EXECUTE BY CODEX — USER WILL RUN MANUALLY
+& $PYTHON scripts\run_ra_ds_pfd_p3_ia1.py --variant IA1_AUTO_K2_PAIR --run-id ia1-auto-k2-pair-full-seed2026 --device cuda
 ```
 
 ## 6. 当前兼容约束与不可踩的坑
@@ -261,11 +305,13 @@ $PYTHON = 'D:\Apps\Miniconda3\envs\env_tslib\python.exe'
 - 不重新引入 StudySpec、ModelSpec、manifest、certificate、readiness protocol、
   模型专属 Trainer/Evaluator 或新的 Markdown 文档；不要手工编辑生成的
   docs/COMMAND_REFERENCE.md。
-- P3-A 只允许从 frozen R2 派生；pfd_mode=pfd0 的 R0-R7 路径继续使用
-  self.pfd0，P3 使用 self.p3_propagation，不得 mask Self 输入或改变关系图。
+- P3-A 与 P3-IA-1 只允许从 frozen R2 派生；pfd_mode=pfd0 的 R0-R7 路径继续
+  使用 self.pfd0，global P3 使用 self.p3_propagation，IA-1 使用
+  self.ia_propagation；两条 P3 路径都不得 mask Self 输入或改变关系图。
 - Candidate Bank 只读取 ModelInput.x 和 DataInfoView.feature_columns，不得读取
   target、mask、future weather 或预测窗口；P3-B0 已通过公共 formal default
   forward/loss/backward gate；P3-B1 的 Smoke、FORMAL_DEFAULT_SHAPE 与
+  Repeatability，以及 P3-IA-1 的 selected-only K=2、Smoke、默认 shape 和
   Repeatability 均已通过，Discovery 与 Formal Full 仍未启动。
 - P3 selection readout 只读取 `best.pt`；checkpoint manifest 中的 model config
   必须与 run directory 的 `model_config.yaml` 一致，不为此扩展公共 checkpoint

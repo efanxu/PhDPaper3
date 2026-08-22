@@ -14,6 +14,7 @@ from models.base import DataInfoView, ForecastModel, ModelInput, NodeSharedForec
 from .backbone import CanonicalBackbone, CanonicalTrace
 from .pfd0 import build_pfd0_propagation
 from .p3_feature_bank import validate_p3_model_config
+from .p3_ia_propagation import IAFixedPropagation, validate_p3_ia_model_config
 from .p3_propagation import P3GlobalTopKPropagation
 from .relation_resource import RelationResource, load_relation_resource
 from .relation_spatial import (
@@ -48,6 +49,7 @@ CONFIG_FIELDS = frozenset(
         "bias_scaling_mode",
         "base_turbine_dim",
         "p3",
+        "p3_ia",
     }
 )
 CANONICAL_CONFIG_FIELDS = frozenset(
@@ -120,6 +122,7 @@ class _RADSPFDCrossformerImplementation:
             # the legacy P1 state_dict remains exactly upstream-canonical.
             self.pfd0 = None
             self.p3_propagation = None
+            self.ia_propagation = None
             self.relation_bias_provider: RelationBiasProvider | None = None
             self.turbine_identity = None
             spatial_modules = None
@@ -169,6 +172,7 @@ class _RADSPFDCrossformerImplementation:
                     source_root=self.source_root,
                 )
                 self.p3_propagation = None
+                self.ia_propagation = None
             elif pfd_mode == "pfd3_global_topk":
                 if feature_columns is None:
                     raise ValueError(
@@ -193,6 +197,29 @@ class _RADSPFDCrossformerImplementation:
                     selector_bisection_iterations=int(
                         p3_config["selector_bisection_iterations"]
                     ),
+                    source_root=self.source_root,
+                )
+                self.ia_propagation = None
+            elif pfd_mode == "pfd3_ia_fixed":
+                if feature_columns is None:
+                    raise ValueError(
+                        "IA-1 propagation requires DataInfoView.feature_columns"
+                    )
+                self.pfd0 = None
+                self.p3_propagation = None
+                ia_config = model_config["p3_ia"]
+                self.ia_propagation = IAFixedPropagation(
+                    feature_columns=feature_columns,
+                    selected_candidates=ia_config["selected_candidates"],
+                    selection_mode=str(ia_config["selection_mode"]),
+                    lookback=self.lookback,
+                    seg_len=int(model_config["seg_len"]),
+                    win_size=int(model_config["win_size"]),
+                    d_model=d_model,
+                    n_heads=int(model_config["n_heads"]),
+                    d_ff=int(model_config["d_ff"]),
+                    factor=int(model_config["factor"]),
+                    spatial_dropout=float(model_config["spatial_dropout"]),
                     source_root=self.source_root,
                 )
             else:
@@ -306,6 +333,8 @@ class _RADSPFDCrossformerImplementation:
             return self.pfd0(x)
         if self.p3_propagation is not None:
             return self.p3_propagation(x)
+        if self.ia_propagation is not None:
+            return self.ia_propagation(x)
         return None
 
     def forward_canonical_trace(self, inputs: ModelInput) -> CanonicalTrace:
@@ -340,7 +369,9 @@ class _RADSPFDCrossformerImplementation:
         """Return the read-only P3 ranking report, or an empty legacy report."""
 
         if self.p3_propagation is None:
-            return []
+            if self.ia_propagation is None:
+                return []
+            return self.ia_propagation.fixed_selection_report()
         return self.p3_propagation.selection_report()
 
     def propagation_selection_report(self) -> list[dict[str, Any]]:
@@ -405,6 +436,30 @@ class RADSPFDCrossformerP3(_RADSPFDCrossformerImplementation, ForecastModel):
         )
 
 
+class RADSPFDCrossformerIA1(_RADSPFDCrossformerImplementation, ForecastModel):
+    """IA-1 full spatiotemporal adapter with fixed selected-only propagation."""
+
+    execution_mode = "full_spatiotemporal"
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__()
+        self._init_shared(**kwargs)
+
+    def forward(self, inputs: ModelInput) -> torch.Tensor:
+        if (
+            self.ia_propagation is None
+            or self.pfd0 is not None
+            or self.p3_propagation is not None
+        ):
+            raise RuntimeError("RA-DS-PFD IA-1 requires the fixed selected-only propagation path")
+        return self._forward_canonical_range(
+            inputs,
+            0,
+            self.num_nodes,
+            propagation_tokens=self._propagation_tokens(inputs.x),
+        )
+
+
 # Keep the historical P1 class name importable for callers that used the
 # concrete adapter directly; build_model selects the explicit P1/P2 adapter.
 RADSPFDCrossformer = RADSPFDCrossformerP1
@@ -443,15 +498,17 @@ def _validate_config(model_config: dict[str, Any]) -> None:
     if "pfd_mode" in model_config and model_config["pfd_mode"] not in {
         "pfd0",
         "pfd3_global_topk",
+        "pfd3_ia_fixed",
     }:
         raise ValueError(
             "unsupported RA-DS-PFD Crossformer pfd_mode; "
-            "expected pfd_mode=pfd0 or pfd_mode=pfd3_global_topk"
+            "expected pfd_mode=pfd0, pfd_mode=pfd3_global_topk, "
+            "or pfd_mode=pfd3_ia_fixed"
         )
     if model_config["spatial_disabled"]:
-        if model_config.get("pfd_mode") == "pfd3_global_topk":
+        if model_config.get("pfd_mode") in {"pfd3_global_topk", "pfd3_ia_fixed"}:
             raise ValueError("P3 propagation requires spatial_disabled=false")
-        if "p3" in model_config:
+        if "p3" in model_config or "p3_ia" in model_config:
             raise ValueError("P3 model config cannot be attached to the legacy P1 path")
         for field, allowed in (
             ("spatial_query_mode", _SPATIAL_QUERY_MODES),
@@ -475,12 +532,20 @@ def _validate_config(model_config: dict[str, Any]) -> None:
     missing_p2 = sorted(required_p2 - set(model_config))
     if missing_p2:
         raise ValueError(f"RA-DS-PFD Crossformer P2 config is missing field: {missing_p2[0]}")
-    if model_config["pfd_mode"] == "pfd0" and "p3" in model_config:
+    if model_config["pfd_mode"] == "pfd0" and {"p3", "p3_ia"}.intersection(model_config):
         raise ValueError("pfd0 model config must not define P3 propagation fields")
     if model_config["pfd_mode"] == "pfd3_global_topk":
+        if "p3_ia" in model_config:
+            raise ValueError("pfd3_global_topk model config must not define IA-1 fields")
         if "p3" not in model_config:
             raise ValueError("P3 model config is missing field: p3")
         validate_p3_model_config(model_config["p3"])
+    if model_config["pfd_mode"] == "pfd3_ia_fixed":
+        if "p3" in model_config:
+            raise ValueError("pfd3_ia_fixed model config must not define global P3 fields")
+        if "p3_ia" not in model_config:
+            raise ValueError("IA-1 model config is missing field: p3_ia")
+        validate_p3_ia_model_config(model_config["p3_ia"])
     mode_fields = {
         "spatial_query_mode": _SPATIAL_QUERY_MODES,
         "propagation_encoder_mode": _PROPAGATION_ENCODER_MODES,
@@ -550,7 +615,7 @@ def _validate_data_info(data_info: DataInfoView) -> None:
 
 def build_model(
     model_config: dict[str, Any], data_info: DataInfoView
-) -> RADSPFDCrossformerP1 | RADSPFDCrossformerP2 | RADSPFDCrossformerP3:
+) -> RADSPFDCrossformerP1 | RADSPFDCrossformerP2 | RADSPFDCrossformerP3 | RADSPFDCrossformerIA1:
     _validate_config(model_config)
     _validate_data_info(data_info)
     project_root = (
@@ -584,7 +649,11 @@ def build_model(
         else (
             RADSPFDCrossformerP3
             if model_config.get("pfd_mode") == "pfd3_global_topk"
-            else RADSPFDCrossformerP2
+            else (
+                RADSPFDCrossformerIA1
+                if model_config.get("pfd_mode") == "pfd3_ia_fixed"
+                else RADSPFDCrossformerP2
+            )
         )
     )
     return adapter(
