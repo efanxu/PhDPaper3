@@ -155,9 +155,14 @@ def test_conditional_score_is_the_set_utility_difference_and_changes_with_contex
 
 def test_previous_st_assignment_has_gradient_path_to_later_conditional_score() -> None:
     selector = _selector(top_k=2, refinement_rounds=0)
-    output = selector()
-    earlier = output.selection_st_assignment_rows[0]
-    later = output.selection_st_assignment_rows[1]
+    embeddings = selector.semantic_embeddings()
+    steps = selector._select_initial_steps(
+        selector.unary_scores(embeddings),
+        selector.pairwise_interaction_matrix(embeddings),
+        embeddings,
+    )
+    earlier = steps[0].st_assignment
+    later = steps[1].st_assignment
     earlier.retain_grad()
     weights = torch.arange(selector.M, dtype=later.dtype)
     (later * weights).sum().backward()
@@ -198,6 +203,73 @@ def test_st_forward_is_exactly_hard_one_hot() -> None:
     assert torch.all((output.st_assignment == 0) | (output.st_assignment == 1))
     assert torch.isfinite(output.st_assignment).all()
     assert torch.isfinite(output.soft_probabilities).all()
+
+
+def test_no_refinement_keeps_initial_and_final_assignments_aligned_by_candidate() -> None:
+    output = _selector(top_k=3, refinement_rounds=0)()
+    initial_by_index = {
+        int(row.argmax().item()): row
+        for row in output.initial_hard_assignment
+    }
+    final_by_index = {
+        int(row.argmax().item()): row
+        for row in output.hard_assignment
+    }
+    assert set(initial_by_index) == set(final_by_index)
+    for index in initial_by_index:
+        initial_row = output.initial_selected_indices.index(index)
+        final_row = output.selected_indices.index(index)
+        torch.testing.assert_close(
+            output.initial_hard_assignment[initial_row],
+            output.hard_assignment[final_row],
+        )
+        torch.testing.assert_close(
+            output.initial_soft_probabilities[initial_row],
+            output.soft_probabilities[final_row],
+        )
+        torch.testing.assert_close(
+            output.initial_st_assignment[initial_row],
+            output.st_assignment[final_row],
+        )
+
+
+def test_refinement_preserves_initial_readout_and_replaces_final_readout() -> None:
+    output = _synergy_selector()()
+    assert output.initial_selected_indices == (0, 1)
+    assert output.selection_path_indices == (0, 1)
+    assert output.selected_indices == (1, 2)
+
+    initial_hard_indices = [
+        int(row.argmax().item()) for row in output.initial_hard_assignment
+    ]
+    initial_soft_indices = [
+        int(row.argmax().item()) for row in output.initial_soft_probabilities
+    ]
+    initial_indices_by_row = [
+        int(row.argmax().item()) for row in output.initial_st_assignment
+    ]
+    assert initial_hard_indices == [0, 1]
+    assert initial_soft_indices == [0, 1]
+    final_indices_by_row = [int(row.argmax().item()) for row in output.st_assignment]
+    assert initial_indices_by_row == [0, 1]
+    assert final_indices_by_row == [1, 2]
+    assert initial_indices_by_row != final_indices_by_row
+    assert [int(row.argmax().item()) for row in output.hard_assignment] == [1, 2]
+    assert [int(row.argmax().item()) for row in output.soft_probabilities] == [1, 2]
+
+
+def test_final_assignments_share_canonical_slot_alignment_and_exact_st_forward() -> None:
+    output = _synergy_selector()()
+    assert output.selected_indices == tuple(sorted(output.selected_indices))
+    for index, hard_row, st_row in zip(
+        output.selected_indices,
+        output.hard_assignment,
+        output.st_assignment,
+        strict=True,
+    ):
+        assert int(hard_row.argmax().item()) == index
+        assert int(st_row.argmax().item()) == index
+    assert torch.equal(output.st_assignment, output.hard_assignment)
 
 
 def test_st_backward_reaches_all_selector_parameter_groups_with_finite_gradients() -> None:

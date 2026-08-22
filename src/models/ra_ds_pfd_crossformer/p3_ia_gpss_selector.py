@@ -2,8 +2,8 @@
 
 This module deliberately stops at the global discrete-set assignment seam.  It
 does not read a model input, build a propagation bank, or implement the later
-``A_ST @ Z`` projection gather.  The three assignment tensors in
-``IAGPSSSelectorOutput`` are the interface that the IA-2B propagation design
+``A_ST @ Z`` projection gather.  The initial and final assignment tensors in
+``IAGPSSSelectorOutput`` are the interface that a later propagation design
 will consume.
 
 The selector is global: its only inputs are its own parameters and the
@@ -189,15 +189,16 @@ class IAGPSSSelectorOutput:
     hard_assignment: torch.Tensor
     soft_probabilities: torch.Tensor
     st_assignment: torch.Tensor
+    initial_hard_assignment: torch.Tensor
+    initial_soft_probabilities: torch.Tensor
+    initial_st_assignment: torch.Tensor
     initial_selected_indices: tuple[int, ...]
     initial_selected_names: tuple[str, ...]
     selected_indices: tuple[int, ...]
     selected_names: tuple[str, ...]
-    st_assignment_rows: tuple[torch.Tensor, ...]
-    selection_st_assignment_rows: tuple[torch.Tensor, ...]
     selection_path: tuple[str, ...]
-    refinement_trace: tuple[dict[str, Any], ...]
     selection_path_indices: tuple[int, ...]
+    refinement_trace: tuple[dict[str, Any], ...]
 
 
 @dataclass(frozen=True)
@@ -277,36 +278,6 @@ class IAGPSSSelector(nn.Module):
         self._candidate_index = {
             name: index for index, name in enumerate(self.candidate_names)
         }
-
-    @property
-    def unary(self) -> nn.Linear:
-        """Compatibility/readability alias for the unary scorer."""
-
-        return self.unary_scorer
-
-    @property
-    def candidate_identity(self) -> IAGPSSSemanticCandidateIdentity:
-        """Readability alias for the IA-GPSS-local semantic identity."""
-
-        return self.semantic_identity
-
-    @property
-    def base_variable_embedding(self) -> nn.Embedding:
-        """Expose the base-variable parameter group without duplicating it."""
-
-        return self.semantic_identity.base_variable_embedding
-
-    @property
-    def operator_embedding(self) -> nn.Embedding:
-        """Expose the operator parameter group without duplicating it."""
-
-        return self.semantic_identity.operator_embedding
-
-    @property
-    def interaction_mlp(self) -> nn.Sequential:
-        """Compatibility/readability alias for the pairwise MLP."""
-
-        return self.pairwise_interaction_mlp
 
     def _validate_parameters_finite(self) -> None:
         for name, parameter in self.named_parameters():
@@ -496,25 +467,28 @@ class IAGPSSSelector(nn.Module):
         unary = self.unary_scores(embeddings)
         interactions = self.pairwise_interaction_matrix(embeddings)
 
-        hard_rows: list[torch.Tensor] = []
-        soft_rows: list[torch.Tensor] = []
-        st_rows: list[torch.Tensor] = []
-        hard_indices: list[int] = []
-        for _step in range(self.top_k):
-            condition = self._stack_assignments(st_rows, embeddings)
-            selected = self._selection_step(
-                unary,
-                interactions,
-                condition,
-                blocked_indices=hard_indices,
-            )
-            hard_rows.append(selected.hard_assignment)
-            soft_rows.append(selected.soft_probabilities)
-            st_rows.append(selected.st_assignment)
-            hard_indices.append(selected.hard_index)
+        initial_steps = self._select_initial_steps(unary, interactions, embeddings)
+        hard_rows: list[torch.Tensor] = [
+            selected.hard_assignment for selected in initial_steps
+        ]
+        soft_rows: list[torch.Tensor] = [
+            selected.soft_probabilities for selected in initial_steps
+        ]
+        st_rows: list[torch.Tensor] = [
+            selected.st_assignment for selected in initial_steps
+        ]
+        hard_indices: list[int] = [selected.hard_index for selected in initial_steps]
 
         initial_indices = tuple(hard_indices)
         initial_names = tuple(self.candidate_names[index] for index in initial_indices)
+        initial_hard_assignment = torch.stack(tuple(hard_rows), dim=0)
+        initial_soft_probabilities = torch.stack(tuple(soft_rows), dim=0)
+        initial_st_assignment = torch.stack(tuple(st_rows), dim=0)
+        self._validate_output_assignments(
+            initial_hard_assignment,
+            initial_soft_probabilities,
+            initial_st_assignment,
+        )
 
         refinement_trace: list[dict[str, Any]] = []
         for round_index in range(self.refinement_rounds):
@@ -572,8 +546,6 @@ class IAGPSSSelector(nn.Module):
         st_assignment = torch.stack(
             [st_rows[slot] for slot in canonical_slot_order], dim=0
         )
-        st_assignment_rows = tuple(st_rows[slot] for slot in canonical_slot_order)
-        selection_st_assignment_rows = tuple(st_rows)
         self._validate_output_assignments(
             hard_assignment,
             soft_probabilities,
@@ -584,16 +556,41 @@ class IAGPSSSelector(nn.Module):
             hard_assignment=hard_assignment,
             soft_probabilities=soft_probabilities,
             st_assignment=st_assignment,
+            initial_hard_assignment=initial_hard_assignment,
+            initial_soft_probabilities=initial_soft_probabilities,
+            initial_st_assignment=initial_st_assignment,
             initial_selected_indices=initial_indices,
             initial_selected_names=initial_names,
             selected_indices=final_indices,
             selected_names=final_names,
-            st_assignment_rows=st_assignment_rows,
-            selection_st_assignment_rows=selection_st_assignment_rows,
             selection_path=initial_names,
-            refinement_trace=tuple(refinement_trace),
             selection_path_indices=initial_indices,
+            refinement_trace=tuple(refinement_trace),
         )
+
+    def _select_initial_steps(
+        self,
+        unary: torch.Tensor,
+        interactions: torch.Tensor,
+        embeddings: torch.Tensor,
+    ) -> tuple[_SelectionStep, ...]:
+        """Run the initial sequential pass while preserving its row graph."""
+
+        steps: list[_SelectionStep] = []
+        hard_indices: list[int] = []
+        for _step in range(self.top_k):
+            condition = self._stack_assignments(
+                [selected.st_assignment for selected in steps], embeddings
+            )
+            selected = self._selection_step(
+                unary,
+                interactions,
+                condition,
+                blocked_indices=hard_indices,
+            )
+            steps.append(selected)
+            hard_indices.append(selected.hard_index)
+        return tuple(steps)
 
     def _selection_step(
         self,
@@ -748,13 +745,6 @@ class IAGPSSSelector(nn.Module):
             raise FloatingPointError("IA-GPSS ST assignment contains NaN or Inf")
 
 
-# Explicit aliases keep the module easy to discover without creating separate
-# implementations or parameter sets.
-InteractionAwareGlobalSelector = IAGPSSSelector
-GlobalInteractionAwareSelector = IAGPSSSelector
-SemanticCandidateIdentity = IAGPSSSemanticCandidateIdentity
-
-
 __all__ = [
     "DEFAULT_IA_GPSS_D_MODEL",
     "DEFAULT_IA_GPSS_REFINEMENT_ROUNDS",
@@ -764,9 +754,6 @@ __all__ = [
     "IAGPSSSemanticCandidateIdentity",
     "IAGPSSSelector",
     "IAGPSSSelectorOutput",
-    "InteractionAwareGlobalSelector",
-    "GlobalInteractionAwareSelector",
-    "SemanticCandidateIdentity",
     "canonical_candidate_names",
     "validate_refinement_rounds",
     "validate_temperature",
