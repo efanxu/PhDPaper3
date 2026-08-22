@@ -163,7 +163,7 @@ summary；所有状态均不产生 final `selected_k`。不同 K 的 normalized 
 
 ## 4. 当前已验证结果
 
-当前 repository 回归 `python -m pytest -q` 为 `471 passed, 3 skipped`；3 个
+当前 repository 回归 `python -m pytest -q` 为 `473 passed, 3 skipped`；3 个
 skip 均为既有正式 tsl 环境条件，不是失败。IA-2A/IA-2B focused tests、IA-1.1
 focused tests、旧 IA-1/P3 回归和共享 CLI schema 均包含在该结果内。
 `python scripts\generate_command_reference.py --check` 与 `git diff --check` 均通过。
@@ -336,11 +336,13 @@ deterministic straight-through exact-K selection、refinement 和 final canonica
 assignment 语义；公开 API 使用 `candidate_count`、`top_k`、`set_utility` 和
 `conditional_marginal_scores`。
 
-IA-GPSS v1 IA-2B Hard-Forward / Soft-Backward Propagation Core = `PASS`。当前
+IA-GPSS v1 IA-2B Hard-Forward / Soft-Backward Propagation Core = `FROZEN / PASS`。当前
 实现为 canonical candidate bank `M=26`、cheap projection `M=26`、昂贵
 Cross-Time candidate count `K`；value gather 为
 `sg(Z_hard) + Z_soft - sg(Z_soft)`，forward exact hard，soft backward 可训练
-hard-unselected cheap projection。Propagation identity 与 selector identity
+hard-unselected cheap projection。CandidateProjectionBank 的 stacked
+`[M,D,seg_len]` 参数逐 candidate slice 按独立
+`nn.Linear(seg_len,d_model,bias=False)` 语义初始化。Propagation identity 与 selector identity
 参数分离；dynamic operator routing 使用 canonical incidence 的 ST gate；Scale0
 和 Scale1 各只有一个 shared Cross-Time；IA11 fixed Wspd.level/Wspd.diff1
 forward equivalence 与 propagation-level downstream gradient 到 selector 均

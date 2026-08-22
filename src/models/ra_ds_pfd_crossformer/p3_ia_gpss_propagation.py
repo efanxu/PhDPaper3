@@ -130,7 +130,11 @@ class IAGPSSCandidateProjectionBank(nn.Module):
         self.weight = nn.Parameter(
             torch.empty(self.candidate_count, self.d_model, self.seg_len)
         )
-        nn.init.kaiming_uniform_(self.weight, a=sqrt(5))
+        # Each candidate slice is initialized exactly as an independent
+        # nn.Linear(seg_len, d_model, bias=False); the stacked Parameter is
+        # only an execution/storage representation.
+        for candidate_weight in self.weight:
+            nn.init.kaiming_uniform_(candidate_weight, a=sqrt(5))
 
     def forward(self, segments: torch.Tensor) -> torch.Tensor:
         """Project ``[B,N,M,S,seg_len]`` into ``[B,N,M,S,D]``."""

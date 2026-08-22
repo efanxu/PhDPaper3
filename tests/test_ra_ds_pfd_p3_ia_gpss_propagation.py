@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from math import sqrt
 from pathlib import Path
 
 import pytest
 import torch
+from torch import nn
 from torch.nn import functional as F
 
 from models.ra_ds_pfd_crossformer.p3_feature_bank import (
@@ -118,6 +120,49 @@ def test_canonical_candidate_projection_bank_has_one_independent_row_per_candida
     assert bank.weight[0].data_ptr() != bank.weight[1].data_ptr()
     assert P3CandidateBank(feature_columns=P3_BASE_FEATURES).candidate_count == 26
     assert len(P3_BASE_FEATURES) * len(P3_CANDIDATE_TRANSFORMS) == 26
+
+
+def test_projection_bank_initialization_matches_independent_linear_layers() -> None:
+    torch.manual_seed(2026)
+    bank = IAGPSSCandidateProjectionBank(candidate_count=3, seg_len=4, d_model=5)
+    bank_weight = bank.weight.detach().clone()
+
+    torch.manual_seed(2026)
+    layers = [nn.Linear(4, 5, bias=False) for _ in range(3)]
+
+    for index, layer in enumerate(layers):
+        torch.testing.assert_close(
+            bank_weight[index],
+            layer.weight,
+            rtol=0,
+            atol=0,
+        )
+
+
+def test_projection_bank_initialization_uses_independent_linear_fan_in_bound() -> None:
+    candidate_count = 26
+    seg_len = 4
+    d_model = 128
+    torch.manual_seed(2026)
+    bank = IAGPSSCandidateProjectionBank(
+        candidate_count=candidate_count,
+        seg_len=seg_len,
+        d_model=d_model,
+    )
+
+    bound = 1.0 / sqrt(seg_len)
+    tolerance = 4 * torch.finfo(bank.weight.dtype).eps
+    assert all(
+        float(candidate_weight.abs().max()) <= bound + tolerance
+        for candidate_weight in bank.weight
+    )
+
+    # A single init call on [M, D, seg_len] would use fan_in = D * seg_len.
+    wrong_stacked_bound = 1.0 / sqrt(d_model * seg_len)
+    assert any(
+        float(candidate_weight.abs().max()) > wrong_stacked_bound + tolerance
+        for candidate_weight in bank.weight
+    )
 
 
 def test_candidate_projection_bank_matches_independent_bias_free_linear_layers() -> None:
